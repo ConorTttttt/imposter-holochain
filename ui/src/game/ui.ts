@@ -360,7 +360,7 @@ function lobbyScreen(m: Model, s: StateV, now: number): string {
   const pk = peerkitStatus(m, now);
   return `
   <div class="lobby-heading">
-    <div><h1>GAME LOBBY</h1><p class="muted">Room <strong>${esc(gameName(m.code, m.round))}</strong></p></div>
+    <div><h1>GAME LOBBY</h1><p class="muted">Room <strong>${esc(gameName(m.code, m.round))}</strong> <button type="button" class="copy-room" data-act="copy-code">Copy code</button></p></div>
     <div class="connection-status">${pill(pk.tone, pk.text)}</div>
   </div>
   <div class="card lobby-card">
