@@ -4,7 +4,6 @@ import {
   ejectionText,
   lobbyReadiness,
   screenHtml,
-  entryActionsHtml,
   peerkitStatus,
   errorText,
   emergencyStatus,
