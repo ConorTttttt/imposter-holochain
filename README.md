@@ -133,18 +133,20 @@ any already running), then spin — `npm run demo -- 6` for six windows.
 
 In each window:
 
-1. **Entry screen** — set a name and keep the lobby code (`LOBBY-DEMO`). The relay box fills in by
-   itself when `npm run relay` runs on this machine (it writes its address to
-   `ui/.relay.json`, which the dev server serves); otherwise one player pastes an
-   address it prints. Once
-   their window reaches the relay it shares the address with the game, and
-   everyone else finds it filled in — even players already in the lobby with
-   the box left blank. Nobody pastes? No movement or chat; the game still works.
-2. Window 1 picks the players, impostors and tasks each (fixed once the
-   lobby exists), then **Create Private Game**. The others: **Join lobby**.
-   For more than 4 players, open more windows: `npm run demo -- 6`. Players get colors by join
-   order, and can chat in the lobby (PeerKit only).
-3. Host: optionally change the settings — **Crew vision** / **Impostor vision**
+1. **Entry screen** — players enter a name and room code. Choose **Join Game**
+   to join an existing room, or **Host Game** to choose players, impostors, tasks
+   each and optionally generate a new room code. Hosts choose **Create Game**;
+   everyone else chooses **Join Room**. No PeerKit addresses, relay commands or
+   debug information appear in the player-facing UI. A green/yellow/red
+   connection dot indicates connected/connecting/connection trouble, with
+   plain-language errors.
+2. Networking is configured behind the scenes: `npm run relay` still starts
+   the development relay, whose address is served to local clients by Vite
+   and can be shared between room members by the coordinator. Other players
+   don't enter it by hand. For more than 4 players, open more windows:
+   `npm run demo -- 6`. Players get colors in join order; movement, lobby
+   chat and voice require a working PeerKit relay.
+3. Host: the lobby shows editable settings — **Crew vision** / **Impostor vision**
    (how far each sees through the fog; ghosts see the whole map), **Kill
    cooldown**, **Discussion** and **Voting** time, **Task bar** (when the crew's
    task count updates: always, at meetings — the default, so nobody can watch
@@ -424,9 +426,11 @@ headphones), or they feed back into each other.
   profile, or another device starts at zero. A durable, cross-agent-readable
   total (so e.g. a shop could verify a claim without trusting the client)
   would need a dedicated, uncloned role other cells could call into.
-- The relay box only fills in by itself on the machine running
-  `npm run relay` and the dev server; players elsewhere need an address pasted
-  once (then it's shared through the game).
+- The player UI never exposes relay addresses. Auto-discovery uses the relay
+  descriptor served by Vite on the relay machine, or a relay address shared
+  through the game. Remote players need a reachable, correctly advertised relay;
+  without one, movement, chat and voice may be unavailable. This is a deployment
+  concern, not an in-game setting.
 - The **meeting rules** (ghosts can't call meetings, one emergency each with a
   15 s cooldown, one report per body) are coordinator checks, not validation:
   a modified client can skip them. The emergency button's position is only
