@@ -1,0 +1,7 @@
+manifest_version: '0'
+name: imposter
+ui:
+  # a .zip of ui/dist — produced by `npm run ui:package`
+  path: ../ui/dist.zip
+happ:
+  path: ./imposter.happ

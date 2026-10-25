@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/imposter-core",
+  "dnas/game/zomes/integrity/game_integrity",
+  "dnas/game/zomes/coordinator/game",
+  "tests",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+hdi = "=0.8.0"
+hdk = "=0.7.0"
+holochain = { version = "=0.7.0", default-features = false, features = ["sweettest", "wasmer-sys-cranelift"] }
+holochain_serialized_bytes = "=0.0.57"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+imposter-core = { path = "crates/imposter-core" }
+game_integrity = { path = "dnas/game/zomes/integrity/game_integrity" }
+
+# Small wasm: the scaffolder's setting for 0.6.x zomes.
+[profile.dev]
+opt-level = "z"
+
+[profile.release]
+opt-level = "z"

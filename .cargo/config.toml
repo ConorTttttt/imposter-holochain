@@ -1,0 +1,14 @@
+# Zomes import their host functions (`__hc__*`) from the conductor at runtime.
+# Since Rust 1.82 the wasm linker rejects undefined symbols by default, so we
+# opt back in with --allow-undefined. `getrandom_backend="custom"` is required
+# because getrandom has no wasm32-unknown-unknown backend of its own inside a
+# zome (the host provides randomness via `random_bytes`).
+#
+# NOTE: a `RUSTFLAGS` env var OVERRIDES this table — don't pass one when
+# building zomes; use `cargo build --release --target wasm32-unknown-unknown`
+# plain (see package.json `build:happ`).
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "link-arg=--allow-undefined",
+  "--cfg", "getrandom_backend=\"custom\"",
+]

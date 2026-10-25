@@ -1,0 +1,18 @@
+# The game DNA with a tampered coordinator, for the forged-link sweettests.
+# Same integrity zome — so the same DNA hash and the same network — but the
+# coordinator is built with the `forge` feature. Built by
+# scripts/build-forge-dna.sh; never part of the hApp.
+manifest_version: '0'
+name: game
+integrity:
+  network_seed: null
+  properties: null
+  zomes:
+    - name: game_integrity
+      path: ../../target/wasm32-unknown-unknown/release/game_integrity.wasm
+coordinator:
+  zomes:
+    - name: game
+      path: ../../target/forge/wasm32-unknown-unknown/release/game.wasm
+      dependencies:
+        - name: game_integrity

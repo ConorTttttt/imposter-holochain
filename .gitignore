@@ -1,0 +1,16 @@
+/target
+**/target
+.cargo-ok
+node_modules
+ui/dist
+ui/dist.zip
+ui/.relay.json
+ui/.shared-conductor.json
+.shared-sandbox
+dnas/game/workdir/game.dna
+tests/forge/game.dna
+workdir/imposter.happ
+workdir/imposter.webhapp
+.hc*
+*.log
+sweep.timestamp

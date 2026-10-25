@@ -1,0 +1,24 @@
+{
+  "name": "imposter-holochain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Imposter on Holochain — hidden roles + tamper-evident voting on a per-lobby DNA, real-time movement over PeerKit.",
+  "scripts": {
+    "build:zomes": "sh scripts/in-nix.sh cargo build --release --target wasm32-unknown-unknown -p game_integrity -p game",
+    "build:happ": "sh scripts/in-nix.sh sh -c 'npm run build:zomes && hc dna pack dnas/game/workdir && hc app pack workdir'",
+    "test:core": "cargo test -p imposter-core",
+    "test:round": "sh scripts/in-nix.sh sh scripts/test-each.sh",
+    "test:ui": "cd ui && npm test",
+    "test": "npm run test:core && npm run test:round",
+    "relay": "cd ui && npm run relay",
+    "demo": "sh scripts/demo.sh",
+    "linked-conductor": "sh scripts/in-nix.sh node scripts/shared-conductor.mjs",
+    "ui:dev": "cd ui && npm run dev",
+    "ui:package": "cd ui && npm run package",
+    "spin": "sh scripts/in-nix.sh env -u WAYLAND_DISPLAY -u ELECTRON_RUN_AS_NODE XDG_SESSION_TYPE=x11 hc-spin -n 4 --ui-port 5173 workdir/imposter.happ"
+  },
+  "devDependencies": {
+    "@holochain/hc-spin": "^0.700.0"
+  }
+}

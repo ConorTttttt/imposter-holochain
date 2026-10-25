@@ -1,0 +1,13 @@
+[package]
+name = "imposter-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Pure Imposter rules: the role Merkle commitment, deterministic role assignment, vote tally, and win check. No Holochain, no I/O."
+
+[dependencies]
+serde.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+serde_json = "1"
