@@ -373,8 +373,9 @@ async function syncRelay(round: number) {
   }
   // A relay running on this machine is the freshest lead — unless it's the one
   // that just failed (its file can outlive a relay that was killed); then the game's.
-  const addr =
-    localRelay && localRelay !== model.relayAddr ? localRelay : await hc.callOn<string | null>(seed, "get_relay", null);
+  const shared = await hc.callOn<string | null>(seed, "get_relay", null).catch(() => null);
+  const addr = localRelay && localRelay !== model.relayAddr ? localRelay : shared ?? localRelay;
+  // No known address yet: keep discovering. Never expose setup steps to players.
   if (round !== model.round || !addr) return;
   // Reconnect after a grace period. A temporarily unavailable relay must not
   // strand players until they reopen the game.
@@ -565,7 +566,7 @@ async function poll() {
     }
     if (model.state.phase === "ended" || model.hostOffline) await watchNextGame(round);
   } catch (e: any) {
-    model.error = String(e?.message ?? e);
+    model.error = errorText(e);
   }
   render();
 }
@@ -840,7 +841,7 @@ app.addEventListener("change", (e) => {
   hc.call("set_settings", settings)
     .then(poll)
     .catch((err: any) => {
-      model.error = String(err?.message ?? err);
+      model.error = errorText(err);
       render();
     });
 });
@@ -1112,7 +1113,7 @@ function finishTask(taskId: number, fake: boolean) {
   if (fake || !hc) return;
   hc.call(scan ? "scan_role" : "complete_task", taskId).catch((e: any) => {
     model.localDone = model.localDone.filter((id) => id !== taskId);
-    model.error = String(e?.message ?? e);
+    model.error = errorText(e);
   });
 }
 
@@ -1229,7 +1230,7 @@ function fixCrisis(panel: number, done: boolean) {
   if (done) sounds.play("task");
   hc?.call("fix_crisis", panel)
     .then(done ? poll : undefined)
-    .catch((e: any) => (model.error = String(e?.message ?? e)));
+    .catch((e: any) => (model.error = errorText(e)));
 }
 
 /** A held Use at the lights panel ran its course: turn the lights back on. */
@@ -1237,7 +1238,7 @@ function fixLights() {
   sounds.play("task");
   hc?.call("fix_lights", null)
     .then(poll)
-    .catch((e: any) => (model.error = String(e?.message ?? e)));
+    .catch((e: any) => (model.error = errorText(e)));
 }
 
 /** A held Use at the comms panel ran its course: restore comms. */
@@ -1245,7 +1246,7 @@ function fixComms() {
   sounds.play("task");
   hc?.call("fix_comms", null)
     .then(poll)
-    .catch((e: any) => (model.error = String(e?.message ?? e)));
+    .catch((e: any) => (model.error = errorText(e)));
 }
 
 // --- vents and doors -------------------------------------------------------
@@ -1403,7 +1404,7 @@ function autoReveal(meetingB64: string) {
   revealing = meetingB64;
   revealVote().catch((e: any) => {
     revealing = null;
-    model.error = String(e?.message ?? e);
+    model.error = errorText(e);
   });
 }
 
@@ -1434,6 +1435,11 @@ async function act(a: string, data: DOMStringMap) {
     const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const code = Array.from(bytes, (n) => alphabet[n % alphabet.length]).join("");
     model.name = field("f-name");
+    model.createOpts = {
+      players: Number(field("f-players")) || model.createOpts.players,
+      impostors: Number(field("f-impostors")) || model.createOpts.impostors,
+      tasks: Number(field("f-tasks")) || model.createOpts.tasks,
+    };
     model.code = code;
     model.probe = freshProbe(code, hc ? "looking" : "connecting");
     model.relayAddr = localRelay ?? "";
