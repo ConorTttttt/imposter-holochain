@@ -5,6 +5,7 @@ import { ROOM_NOT_FOUND } from "./registry.js";
 
 import { COMMS_PANEL, CRISES, LIGHTS_PANEL, roomAt, ROOMS, TASK_TARGET, TASKS, VENTS, VISION_PRESETS, type CrisisKind } from "./world.js";
 import { colorHex } from "./colors.js";
+import { hotelCrisisName, hotelRoomName, hotelTaskName } from "./hotel.js";
 import { totalXp } from "./xp.js";
 import {
   DISCUSSION_TIMES,
@@ -267,7 +268,13 @@ function entryScreen(m: Model): string {
   // Static on purpose: the status and buttons live in their own elements so the
   // once-a-second refresh never rewrites an input while someone is typing.
   return `
-  <h1>IMPOSTER · on Holochain</h1>
+  <section class="hotel-hero" aria-label="The Impossible Hotel">
+    <p class="hotel-eyebrow">The Grand Celeste welcomes you</p>
+    <h1 class="hotel-title">Imposter</h1>
+    <p class="hotel-subtitle">The Impossible Hotel</p>
+    <p class="hotel-tagline">Every guest has a secret. One of them shouldn't exist.</p>
+  </section>
+  <p class="hotel-section-title">Guest register · Check in</p>
   <div class="card">
     <div class="row" style="margin-bottom:10px">
       <label>Name <input id="f-name" value="${esc(m.name)}" placeholder="Alice" /></label>
@@ -569,7 +576,7 @@ function meetingScreen(m: Model, s: StateV, now: number): string {
       ? `<p>The vote tied between ${listOptions(ballot)}. If the tie breaker ties too, a random draw decides.</p>`
       : "";
   return `
-  <h1>${ballot ? "TIE BREAKER" : "EMERGENCY MEETING"}</h1>
+  <h1>${ballot ? "THE SECOND BALLOT" : "GRAND SALON · EMERGENCY ASSEMBLY"}</h1>
   <div class="card">
     <p class="muted">${mt.trigger === "body_report" ? "A body was reported." : "Emergency button pressed."} ${taskBarText(s)}</p>
     ${tieNote}
@@ -672,7 +679,7 @@ function resultScreen(m: Model, s: StateV): string {
   return `
   <h1>${win}</h1>
   <div class="card">
-    ${r.meltdown ? `<p><strong>${CRISES[r.meltdown].label} wasn't stabilised in time.</strong></p>` : ""}
+    ${r.meltdown ? `<p><strong>${hotelCrisisName(r.meltdown)} wasn't stabilised in time.</strong></p>` : ""}
     <p>Impostors alive ${r.impostors_alive} · Crew alive ${r.crew_alive} · Tasks ${r.tasks_done}/${r.tasks_total}</p>
     ${s.my_xp != null ? `<p>You earned <strong>${s.my_xp} XP</strong> this game · <strong>${totalXp()} XP</strong> total.</p>` : ""}
     <table>
@@ -819,28 +826,28 @@ function impostorToolsHtml(m: Model, now: number): string {
   const here = VENTS.find((v) => v.id === m.vent);
   const hops = here
     ? `<span class="muted">Maintenance to:</span>${here.links
-        .map((id) => `<button data-act="vent-to" data-vent="${id}">${esc(VENTS.find((v) => v.id === id)!.room)}</button>`)
+        .map((id) => `<button data-act="vent-to" data-vent="${id}">${esc(hotelRoomName(VENTS.find((v) => v.id === id)!.room))}</button>`)
         .join("")}`
     : "";
   const crisis = crisisStatus(m, now);
   const crises = (Object.keys(CRISES) as CrisisKind[])
     .map(
       (kind) =>
-        `<button data-act="crisis" data-kind="${kind}" ${enabledAttr(inPlay(m) && crisis.ready)}>${CRISES[kind].label}</button>`,
+        `<button data-act="crisis" data-kind="${kind}" ${enabledAttr(inPlay(m) && crisis.ready)}>${hotelCrisisName(kind)}</button>`,
     )
     .join("");
   const doors = doorsStatus(m, now);
   const shut = new Set(s.doors_closed.filter((d) => d.until_ms > now).map((d) => d.room));
   const rooms = ROOMS.map(
     (r, i) =>
-      `<button data-act="close-doors" data-room="${i}" ${enabledAttr(inPlay(m) && doors.ready && !shut.has(i))}>${esc(r.name)}</button>`,
+      `<button data-act="close-doors" data-room="${i}" ${enabledAttr(inPlay(m) && doors.ready && !shut.has(i))}>${esc(hotelRoomName(r.name))}</button>`,
   ).join("");
   return `<div class="row" style="margin-top:6px">${hops}<span class="muted">${crisis.label}:</span>${crises}</div>
     <div class="row" style="margin-top:6px"><span class="muted">${doors.label}:</span>${rooms}</div>`;
 }
 
 /** Where a sabotage panel is, for the crew's warning banner. */
-const roomOf = (p: { x: number; y: number }) => roomAt(p.x, p.y)?.name ?? "the corridor";
+const roomOf = (p: { x: number; y: number }) => hotelRoomName(roomAt(p.x, p.y)?.name ?? "the corridor");
 
 /** The crisis banner: what's failing, how long is left, and which consoles
  *  still need someone. At the reactor, two players at once. */
@@ -863,7 +870,7 @@ export function crisisBannerHtml(m: Model, now = Date.now()): string {
     c.kind === "reactor" && m.near.crisisPanel !== null && m.taskHold && c.panels.filter(Boolean).length < 2
       ? ` <strong>Second Confirmation Required.</strong>`
       : "";
-  return `<p class="tag impostor" style="margin-top:6px">⚠ ${def.label.toUpperCase()} — ${left}s · ${what}${second}<br>${consoles}</p>`;
+  return `<p class="tag impostor" style="margin-top:6px">⚠ ${hotelCrisisName(c.kind).toUpperCase()} — ${left}s · ${what}${second}<br>${consoles}</p>`;
 }
 
 /** The crew's task count, as far as the host's task bar setting shows it — or
@@ -882,7 +889,7 @@ function myTaskListHtml(m: Model): string {
   if (!m.myTasks?.length) return `<span class="muted">Waiting for your tasks…</span>`;
   const done = new Set([...(m.state?.my_tasks_done ?? []), ...m.localDone]);
   const names = m.myTasks.map((id) => {
-    const name = esc(TASKS.find((t) => t.id === id)?.name ?? `task ${id}`);
+    const name = esc(hotelTaskName(id));
     return done.has(id) ? `<s>${name}</s>` : name;
   });
   return `<span class="muted">${myRole(m) === 1 ? "Your cover tasks" : "Your tasks"}: ${names.join(" · ")}</span>`;
@@ -956,7 +963,7 @@ export function hudHtml(m: Model, now = Date.now()): string {
             }${keyHint("L")}</button><button data-act="sabotage-comms" ${enabledAttr(can["sabotage-comms"])}>${
               commsStatus(m, now).label
             }${keyHint("C")}</button><button data-act="vent" ${enabledAttr(can.vent)}>${
-              m.vent !== null ? "Leave maintenance" : "Maintenance"
+              m.vent !== null ? "Exit passage" : "Staff passage"
             }${keyHint("F")}</button>`
           : ""
       }
@@ -968,7 +975,7 @@ export function hudHtml(m: Model, now = Date.now()): string {
   ${crisisBannerHtml(m, now)}
   ${s.lights_out ? `<p class="tag impostor" style="margin-top:6px">Lights are out! Fix them at the panel in ${roomOf(LIGHTS_PANEL)}.</p>` : ""}
   ${s.comms_out ? `<p class="tag impostor" style="margin-top:6px">Comms are down! Fix them at the panel in ${roomOf(COMMS_PANEL)}.</p>` : ""}
-  ${m.airlockLeft !== null ? `<p class="tag" style="margin-top:6px">${m.airlockLeft > 0 ? `Decontaminating… ${(m.airlockLeft / 1000).toFixed(1)}s` : "Decontamination complete — inner door open."}</p>` : ""}
+  ${m.airlockLeft !== null ? `<p class="tag" style="margin-top:6px">${m.airlockLeft > 0 ? `Steam doors cycling… ${(m.airlockLeft / 1000).toFixed(1)}s` : "Decontamination complete — inner door open."}</p>` : ""}
   <p class="muted" style="margin-top:6px">Move with arrow keys / WASD.${
     pk.tone === "ok" ? "" : " Other players only move on your map while PeerKit is live; until then they sit at placeholder spots."
   }</p>
