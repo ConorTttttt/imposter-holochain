@@ -3,7 +3,7 @@ import { ROOM_NOT_FOUND } from "./registry.js";
 // stable across re-renders). `screenHtml` fills the top region; `hudHtml` fills
 // the in-game HUD. `bindActions` wires click delegation once.
 
-import { COMMS_PANEL, CRISES, LIGHTS_PANEL, roomAt, ROOMS, TASK_TARGET, TASKS, VENTS, VISION_PRESETS, type CrisisKind } from "./world.js";
+import { COMMS_PANEL, CRISES, LIGHTS_PANEL, roomAt, ROOMS, TASK_TARGET, VENTS, VISION_PRESETS, type CrisisKind } from "./world.js";
 import { colorHex } from "./colors.js";
 import { hotelCrisisName, hotelRoomName, hotelTaskName } from "./hotel.js";
 import { totalXp } from "./xp.js";
