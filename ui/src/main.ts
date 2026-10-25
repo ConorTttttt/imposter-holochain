@@ -1453,6 +1453,11 @@ async function act(a: string, data: DOMStringMap) {
     render();
     return;
   }
+  if (a === "copy-code") {
+    try { await navigator.clipboard.writeText(model.code); }
+    catch { model.error = "Couldn’t copy the code. You can select it from the lobby."; render(); }
+    return;
+  }
   if (!model.entered && (a === "create" || a === "join")) return enter(a === "create");
   if (!hc) return;
   try {
