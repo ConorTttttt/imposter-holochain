@@ -10,6 +10,7 @@ import { pickRelayAddress } from "./game/relays.js";
 import { gameKey, recordGameXp } from "./game/xp.js";
 import { tryLoadHeads } from "./game/heads.js";
 import { startMiniGame, type MiniGame } from "./game/minigames.js";
+import { hotelTaskName } from "./game/hotel.js";
 import { DEFAULT_PLAYERS, DEFAULT_SETTINGS, killRadius, maxImpostors, type GameSettings } from "./game/settings.js";
 import { CAMS_H, CAMS_W, draw, drawCameras, VIEW_H, VIEW_W, type Dot } from "./game/canvas.js";
 import { CHAT_MAX_LEN, ChatLog, chatLogHtml, chatView, isChatMsg } from "./game/chat.js";
@@ -1136,7 +1137,7 @@ let miniGame: MiniGame | null = null;
 
 function openMiniGame(taskId: number) {
   const task = TASKS.find((t) => t.id === taskId);
-  miniGame = startMiniGame(taskId, task?.name ?? `Task ${taskId}`, Date.now());
+  miniGame = startMiniGame(taskId, hotelTaskName(taskId, task?.name), Date.now());
   model.taskHold = null;
   renderMiniGame();
 }
