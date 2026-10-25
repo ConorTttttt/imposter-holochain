@@ -36,7 +36,7 @@ const ORIGINAL_ROOMS = [
   "Electrical Systems", "Cargo Control", "Storage Bay", "Decontamination",
 ] as const;
 
-const ROOM_NAMES = new Map<string, string>(ORIGINAL_ROOMS.map((name, i) => [name, HOTEL_ROOMS[i]]));
+const ROOM_NAMES = new Map<string, string>(ORIGINAL_ROOMS.map((name, i): [string, string] => [name, HOTEL_ROOMS[i]]));
 export function hotelRoomName(legacyName: string): string {
   return ROOM_NAMES.get(legacyName) ?? legacyName;
 }
