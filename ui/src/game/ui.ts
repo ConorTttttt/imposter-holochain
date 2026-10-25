@@ -226,10 +226,10 @@ export function lobbyReadiness(m: Model, now: number): Readiness {
   const code = esc(gameName(p.code, p.round));
   const blocked = { canCreate: false, canJoin: false, joinLabel: "Join lobby" };
   if (p.status === "connecting") {
-    return { tone: "off", label: "Connecting…", detail: "Connecting to the game service.", ...blocked };
+    return { tone: "off", label: "Connecting…", detail: "Getting your game ready.", ...blocked };
   }
   if (p.status === "no-conductor") {
-    return { tone: "bad", label: "Connection unavailable", detail: "Can’t connect to the game service. Please try again.", ...blocked };
+    return { tone: "bad", label: "Connection unavailable", detail: "Can’t connect to the game right now. Please try again.", ...blocked };
   }
   if (p.error) {
     const absent = p.error === ROOM_NOT_FOUND;
@@ -237,7 +237,7 @@ export function lobbyReadiness(m: Model, now: number): Readiness {
   }
   const s = p.state;
   if (!s || s.code == null) {
-      return {
+    return {
       tone: "warn",
       label: "Searching…",
       detail: `No room found for “${code}” yet. Check the code or ask the host to create it.`,
@@ -328,13 +328,6 @@ export function peerkitStatus(m: Model, now: number): { tone: Tone; text: string
   return { tone: "bad", text: "Connection issue · live movement and chat may be unavailable" };
 }
 
-function movementCell(m: Model, p: PlayerV): string {
-  if (p.keyB64 === m.myKeyB64) return `<span class="muted">you</span>`;
-  return m.peerkit.livePlayers.includes(p.keyB64)
-    ? `<span class="live on">● live</span>`
-    : `<span class="live">○ no signal</span>`;
-}
-
 // --- sound & voice ---------------------------------------------------------------
 
 /** Sound, mic and deafen toggles, shown on every screen once in a game. The
@@ -345,7 +338,7 @@ export function audioBarHtml(m: Model): string {
   const iAmDead = m.state?.players.find((p) => p.keyB64 === m.myKeyB64)?.dead ?? false;
   let note = "";
   if (!a.voiceUp) note = "Voice chat is unavailable until the connection is ready.";
-  else if (a.micError) note = `Mic unavailable: ${esc(a.micError)}`;
+  else if (a.micError) note = "Microphone unavailable. Check browser permissions.";
   else if (a.micOn && iAmDead) note = "You're a ghost — only other ghosts hear you.";
   return `
     <button data-act="toggle-sound" class="${a.soundMuted ? "" : "on"}">${a.soundMuted ? "Sound off" : "Sound on"}</button>
@@ -426,7 +419,7 @@ function settingsHtml(s: StateV, editable = false): string {
     ${pick("f-confirm-ejects", "Confirm ejects", Number(g.confirm_ejects), onOff)}
     ${pick("f-anonymous-votes", "Anonymous votes", Number(g.anonymous_votes), onOff)}
   </div>
-  <p class="muted settings-note">Ghosts see the whole map.${editable ? "" : " Only the host can change these settings before the game starts."}</p>`;
+  <p class="muted settings-note">Ghosts see the whole map.${editable ? "" : s.phase === "lobby" ? " Only the host can change these settings." : " Settings are locked for this game."}</p>`;
 }
 
 /** Where a meeting stands on its timers: discussion first (a tie breaker has
