@@ -117,7 +117,9 @@ const model: Model = {
   code: saved.code ?? "LOBBY-DEMO",
   round: 1,
   next: { state: null, wanted: false, busy: false },
-  relayAddr: saved.relayAddr ?? "",
+  relayAddr: "", // discovered automatically; old saved developer addresses are ignored
+  menuMode: saved.menuMode === "host" ? "host" : "join",
+  showSettings: false,
   createOpts: {
     players: saved.players ?? DEFAULT_PLAYERS,
     impostors: saved.impostors ?? 1,
@@ -146,7 +148,6 @@ let hc: Hc | null = null;
 let movement: Movement | null = null;
 let voice: Voice | null = null;
 let peerkitStarting = false;
-let relayTyped = false; // the player typed their own relay address on the entry screen
 let sharedRelay: string | null = null; // "seed addr" last shared into a game
 let lastRelaySync = 0;
 let meetingHash: Uint8Array | null = null;
@@ -175,7 +176,7 @@ function setHtml(el: Element, html: string) {
 function persist() {
   localStorage.setItem(
     LS,
-    JSON.stringify({ name: model.name, code: model.code, relayAddr: model.relayAddr, ...model.createOpts }),
+    JSON.stringify({ name: model.name, code: model.code, menuMode: model.menuMode, ...model.createOpts }),
   );
 }
 
@@ -375,22 +376,16 @@ async function syncRelay(round: number) {
   const addr =
     localRelay && localRelay !== model.relayAddr ? localRelay : await hc.callOn<string | null>(seed, "get_relay", null);
   if (round !== model.round || !addr) return;
-  // Same address: it already failed or the relay is down — switching won't help.
-  if (addr === model.relayAddr && (movement || model.peerkit.startError)) return;
-  // Give a fresh start a moment to reach its own relay before replacing it.
-  if (movement && now - model.peerkit.startedAt < 10_000) return;
+  // Reconnect after a grace period. A temporarily unavailable relay must not
+  // strand players until they reopen the game.
+  if (now - model.peerkit.startedAt < 10_000 && addr === model.relayAddr) return;
   await startPeerkit(addr);
 }
 
-/** Entry screen: fill the relay box, unless the player typed their own — with a
- *  relay running on this machine if there is one (it's always fresh), else the
- *  address the game shares. Either replaces a remembered one, which may be stale. */
-function fillSharedRelay() {
-  const input = document.getElementById("f-relay") as HTMLInputElement | null;
-  const found = localRelay ?? model.probe.relay;
-  if (!input || !found || relayTyped) return;
-  input.value = found;
-  model.probe.relayFilledFrom = localRelay ? "local" : "game";
+/** Select relay addresses automatically. Network configuration is never shown in
+ * the player menu, but the existing local/room sharing protocol stays intact. */
+function adoptRelayAddress(addr: string | null) {
+  if (!model.entered && addr) model.relayAddr = addr;
 }
 
 /** The relay `npm run relay` is running on this machine, from the relay.json it
@@ -401,12 +396,12 @@ let localRelay: string | null = null;
 async function discoverLocalRelay() {
   try {
     const res = await fetch("/relay.json", { cache: "no-store" });
-    localRelay = res.ok ? pickRelayAddress(await res.json(), location.hostname, model.code) : null;
+    localRelay = res.ok ? pickRelayAddress(await res.json(), location.hostname, model.entered ? model.code : model.probe.code) : null;
   } catch {
     localRelay = null;
   }
   if (!model.entered) {
-    fillSharedRelay();
+    adoptRelayAddress(localRelay ?? model.probe.relay);
     render();
   }
 }
@@ -779,7 +774,7 @@ async function probeLobby() {
     model.probe.round = round;
     model.probe.state = toStateV(raw);
     model.probe.relay = relay;
-    fillSharedRelay();
+    adoptRelayAddress(localRelay ?? relay);
     model.probe.error = null;
   } catch (e: any) {
     if (model.probe.code === code) {
@@ -800,17 +795,6 @@ const probeTimer = setInterval(() => {
   else void probeLobby();
 }, 1000);
 
-// A relay address typed by hand wins over the game's; clearing the box hands
-// it back to the game.
-app.addEventListener("input", (e) => {
-  const input = e.target as HTMLInputElement;
-  if (model.entered || input.id !== "f-relay") return;
-  relayTyped = input.value.trim() !== "";
-  model.probe.relayFilledFrom = null;
-  fillSharedRelay();
-  render();
-});
-
 // Re-check as soon as the lobby code is edited (on blur / Enter, so a
 // half-typed code doesn't spin up a clone cell per keystroke).
 app.addEventListener("change", (e) => {
@@ -822,6 +806,8 @@ app.addEventListener("change", (e) => {
   catch { code = enteredCode; } // the probe shows the invalid-code message
   if (code === model.probe.code) return;
   model.probe = freshProbe(code, hc ? "looking" : "connecting");
+  model.relayAddr = localRelay ?? "";
+  void discoverLocalRelay();
   render();
   void probeLobby();
 });
@@ -1313,7 +1299,7 @@ async function enter(asHost: boolean) {
   if (model.connecting) return;
   model.name = field("f-name") || "Player";
   model.code = field("f-code") || "LOBBY-DEMO";
-  model.relayAddr = field("f-relay") || localRelay || "";
+  model.relayAddr = localRelay ?? model.probe.relay ?? model.relayAddr;
   model.createOpts = {
     players: Number(field("f-players")) || model.createOpts.players,
     impostors: Number(field("f-impostors")) || model.createOpts.impostors,
@@ -1321,6 +1307,7 @@ async function enter(asHost: boolean) {
   };
   persist();
   model.connecting = true;
+  model.peerkit.startedAt = Date.now(); // yellow while discovering and joining
   model.error = null;
   render();
   try {
@@ -1421,6 +1408,45 @@ function autoReveal(meetingB64: string) {
 }
 
 async function act(a: string, data: DOMStringMap) {
+  if (!model.entered && a === "choose-mode") {
+    // Keep typed values while swapping the Join / Host tabs.
+    model.name = field("f-name");
+    const newCode = field("f-code") || "LOBBY-DEMO";
+    model.createOpts = {
+      players: Number(field("f-players")) || model.createOpts.players,
+      impostors: Number(field("f-impostors")) || model.createOpts.impostors,
+      tasks: Number(field("f-tasks")) || model.createOpts.tasks,
+    };
+    if (newCode !== model.probe.code) {
+      model.probe = freshProbe(newCode, hc ? "looking" : "connecting");
+      model.relayAddr = localRelay ?? "";
+      void probeLobby();
+    }
+    model.code = newCode;
+    model.menuMode = data.mode === "host" ? "host" : "join";
+    persist();
+    render();
+    return;
+  }
+  if (!model.entered && a === "new-code") {
+    // Room codes aren't passwords, just short human-friendly identifiers.
+    const bytes = crypto.getRandomValues(new Uint8Array(6));
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const code = Array.from(bytes, (n) => alphabet[n % alphabet.length]).join("");
+    model.name = field("f-name");
+    model.code = code;
+    model.probe = freshProbe(code, hc ? "looking" : "connecting");
+    model.relayAddr = localRelay ?? "";
+    persist();
+    render();
+    void probeLobby();
+    return;
+  }
+  if (a === "toggle-settings") {
+    model.showSettings = !model.showSettings;
+    render();
+    return;
+  }
   if (!model.entered && (a === "create" || a === "join")) return enter(a === "create");
   if (!hc) return;
   try {
