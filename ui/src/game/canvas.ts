@@ -1,5 +1,6 @@
 import { blockieCanvas } from "./blockie.js";
 import { equippedHeadImage } from "./heads.js";
+import { drawHotelGuest, drawHotelScene, drawHotelWalls, hotelRoomLabel } from "./hotel-art.js";
 import {
   BLOCKS,
   CAMERAS,
@@ -105,17 +106,9 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
   ctx.scale(ZOOM, ZOOM);
   ctx.translate(-camX, -camY);
 
-  // GREYBOX: floors tinted by zone so testers always know where they are,
-  // corridors plain, blocks solid. Walls are drawn over the shadows, further down.
+  // Art stays underneath entities and the existing fog/occlusion passes.
+  drawHotelScene(ctx, Date.now(), v.lightsOut);
   ctx.lineWidth = 2;
-  ctx.fillStyle = HALL_FLOOR;
-  for (const h of HALLS) ctx.fillRect(h.x, h.y, h.w, h.h);
-  for (const r of ROOMS) {
-    ctx.fillStyle = ZONE_FLOOR[r.zone];
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-  }
-  ctx.fillStyle = BLOCK_FILL;
-  for (const b of BLOCKS) ctx.fillRect(b.x, b.y, b.w, b.h);
 
   // emergency button
   ctx.beginPath();
@@ -302,9 +295,10 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
       HEAD_SIZE - inset * 2,
     );
     ctx.restore();
+    drawHotelGuest(ctx, d.keyB64, d.x, bodyTop, headTop);
 
     ctx.lineWidth = 2;
-    label(ctx, d.name, d.x, d.y, "#8b949e", HEAD_SIZE + HEAD_GAP + BODY_H / 2);
+    label(ctx, d.name, d.x, d.y, "#f3e5c9", HEAD_SIZE + HEAD_GAP + BODY_H / 2);
     ctx.globalAlpha = 1;
   }
 
@@ -315,7 +309,7 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
       const k = 2000 / Math.max(1, Math.hypot(x - me.x, y - me.y));
       return [me.x + (x - me.x) * k, me.y + (y - me.y) * k];
     };
-    ctx.fillStyle = "rgba(6, 9, 17, 0.9)";
+    ctx.fillStyle = "rgba(8, 16, 17, 0.94)";
     for (const w of v.walls) {
       const [fax, fay] = far(w.ax, w.ay);
       const [fbx, fby] = far(w.bx, w.by);
@@ -328,15 +322,7 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
       ctx.fill();
     }
   }
-  ctx.strokeStyle = "#3b4a61";
-  ctx.lineWidth = 4;
-  ctx.lineCap = "round";
-  for (const w of WALLS) {
-    ctx.beginPath();
-    ctx.moveTo(w.ax, w.ay);
-    ctx.lineTo(w.bx, w.by);
-    ctx.stroke();
-  }
+  drawHotelWalls(ctx, WALLS);
   ctx.strokeStyle = "#ff6b52";
   for (const w of v.closedDoors) {
     ctx.beginPath();
@@ -359,7 +345,7 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
   ctx.textAlign = "center";
   for (const r of ROOMS) {
     ctx.fillStyle = ZONE_LABEL[r.zone];
-    ctx.fillText(r.name.toUpperCase(), r.x + r.w / 2, r.y + 18);
+    ctx.fillText(hotelRoomLabel(r.name), r.x + r.w / 2, r.y + 22);
   }
   ctx.textAlign = "left";
 
@@ -388,22 +374,21 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
   drawMinimap(ctx, me, camX, camY, v.dots.filter((d) => inSight(me, v.vision, d.x, d.y, v.walls)));
 }
 
-// GREYBOX zone colours: only there so testers can tell the zones apart at a
-// glance. Not the art direction.
+// Security/minimap palettes follow the hotel's four visual districts.
 const ZONE_FLOOR: Record<Zone, string> = {
-  forward: "#101d33",
-  central: "#132619",
-  engineering: "#2a1b10",
-  cargo: "#21162b",
+  forward: "#26392f",
+  central: "#402b2b",
+  engineering: "#302923",
+  cargo: "#332b2b",
 };
 const ZONE_LABEL: Record<Zone, string> = {
-  forward: "#5b8bd6",
-  central: "#56a86a",
-  engineering: "#d08a48",
-  cargo: "#a77bd0",
+  forward: "#c1a474",
+  central: "#d4a655",
+  engineering: "#a68d70",
+  cargo: "#a99491",
 };
-const HALL_FLOOR = "#0b111c";
-const BLOCK_FILL = "#2b3445";
+const HALL_FLOOR = "#241e1c";
+const BLOCK_FILL = "#614234";
 
 // --- security cameras -------------------------------------------------------
 // The security console's card: the whole ship small, each camera's view, and
@@ -495,11 +480,11 @@ function drawMinimap(
   ctx.translate(ox, oy);
   ctx.fillStyle = "rgba(6, 9, 17, 0.85)";
   ctx.fillRect(0, 0, MINI_W, MINI_H);
-  ctx.strokeStyle = "#30363d";
+  ctx.strokeStyle = "#d4a655";
   ctx.lineWidth = 1;
   ctx.strokeRect(0, 0, MINI_W, MINI_H);
 
-  ctx.fillStyle = "#1c2431";
+  ctx.fillStyle = "#2a211e";
   for (const h of HALLS) ctx.fillRect(h.x * MINI_SCALE, h.y * MINI_SCALE, h.w * MINI_SCALE, h.h * MINI_SCALE);
   for (const r of ROOMS) {
     ctx.fillStyle = ZONE_LABEL[r.zone] + "55";

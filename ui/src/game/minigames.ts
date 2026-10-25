@@ -62,7 +62,7 @@ export function alignGame(taskId: number, title: string, rng: Rng): MiniGame {
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Slide the output onto the yellow marker, then lock it.</p>
+    html: () => `<p class="muted">Balance the boiler pressure at the golden mark, then secure the valve.</p>
       <div class="mg-track"><div class="mg-target" style="left:${target}%"></div></div>
       <input id="mg-slider" type="range" min="0" max="100" value="${value}" style="width:100%" />
       <div class="row"><button class="primary" data-act="mg" data-mg="lock">Lock</button><span class="muted">${note}</span></div>`,
@@ -72,7 +72,7 @@ export function alignGame(taskId: number, title: string, rng: Rng): MiniGame {
     act: (data) => {
       if (data.mg !== "lock") return false;
       if (Math.abs(value - target) <= ALIGN_TOLERANCE) return true;
-      note = "Not lined up yet.";
+      note = "The valve isn't balanced yet.";
       return false;
     },
   };
@@ -87,9 +87,9 @@ export function fuelGame(taskId: number, title: string): MiniGame {
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Pump fuel into the engine.</p>
+    html: () => `<p class="muted">Stoke the great furnace until it reaches full heat.</p>
       <div class="mg-gauge"><div class="mg-fill" style="width:${(pumps / PUMPS_NEEDED) * 100}%"></div></div>
-      <button class="primary" data-act="mg" data-mg="pump">Pump (${pumps}/${PUMPS_NEEDED})</button>`,
+      <button class="primary" data-act="mg" data-mg="pump">Stoke (${pumps}/${PUMPS_NEEDED})</button>`,
     act: (data) => {
       if (data.mg === "pump") pumps++;
       return pumps >= PUMPS_NEEDED;
@@ -122,7 +122,7 @@ export function calibrateGame(taskId: number, title: string, now: number, rng: R
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Stop the needle in the green zone (${hits}/${HITS_NEEDED}).</p>
+    html: () => `<p class="muted">Stop the fuse-board needle in the green zone (${hits}/${HITS_NEEDED}).</p>
       <div class="mg-dial" style="background:conic-gradient(from ${zone}deg, #238636 0deg ${ZONE_WIDTH}deg, #0d1524 ${ZONE_WIDTH}deg 360deg)">
         <div class="mg-needle" id="mg-needle"></div>
       </div>
@@ -153,7 +153,7 @@ export function shieldsGame(taskId: number, title: string, rng: Rng): MiniGame {
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Prime every red shield.</p>
+    html: () => `<p class="muted">Restore every glowing ward seal.</p>
       <div class="mg-cells">${red
         .map((r, i) => `<button class="mg-cell${r ? " red" : ""}" data-act="mg" data-mg="cell" data-i="${i}"></button>`)
         .join("")}</div>`,
@@ -177,7 +177,7 @@ export function courseGame(taskId: number, title: string, rng: Rng): MiniGame {
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Chart the course: click the waypoints in order.</p>
+    html: () => `<p class="muted">Stamp the arrival register in numbered order.</p>
       <div class="mg-map">${points
         .map(
           (p) =>
@@ -192,7 +192,7 @@ export function courseGame(taskId: number, title: string, rng: Rng): MiniGame {
         note = "";
       } else {
         next = 1;
-        note = "Wrong waypoint — start again from 1.";
+        note = "Wrong entry — start again from 1.";
       }
       return next > WAYPOINTS;
     },
@@ -210,10 +210,10 @@ export function scanGame(taskId: number, title: string, now: number): MiniGame {
   return {
     taskId,
     title,
-    html: (now) => `<p class="muted">Stand still in the scanner. This shows everyone your role — for good.</p>
+    html: (now) => `<p class="muted">Hold still before the Mirror of Truth. This permanently reveals your role to everyone.</p>
       <div class="mg-gauge"><div class="mg-fill" style="width:${pct(now)}%"></div></div>
       <button class="primary" data-act="mg" data-mg="scan" ${ready(now) ? "" : "disabled"}>${
-        ready(now) ? "Confirm scan" : "Scanning…"
+        ready(now) ? "Reveal reflection" : "Reading reflection…"
       }</button>`,
     frame: (root, now) => {
       const fill = root.querySelector<HTMLElement>(".mg-fill");
@@ -231,7 +231,7 @@ export function confirmGame(taskId: number, title: string): MiniGame {
   return {
     taskId,
     title,
-    html: () => `<p class="muted">Run the task.</p><button class="primary" data-act="mg" data-mg="confirm">Run</button>`,
+    html: () => `<p class="muted">Complete this hotel service task.</p><button class="primary" data-act="mg" data-mg="confirm">Run</button>`,
     act: (data) => data.mg === "confirm",
   };
 }

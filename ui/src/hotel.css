@@ -1,0 +1,200 @@
+/* IMPOSSIBLE HOTEL — presentation-only skin. No external fonts or art services. */
+:root {
+  color-scheme: dark;
+  --ink: #0e1718;
+  --emerald: #12312b;
+  --burgundy: #6e2430;
+  --gold: #d4a655;
+  --ivory: #f3e5c9;
+  --walnut: #4b302a;
+  --ghost: #9988c5;
+  --alarm: #e35f52;
+  --restored: #79cfa8;
+  --edge: rgba(212,166,85,.35);
+}
+body {
+  color: var(--ivory);
+  background:
+    radial-gradient(ellipse 80% 45% at 50% -8%, rgba(134,80,49,.27), transparent 85%),
+    repeating-linear-gradient(90deg, transparent 0 88px, rgba(214,165,91,.02) 89px 90px),
+    linear-gradient(145deg, #151e1b, #0e1718 58%, #1b1417);
+  min-height: 100vh;
+  font-family: "Trebuchet MS", ui-sans-serif, system-ui, sans-serif;
+}
+#app { max-width: 1060px; padding-top: 26px; }
+h1, h2, h3, .hotel-title {
+  font-family: Georgia, "Times New Roman", serif;
+  color: #efcc92;
+  font-weight: normal;
+  text-wrap: balance;
+}
+h1 { font-size: clamp(22px, 3.5vw, 33px); line-height: 1.2; letter-spacing: .055em; }
+h2 { letter-spacing: .04em; }
+.card, #minigame {
+  position: relative;
+  background: linear-gradient(145deg, rgba(26,45,39,.98), rgba(21,29,29,.98) 60%, rgba(39,26,30,.97));
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255,227,164,.045), 0 10px 35px rgba(0,0,0,.2);
+}
+.card::before, #minigame::before {
+  content: "";
+  position: absolute; pointer-events: none;
+  inset: 5px;
+  border: 1px solid rgba(212,166,85,.1);
+  border-radius: 4px;
+}
+button {
+  border-radius: 5px;
+  background: linear-gradient(180deg, #45352d, #2b2423);
+  color: var(--ivory);
+  border: 1px solid #7a593d;
+  box-shadow: inset 0 1px rgba(255,219,152,.12);
+  transition: background .18s, border-color .18s, transform .18s;
+}
+button:hover:not(:disabled) {
+  background: linear-gradient(180deg, #624334, #453127);
+  border-color: var(--gold);
+  transform: translateY(-1px);
+}
+button.primary {
+  background: linear-gradient(180deg, #d9b67b, #aa763e);
+  border: 1px solid #f1cd90;
+  color: #241b18;
+  font-weight: 700;
+}
+button.primary:hover:not(:disabled) { background: linear-gradient(180deg,#efd09e,#c3914f); }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid #f1cd90;
+  outline-offset: 3px;
+}
+input, select {
+  background: rgba(10,23,23,.94);
+  border: 1px solid rgba(212,166,85,.4);
+  border-radius: 5px;
+  color: var(--ivory);
+  accent-color: var(--gold);
+}
+input::placeholder { color: #ab9a87; }
+.muted, .live { color: #bdac96; }
+.tag, .pill, .key {
+  background: rgba(8,20,19,.45);
+  border-color: var(--edge);
+  color: #ddc7a2;
+}
+.tag.crew { color: #a8ddcc; border-color: #538976; }
+.tag.impostor, .pill.bad { color: #ff9c92; border-color: #ab514b; }
+.pill.ok, .live.on { color: var(--restored); border-color: #507b66; }
+.pill.warn { color: #f0c477; border-color: #9d7845; }
+.banner {
+  background: rgba(11,25,24,.7);
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+}
+.banner.ok { border-color: #507b66; }
+.banner.warn { border-color: #9d7845; }
+.banner.bad { border-color: #ab514b; }
+canvas {
+  border: 2px solid #a87943;
+  border-radius: 7px;
+  box-shadow: 0 0 0 4px #271e1c, 0 18px 48px rgba(0,0,0,.52);
+  background: #080f11;
+}
+#play { margin-top: 15px; }
+#hud { padding-top: 7px; }
+#hud > .row { border-bottom: 1px solid rgba(212,166,85,.18); padding-bottom: 8px; }
+table td, table th { border-bottom-color: rgba(212,166,85,.2); }
+#chat-log { scrollbar-color: #8b6340 #10201d; }
+.chat-line.mine strong { color: #ebc389; }
+.mg-gauge, .mg-track { background: #171d1c; border: 1px solid #795d42; }
+.mg-fill { background: linear-gradient(90deg, #a16f37, #efd39a); }
+.mg-target { background: var(--gold); }
+.mg-map { background: #172422; border: 1px solid var(--edge); }
+.mg-cell.red { background: var(--burgundy); border-color: var(--alarm); }
+button.on { color: var(--restored); border-color: var(--restored); }
+.eject {
+  background:
+    radial-gradient(circle at 50% 35%, rgba(212,166,85,.13), transparent 48%),
+    repeating-linear-gradient(90deg, transparent 0 29px, rgba(212,166,85,.055) 30px 31px),
+    linear-gradient(150deg,#19322b,#26191c);
+  border: 1px solid var(--edge);
+}
+.eject-spoke { background: repeating-linear-gradient(90deg, #d4a655 0 6px, transparent 6px 10px); }
+.eject-spoke::after { background: var(--gold); }
+
+/* Check-in invitation. Static decorative facade never blocks the forms. */
+.hotel-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 215px;
+  margin: 0 0 18px;
+  padding: 35px 32px 28px;
+  isolation: isolate;
+  border: 1px solid #a87943;
+  border-radius: 8px;
+  background:
+    radial-gradient(ellipse at 72% 80%, rgba(227,166,70,.3), transparent 32%),
+    linear-gradient(115deg, rgba(9,23,23,.97) 7%, rgba(13,31,28,.89) 53%, rgba(62,34,29,.58)),
+    repeating-linear-gradient(90deg,#223029 0 34px,#13201e 35px 38px);
+  box-shadow: 0 20px 48px rgba(0,0,0,.36);
+}
+.hotel-hero::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 15px 15px 12px auto;
+  width: min(37%, 300px);
+  opacity: .62;
+  border: 8px double rgba(222,167,87,.5);
+  border-bottom-width: 18px;
+  border-radius: 100px 100px 5px 5px;
+  background:
+    radial-gradient(circle at 50% 18%, #efcf91 0 3px, transparent 4px),
+    repeating-linear-gradient(90deg, rgba(13,28,27,.9) 0 24px, rgba(212,166,85,.3) 25px 27px),
+    linear-gradient(165deg,#4d3127,#151f1c);
+}
+.hotel-hero::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  pointer-events: none;
+  border: 1px solid rgba(237,201,143,.25);
+  border-radius: 5px;
+}
+.hotel-eyebrow {
+  color: var(--gold);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: .24em;
+  margin: 0 0 14px;
+}
+.hotel-title {
+  margin: 0;
+  color: #f2d49b;
+  font-size: clamp(36px, 6vw, 67px);
+  line-height: 1.02;
+  letter-spacing: -.015em;
+  text-shadow: 0 4px 20px #090e0c;
+}
+.hotel-subtitle {
+  margin: 7px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(13px, 2vw, 18px);
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: #dbbd89;
+}
+.hotel-tagline { color: #dac7aa; margin: 17px 0 0; font-size: 13px; max-width: 390px; }
+.hotel-section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .15em; color: var(--gold); }
+@media (max-width: 680px) {
+  #app { padding: 16px 10px 42px; }
+  .hotel-hero { padding: 26px 18px; min-height: 200px; }
+  .hotel-hero::before { width: 38%; opacity: .25; }
+  .hotel-title, .hotel-subtitle, .hotel-tagline { position: relative; z-index: 1; }
+  .card { padding: 13px; }
+  .row { gap: 6px; }
+  button { padding: 8px 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto; transition-duration: 0s !important; }
+}
