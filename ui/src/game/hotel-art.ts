@@ -1,7 +1,7 @@
 // Lightweight Canvas2D art for the Impossible Hotel. Everything is decorative:
 // do not add collision here, and keep all fog-of-war and entity filtering in canvas.ts.
 import { BLOCKS, HALLS, ROOMS, type Wall, type Zone } from "./world.js";
-import { guestOutfit, HOTEL_PALETTE, hotelRoomName } from "./hotel.js";
+import { guestOutfit, hotelRoomName } from "./hotel.js";
 
 type RoomColours = { floor: string; tile: string; border: string; rug: string };
 const DECOR: Record<Zone, RoomColours> = {
@@ -186,4 +186,3 @@ export function hotelRoomLabel(legacy: string): string {
   return hotelRoomName(legacy).toUpperCase();
 }
 
-export { HOTEL_PALETTE };
