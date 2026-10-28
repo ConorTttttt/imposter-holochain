@@ -50,5 +50,22 @@ jobs:
           cd apps/imposter-mobile
           npm install
           npx tauri icon branding/icon.svg
+      - name: Validate H2HC source/build shell scripts and generated manifest
+        run: |
+          cd apps/imposter-mobile
+          bash -n scripts/prepare-h2hc.sh
+          bash -n scripts/build-h2hc-overlay.sh
+          mkdir -p .h2hc-source/vendor/{holochain-0.7.1,wasmer-7.1.0}
+          touch .h2hc-source/vendor/{holochain-0.7.1,wasmer-7.1.0}/Cargo.toml
+          bash scripts/build-h2hc-overlay.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          p = Path('.h2hc-build/src-tauri/Cargo.toml')
+          with p.open('rb') as f: manifest = tomllib.load(f)
+          assert manifest['dependencies']['h2hc-conductor']['features'] == ['wasmi']
+          assert manifest['dependencies']['holochain']['version'] == '=0.7.1'
+          assert manifest['patch']['crates-io']['wasmer']['path']
+          PY
       - name: Test native IPC validation
         run: cargo test --manifest-path apps/imposter-mobile/src-tauri/Cargo.toml --lib
