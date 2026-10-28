@@ -791,7 +791,8 @@ async function probeLobby() {
       model.probe.state = null;
       model.probe.relay = null;
       const message = String(e?.message ?? e);
-      model.probe.error = message.includes("room") || message.includes("Room") ? message : ROOM_UNAVAILABLE;
+      model.probe.error = message.includes("Android Holochain") ? errorText(e)
+        : (message.includes("room") || message.includes("Room") ? message : ROOM_UNAVAILABLE);
       if (!hc) model.probe.status = "no-conductor";
     }
   } finally {
