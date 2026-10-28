@@ -1,0 +1,104 @@
+name: Imposter mobile UI checks
+on:
+  pull_request:
+    paths:
+      - 'ui/**'
+      - 'apps/imposter-mobile/**'
+      - '.github/workflows/mobile-ui.yml'
+  push:
+    branches:
+      - feature/android-mobile-foundation
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  native-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build Vite frontend for the embedded Tauri context
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+      - name: Generate Tauri app icons
+        run: |
+          cd apps/imposter-mobile
+          npm install
+          npx tauri icon branding/icon.svg
+      - name: Validate H2HC source/build shell scripts and generated manifest
+        run: |
+          cd apps/imposter-mobile
+          bash -n scripts/prepare-h2hc.sh
+          bash -n scripts/build-h2hc-overlay.sh
+          mkdir -p .h2hc-source/vendor/{holochain-0.7.1,wasmer-7.1.0}
+          touch .h2hc-source/vendor/{holochain-0.7.1,wasmer-7.1.0}/Cargo.toml
+          bash scripts/build-h2hc-overlay.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          p = Path('.h2hc-build/src-tauri/Cargo.toml')
+          with p.open('rb') as f: manifest = tomllib.load(f)
+          assert manifest['dependencies']['h2hc-conductor']['features'] == ['wasmi']
+          assert manifest['dependencies']['holochain']['version'] == '=0.7.1'
+          assert manifest['patch']['crates-io']['wasmer']['path']
+          PY
+      - name: Test native IPC validation
+        run: cargo test --manifest-path apps/imposter-mobile/src-tauri/Cargo.toml --lib
+
+  h2hc-compile:
+    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'feature/android-mobile-foundation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build UI and prepare icons
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          cd apps/imposter-mobile
+          npm install
+          npx tauri icon branding/icon.svg
+      - name: Fetch pinned H2HC and create patched Cargo overlay
+        run: |
+          cd apps/imposter-mobile
+          bash scripts/prepare-h2hc.sh
+          bash scripts/build-h2hc-overlay.sh
+      - name: Compile H2HC-enabled in-process Tauri conductor
+        run: cargo check --manifest-path apps/imposter-mobile/.h2hc-build/src-tauri/Cargo.toml --features h2hc-runtime

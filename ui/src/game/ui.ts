@@ -470,6 +470,7 @@ const GAME_FULL = "Game full: every seat was taken just before you joined.";
  *  the one a player can hit in normal play. */
 export function errorText(e: unknown): string {
   const raw = String((e as { message?: unknown })?.message ?? e);
+  if (/Android Holochain is not ready|native H2HC conductor/i.test(raw)) return "Mobile Holochain is not installed yet. This Android build is for UI testing.";
   if (/game full/i.test(raw)) return GAME_FULL;
   if (/already started/i.test(raw)) return "This game has already started. Ask for a new room code.";
   if (/invalid room code|4.?32 letters/i.test(raw)) return "Room codes must be 4–32 letters, numbers or hyphens.";

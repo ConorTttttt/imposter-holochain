@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Only standard Tauri window functionality; no privileged Holochain commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -201,3 +201,10 @@ test("real-time connection displays a green, yellow, or red simple status", () =
   m.peerkit.startedAt = 19000;
   assert.equal(peerkitStatus(m, 20000).tone, "warn");
 });
+
+test("mobile missing runtime reports a setup limitation, not a network outage", () => {
+  assert.match(
+    errorText(new Error("Android Holochain is not ready: native H2HC conductor not installed yet")),
+    /Mobile Holochain is not installed yet/,
+  );
+});

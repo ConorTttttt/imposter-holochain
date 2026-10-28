@@ -1,3 +1,4 @@
+import { connectNativeClient, isTauriShell, nativeBridge } from "./mobile/native-client.js";
 // Thin wrapper over `@holochain/client`: connect (hc-spin injects the app
 // port + token), get-or-create the clone cell for each game, close the clones
 // of games left behind, call the `game` zome, and subscribe to signals.
@@ -35,20 +36,27 @@ export class Hc {
    *  its connection file is being served, use that connection so `myPubKey`
    *  is the shared one, not a fresh hc-spin key. */
   static async connect(onSignal: (s: Signal) => void): Promise<Hc> {
-    const shared = await fetch("/shared-conductor.json", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null);
-    // The file can outlive the conductor that wrote it (a crash skips its
-    // delete-on-exit cleanup) — fall back to the normal hc-spin connection
-    // rather than fail the whole page over a stale link.
-    const viaShared = shared
-      ? await AppWebsocket.connect({
-          url: new URL(`ws://127.0.0.1:${shared.appPort}`),
-          token: shared.imposterToken,
-          wsClientOptions: { origin: "imposter-ui" },
-        }).catch(() => null)
-      : null;
-    const client = (viaShared ?? (await AppWebsocket.connect())) as unknown as AppClient;
+    let client: AppClient;
+    if (isTauriShell()) {
+      // Never silently connect to hc-spin or a different desktop identity.
+      const bridge = nativeBridge();
+      if (!bridge) throw new Error("Android native Holochain bridge is unavailable");
+      client = await connectNativeClient(bridge);
+    } else {
+      const shared = await fetch("/shared-conductor.json", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      // A stale shared-conductor file is not a fatal desktop error, but the
+      // mobile path above never attempts this fallback.
+      const viaShared = shared
+        ? await AppWebsocket.connect({
+            url: new URL(`ws://127.0.0.1:${shared.appPort}`),
+            token: shared.imposterToken,
+            wsClientOptions: { origin: "imposter-ui" },
+          }).catch(() => null)
+        : null;
+      client = (viaShared ?? (await AppWebsocket.connect())) as unknown as AppClient;
+    }
     const info = await client.appInfo();
 
     client.on("signal", (sig: any) => {

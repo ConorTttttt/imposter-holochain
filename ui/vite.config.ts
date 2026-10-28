@@ -36,7 +36,17 @@ const localRelay: Plugin = {
 const localSharedConductor: Plugin = {
   name: "local-shared-conductor",
   configureServer(server) {
-    server.middlewares.use("/shared-conductor.json", async (_req, res) => {
+    server.middlewares.use("/shared-conductor.json", async (req, res) => {
+      // This developer-only endpoint includes an app token. Never expose it
+      // to Android devices or other LAN clients when Vite binds 0.0.0.0.
+      const source = req.socket.remoteAddress ?? "";
+      const loopback = source === "::1" || source === "127.0.0.1"
+        || source.startsWith("::ffff:127.");
+      if (!loopback) {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
       try {
         const body = await readFile(resolve(__dirname, ".shared-conductor.json"));
         res.setHeader("Content-Type", "application/json");
