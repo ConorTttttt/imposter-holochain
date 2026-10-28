@@ -1,9 +1,15 @@
-// This is intentionally only a WebView shell. No Holochain app websocket,
-// keystore capability, or arbitrary command bridge is exposed to web content.
-// The H2HC conductor adapter will be added and tested separately.
+mod native;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            native::mobile_status,
+            native::mobile_app_info,
+            native::mobile_create_clone,
+            native::mobile_disable_clone,
+            native::mobile_call_zome,
+        ])
         .run(tauri::generate_context!())
         .expect("Failed to run Imposter mobile");
 }
