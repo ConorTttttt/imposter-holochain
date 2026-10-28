@@ -18,6 +18,7 @@ buttons remain the action controls; WASD/arrow keys still work on desktop.
 
     cd apps/imposter-mobile
     npm install
+    npx tauri icon branding/icon.svg
     npm run android:init
     npm run android:dev
 
