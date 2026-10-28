@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   ejectionText,
   lobbyReadiness,
+  screenHtml,
+  peerkitStatus,
+  errorText,
   emergencyStatus,
   meetingClock,
   taskBarText,
@@ -148,6 +151,53 @@ test("room lookup failures show understandable messages and block joining", asyn
     const ready = lobbyReadiness(model, 1000);
     assert.equal(ready.canJoin, false);
     assert.equal(ready.canCreate, error === ROOM_NOT_FOUND);
-    assert.equal(ready.detail, error);
+    assert.equal(ready.detail, errorText(error));
   }
+});
+
+
+test("join screen hides networking configuration and shows host-only setup", () => {
+  const m = { entered: false, name: "Guest", code: "ABCD", menuMode: "join", createOpts: { players: 4, impostors: 1, tasks: 3 } } as Model;
+  const join = screenHtml(m);
+  assert.match(join, /Join Game/);
+  assert.doesNotMatch(join, /f-relay|Relay address|PeerKit|f-players/);
+  m.menuMode = "host";
+  const host = screenHtml(m);
+  assert.match(host, /f-players/);
+  assert.match(host, /Generate Room Code/);
+  assert.match(host, /You can adjust the other game settings in your lobby/);
+});
+
+test("game settings are editable for host and readable from a guest menu", () => {
+  const s = game({}, { phase: "lobby", code: "ROOM", player_count: 6, task_target: 12, is_host: false });
+  const m = {
+    entered: true, state: s, code: "ROOM", round: 1, myKeyB64: "k1", showSettings: false,
+    peerkit: { enabled: true, startError: null, startedAt: 1, relayUp: true, livePlayers: ["k0", "k2", "k3"] },
+  } as Model;
+  const closed = screenHtml(m, 1000);
+  assert.match(closed, /data-act="toggle-settings"/);
+  assert.doesNotMatch(closed, /f-crew-vision/);
+  m.showSettings = true;
+  const open = screenHtml(m, 1000);
+  assert.match(open, /Crew vision/);
+  assert.doesNotMatch(open, /select id="f-crew-vision"/);
+  s.is_host = true;
+  const host = screenHtml(m, 1000);
+  assert.match(host, /select id="f-crew-vision"/);
+});
+
+test("real-time connection displays a green, yellow, or red simple status", () => {
+  const m = {
+    myKeyB64: "k0", state: game({}), peerkit: { enabled: true, relayUp: true, livePlayers: ["k1", "k2", "k3"], startedAt: 1000, startError: null },
+  } as Model;
+  assert.deepEqual(peerkitStatus(m, 2000), { tone: "ok", text: "Connected" });
+  m.peerkit.livePlayers = ["k1"];
+  assert.equal(peerkitStatus(m, 2000).tone, "warn");
+  m.peerkit.relayUp = false;
+  m.peerkit.livePlayers = [];
+  assert.equal(peerkitStatus(m, 20000).tone, "bad");
+  assert.doesNotMatch(peerkitStatus(m, 20000).text, /PeerKit|relay/i);
+  m.peerkit.enabled = false;
+  m.peerkit.startedAt = 19000;
+  assert.equal(peerkitStatus(m, 20000).tone, "warn");
 });

@@ -145,6 +145,8 @@ export type Model = {
   vent: number | null; // the vent I'm hiding in (impostors)
   airlockLeft: number | null; // ms until the airlock lets me through; null when I'm not in it
   relayAddr: string;
+  menuMode: "join" | "host";
+  showSettings: boolean; // read-only settings drawer for guests and during play
   createOpts: { players: number; impostors: number; tasks: number }; // entry screen, for a lobby I create
   probe: LobbyProbe;
   peerkit: PeerkitView;
@@ -224,22 +226,21 @@ export function lobbyReadiness(m: Model, now: number): Readiness {
   const code = esc(gameName(p.code, p.round));
   const blocked = { canCreate: false, canJoin: false, joinLabel: "Join lobby" };
   if (p.status === "connecting") {
-    return { tone: "off", label: "Connecting…", detail: "Connecting to the game service.", ...blocked };
+    return { tone: "off", label: "Connecting…", detail: "Getting your game ready.", ...blocked };
   }
   if (p.status === "no-conductor") {
-    return { tone: "bad", label: "Connection unavailable", detail: "Can’t connect to the game service. Please try again.", ...blocked };
+    return { tone: "bad", label: "Connection unavailable", detail: "Can’t connect to the game right now. Please try again.", ...blocked };
   }
   if (p.error) {
     const absent = p.error === ROOM_NOT_FOUND;
-    return { tone: absent ? "warn" : "bad", label: absent ? "Room not found yet" : "Unable to join", detail: esc(p.error), canCreate: absent && !p.code.startsWith("LEGACY:"), canJoin: false, joinLabel: "Join lobby" };
+    return { tone: absent ? "warn" : "bad", label: absent ? "Room not found yet" : "Unable to join", detail: esc(errorText(p.error)), canCreate: absent && !p.code.startsWith("LEGACY:"), canJoin: false, joinLabel: "Join lobby" };
   }
   const s = p.state;
   if (!s || s.code == null) {
-    const secs = Math.max(0, Math.floor((now - p.since) / 1000));
     return {
       tone: "warn",
       label: "Searching…",
-      detail: `No lobby “${code}” on the network yet (${secs}s). Host: create it. Everyone else: wait here — a new lobby takes a few seconds to reach you.`,
+      detail: `No room found for “${code}” yet. Check the code or ask the host to create it.`,
       canCreate: true,
       canJoin: false,
       joinLabel: "Join lobby",
@@ -264,83 +265,67 @@ export function lobbyReadiness(m: Model, now: number): Readiness {
 }
 
 function entryScreen(m: Model): string {
-  // Static on purpose: the status and buttons live in their own elements so the
-  // once-a-second refresh never rewrites an input while someone is typing.
+  // Static on purpose: inputs must not be rewritten during background lobby polling.
+  const hosting = m.menuMode === "host";
   return `
-  <h1>IMPOSTER · on Holochain</h1>
-  <div class="card">
-    <div class="row" style="margin-bottom:10px">
-      <label>Name <input id="f-name" value="${esc(m.name)}" placeholder="Alice" /></label>
-      <label>Room code <input id="f-code" value="${esc(m.code)}" placeholder="ROOM-CODE" /></label>
+  <div class="entry-heading">
+    <h1>IMPOSTER</h1>
+    <p>TRUST NO ONE · FIND YOUR CREW</p>
+  </div>
+  <div class="card entry-card">
+    <div class="mode-tabs" role="group" aria-label="Game mode">
+      <button type="button" class="${hosting ? "" : "selected"}" data-act="choose-mode" data-mode="join" aria-pressed="${!hosting}">Join Game</button>
+      <button type="button" class="${hosting ? "selected" : ""}" data-act="choose-mode" data-mode="host" aria-pressed="${hosting}">Host Game</button>
     </div>
-    <div class="row" style="margin-bottom:10px">
-      <label style="flex:1">Relay address (optional — movement and chat)
-        <input id="f-relay" style="width:100%" value="${esc(m.relayAddr)}" placeholder="fills in by itself when npm run relay runs here, or once a player shares one" />
-      </label>
+    <div class="entry-fields">
+      <label>PLAYER NAME <input id="f-name" value="${esc(m.name)}" maxlength="24" placeholder="Enter your name" autocomplete="nickname" /></label>
+      <label>ROOM CODE <input id="f-code" value="${esc(m.code)}" placeholder="Enter room code" autocomplete="off" autocapitalize="characters" /></label>
     </div>
+    ${hosting ? `<div class="entry-host-options">
+      <div class="row" style="justify-content:space-between"><strong>Game Setup</strong><button type="button" data-act="new-code">Generate Room Code</button></div>
+      <div class="row entry-option-row">
+        <label>Players ${selectHtml("f-players", PLAYER_COUNTS, m.createOpts.players)}</label>
+        <label>Impostors ${selectHtml("f-impostors", range(1, maxImpostors(PLAYER_COUNTS[PLAYER_COUNTS.length - 1])), m.createOpts.impostors)}</label>
+        <label>Tasks each ${selectHtml("f-tasks", range(1, TASK_TARGET), m.createOpts.tasks)}</label>
+      </div>
+      <p class="muted">You can adjust the other game settings in your lobby before starting.</p>
+    </div>` : ""}
     <div id="entry-banner"></div>
-    <div class="row" style="margin-bottom:10px">
-      <span class="muted">When you create a lobby:</span>
-      <label>Players ${selectHtml("f-players", PLAYER_COUNTS, m.createOpts.players)}</label>
-      <label>Impostors ${selectHtml("f-impostors", range(1, maxImpostors(PLAYER_COUNTS[PLAYER_COUNTS.length - 1])), m.createOpts.impostors)}</label>
-      <label>Tasks each ${selectHtml("f-tasks", range(1, TASK_TARGET), m.createOpts.tasks)}</label>
-    </div>
     <div id="entry-actions"></div>
-    <p class="muted" style="margin-top:12px">Players, impostors and tasks are fixed once the lobby exists; the host picks the rest in the lobby. Share the room code with your friends. To join an older room, enter LEGACY: followed by its code.</p>
+    <p class="entry-footnote">${hosting ? "Create a private game and share its room code with friends." : "Ask the host for their room code to join."}</p>
   </div>`;
 }
 
 export function entryBannerHtml(m: Model, now: number): string {
   const r = lobbyReadiness(m, now);
   const xp = totalXp();
+  // Show only gameplay-useful information; relay discovery is automatic.
   return `<div class="banner ${r.tone}">${pill(r.tone, r.label)}<span>${r.detail}</span></div>
-    ${xp > 0 ? `<p class="muted" style="margin-top:6px">${xp} XP earned so far, on this device.</p>` : ""}
-    ${
-      m.probe.relayFilledFrom
-        ? `<p class="muted" style="margin-top:6px">${
-            m.probe.relayFilledFrom === "local" ? "Found the relay running on this machine." : "Relay address filled in from the game."
-          }</p>`
-        : ""
-    }
+    ${xp > 0 ? `<p class="muted" style="margin-top:6px">${xp} XP earned so far.</p>` : ""}
     ${m.error ? `<p class="tag impostor" style="margin-top:10px">${esc(m.error)}</p>` : ""}`;
 }
 
 export function entryActionsHtml(m: Model, now: number): string {
   const r = lobbyReadiness(m, now);
   const busy = m.connecting;
-  return `<div class="row">
-      <button ${r.canCreate ? `class="primary"` : ""} data-act="create" ${enabledAttr(r.canCreate && !busy)}>Create Private Game</button>
-      <button ${r.canJoin ? `class="primary"` : ""} data-act="join" ${enabledAttr(r.canJoin && !busy)}>${busy ? "Joining…" : r.joinLabel}</button>
-    </div>`;
+  return m.menuMode === "host"
+    ? `<div class="entry-actions"><button class="primary" data-act="create" ${enabledAttr(r.canCreate && !busy)}>${busy ? "Creating room…" : "Create Game"}</button></div>`
+    : `<div class="entry-actions"><button class="primary" data-act="join" ${enabledAttr(r.canJoin && !busy)}>${busy ? "Joining…" : r.joinLabel === "Rejoin as host" ? "Rejoin Room" : r.joinLabel}</button></div>`;
 }
 
 // --- PeerKit: is movement actually flowing? ----------------------------------
 
 export function peerkitStatus(m: Model, now: number): { tone: Tone; text: string } {
   const pk = m.peerkit;
-  if (!pk.enabled) return { tone: "off", text: "PeerKit off · no relay address" };
-  if (pk.startError) return { tone: "bad", text: `PeerKit failed to start · ${esc(pk.startError)}` };
   const others = (m.state?.players ?? []).filter((p) => p.keyB64 !== m.myKeyB64);
   const live = others.filter((p) => pk.livePlayers.includes(p.keyB64)).length;
-  // Positions flow over direct peer connections, so full coverage is "live"
-  // even if the relay has since gone away.
-  if (others.length > 0 && live === others.length) {
-    return { tone: "ok", text: `PeerKit live · ${live}/${others.length} players` };
+  if (pk.enabled && (others.length > 0 ? live === others.length : pk.relayUp)) {
+    return { tone: "ok", text: "Connected" };
   }
-  if (!pk.relayUp) {
-    if (now - pk.startedAt < 10_000) return { tone: "warn", text: "PeerKit connecting to relay…" };
-    const partial = live > 0 ? ` · live with ${live}/${others.length}` : "";
-    return { tone: "bad", text: `PeerKit can't reach the relay${partial} · is it running, and is the address right?` };
-  }
-  if (others.length === 0) return { tone: "warn", text: "PeerKit relay connected · waiting for other players" };
-  return { tone: "warn", text: `PeerKit relay connected · live with ${live}/${others.length} players` };
-}
-
-function movementCell(m: Model, p: PlayerV): string {
-  if (p.keyB64 === m.myKeyB64) return `<span class="muted">you</span>`;
-  return m.peerkit.livePlayers.includes(p.keyB64)
-    ? `<span class="live on">● live</span>`
-    : `<span class="live">○ no signal</span>`;
+  if (pk.relayUp || live > 0) return { tone: "warn", text: "Connecting to players…" };
+  if (!pk.enabled && now - pk.startedAt < 10_000) return { tone: "warn", text: "Connecting…" };
+  if (pk.enabled && now - pk.startedAt < 10_000 && !pk.startError) return { tone: "warn", text: "Connecting…" };
+  return { tone: "bad", text: "Connection issue · live movement and chat may be unavailable" };
 }
 
 // --- sound & voice ---------------------------------------------------------------
@@ -352,8 +337,8 @@ export function audioBarHtml(m: Model): string {
   const a = m.audio;
   const iAmDead = m.state?.players.find((p) => p.keyB64 === m.myKeyB64)?.dead ?? false;
   let note = "";
-  if (!a.voiceUp) note = "Voice chat needs PeerKit — join with a relay address.";
-  else if (a.micError) note = `Mic unavailable: ${esc(a.micError)}`;
+  if (!a.voiceUp) note = "Voice chat is unavailable until the connection is ready.";
+  else if (a.micError) note = "Microphone unavailable. Check browser permissions.";
   else if (a.micOn && iAmDead) note = "You're a ghost — only other ghosts hear you.";
   return `
     <button data-act="toggle-sound" class="${a.soundMuted ? "" : "on"}">${a.soundMuted ? "Sound off" : "Sound on"}</button>
@@ -374,43 +359,36 @@ function lobbyScreen(m: Model, s: StateV, now: number): string {
   const full = s.players.length >= s.player_count;
   const pk = peerkitStatus(m, now);
   return `
-  <h1>LOBBY · ${esc(gameName(m.code, m.round))}</h1>
-  <div class="card">
-    <p>${s.players.length} / ${s.player_count} players · ${s.impostor_count} impostor(s) · ${Math.ceil(
+  <div class="lobby-heading">
+    <div><h1>GAME LOBBY</h1><p class="muted">Room <strong>${esc(gameName(m.code, m.round))}</strong> <button type="button" class="copy-room" data-act="copy-code">Copy code</button></p></div>
+    <div class="connection-status">${pill(pk.tone, pk.text)}</div>
+  </div>
+  <div class="card lobby-card">
+    <div class="lobby-summary"><strong>${s.players.length} / ${s.player_count} players</strong><span>${s.impostor_count} impostor(s) · ${Math.ceil(
       s.task_target / Math.max(1, s.player_count - s.impostor_count),
-    )} tasks each</p>
-    ${settingsHtml(s)}
-    <p>${pill(pk.tone, pk.text)}</p>
-    <table>
-      <tbody>
-        ${s.players
-          .map(
-            (p) =>
-              `<tr><td>${playerName(p)}</td><td class="muted">${p.is_host ? "host" : ""}${
-                p.keyB64 === m.myKeyB64 ? " (you)" : ""
-              }</td>${m.peerkit.enabled ? `<td>${movementCell(m, p)}</td>` : ""}</tr>`,
-          )
-          .join("")}
-      </tbody>
-    </table>
-    ${
-      s.is_host
-        ? `<div class="row" style="margin-top:12px"><button class="primary" data-act="start" ${
-            full ? "" : "disabled"
-          }>Start game</button>${full ? "" : `<span class="muted">waiting for players…</span>`}</div>`
-        : `<p class="muted" style="margin-top:12px">Waiting for the host to start…</p>`
-    }
+    )} tasks each</span></div>
+    <h2 class="lobby-subheading">Players</h2>
+    <div class="player-grid">${s.players.map(p => `<div class="player-tile">${playerName(p)}${p.is_host ? `<span class="player-tag">HOST</span>` : ""}${p.keyB64 === m.myKeyB64 ? `<span class="player-tag">YOU</span>` : ""}</div>`).join("")}
+      ${Array.from({ length: Math.max(0, s.player_count - s.players.length) }, () => `<div class="player-tile empty">Waiting for player…</div>`).join("")}
+    </div>
+    ${s.is_host
+      ? `<div class="lobby-settings"><h2 class="lobby-subheading">Game Settings</h2>${settingsHtml(s, true)}</div>`
+      : `<div class="lobby-settings"><button type="button" data-act="toggle-settings" class="settings-toggle" aria-expanded="${m.showSettings}">Game Settings <span>${m.showSettings ? "▲" : "▼"}</span></button>
+          ${m.showSettings ? settingsHtml(s, false) : ""}</div>`}
+    ${s.is_host
+      ? `<div class="lobby-footer"><button class="primary" data-act="start" ${full ? "" : "disabled"}>Start Game</button>${full ? "" : `<span class="muted">Waiting for more players…</span>`}</div>`
+      : `<p class="lobby-footer muted">Waiting for the host to start…</p>`}
     ${m.error ? `<p class="tag impostor" style="margin-top:10px">${esc(m.error)}</p>` : ""}
   </div>`;
 }
 
 /** The host's settings: pickers for the host, a readout for everyone else.
  *  main.ts sends a change to `set_settings`. */
-function settingsHtml(s: StateV): string {
+function settingsHtml(s: StateV, editable = false): string {
   const g = s.settings;
   type Option = { value: number; label: string };
   const pick = (id: string, label: string, value: number, options: Option[]) =>
-    s.is_host
+    editable
       ? `<label>${label} <select id="${id}">${options
           .map((o) => `<option value="${o.value}" ${o.value === value ? "selected" : ""}>${o.label}</option>`)
           .join("")}</select></label>`
@@ -423,7 +401,7 @@ function settingsHtml(s: StateV): string {
     { value: 1, label: "On" },
     { value: 0, label: "Off" },
   ];
-  return `<div class="row" style="margin:8px 0 4px">
+  return `<div class="settings-grid">
     ${pick("f-crew-vision", "Crew vision", g.crew_vision, vision)}
     ${pick("f-impostor-vision", "Impostor vision", g.impostor_vision, vision)}
     ${pick("f-kill-cooldown", "Kill cooldown", g.kill_cooldown_s, seconds(KILL_COOLDOWNS, "none"))}
@@ -441,7 +419,7 @@ function settingsHtml(s: StateV): string {
     ${pick("f-confirm-ejects", "Confirm ejects", Number(g.confirm_ejects), onOff)}
     ${pick("f-anonymous-votes", "Anonymous votes", Number(g.anonymous_votes), onOff)}
   </div>
-  <p class="muted" style="margin:0 0 12px">Ghosts see the whole map.</p>`;
+  <p class="muted settings-note">Ghosts see the whole map.${editable ? "" : s.phase === "lobby" ? " Only the host can change these settings." : " Settings are locked for this game."}</p>`;
 }
 
 /** Where a meeting stands on its timers: discussion first (a tie breaker has
@@ -492,7 +470,14 @@ const GAME_FULL = "Game full: every seat was taken just before you joined.";
  *  the one a player can hit in normal play. */
 export function errorText(e: unknown): string {
   const raw = String((e as { message?: unknown })?.message ?? e);
-  return /game full/i.test(raw) ? GAME_FULL : raw;
+  if (/game full/i.test(raw)) return GAME_FULL;
+  if (/already started/i.test(raw)) return "This game has already started. Ask for a new room code.";
+  if (/invalid room code|4.?32 letters/i.test(raw)) return "Room codes must be 4–32 letters, numbers or hyphens.";
+  if (/room not found/i.test(raw)) return "Room not found. Check your code or ask the host to create it.";
+  if (/conflict|conflicting room|already used/i.test(raw)) return "That room code is already in use. Ask the host for a new one.";
+  if (/room temporarily unavailable|room unavailable/i.test(raw)) return "Couldn't reach the room. Please try again.";
+  if (/connection|conductor|websocket|network|timeout|failed to fetch|relay|PeerKit/i.test(raw)) return "Connection problem. Please try again.";
+  return raw.length > 160 ? "Something went wrong. Please try again." : raw;
 }
 
 function meetingScreen(m: Model, s: StateV, now: number): string {
@@ -944,6 +929,7 @@ export function hudHtml(m: Model, now = Date.now()): string {
       <span class="muted">${taskBarText(s)}</span>
       ${myTaskListHtml(m)}
       ${pill(pk.tone, pk.text)}
+      <button type="button" data-act="toggle-settings" class="settings-hud-btn" aria-expanded="${m.showSettings}">Settings</button>
     </div>
     <div class="row">
       <button data-act="use-task" ${enabledAttr(can["use-task"])}>${m.near.taskId !== null ? "Use" : useElsewhereLabel(m)}${keyHint("E")}</button>
@@ -964,14 +950,13 @@ export function hudHtml(m: Model, now = Date.now()): string {
       <button data-act="emergency" ${enabledAttr(can.emergency)}>${emergencyStatus(m, now).label}${keyHint("M")}</button>
     </div>
   </div>
+  ${m.showSettings ? `<div class="card gameplay-settings"><h2 class="lobby-subheading">Game Settings</h2>${settingsHtml(s, false)}</div>` : ""}
   ${amImpostor ? impostorToolsHtml(m, now) : ""}
   ${crisisBannerHtml(m, now)}
   ${s.lights_out ? `<p class="tag impostor" style="margin-top:6px">Lights are out! Fix them at the panel in ${roomOf(LIGHTS_PANEL)}.</p>` : ""}
   ${s.comms_out ? `<p class="tag impostor" style="margin-top:6px">Comms are down! Fix them at the panel in ${roomOf(COMMS_PANEL)}.</p>` : ""}
   ${m.airlockLeft !== null ? `<p class="tag" style="margin-top:6px">${m.airlockLeft > 0 ? `Decontaminating… ${(m.airlockLeft / 1000).toFixed(1)}s` : "Decontamination complete — inner door open."}</p>` : ""}
-  <p class="muted" style="margin-top:6px">Move with arrow keys / WASD.${
-    pk.tone === "ok" ? "" : " Other players only move on your map while PeerKit is live; until then they sit at placeholder spots."
-  }</p>
+  <p class="muted" style="margin-top:6px">Move with arrow keys / WASD.</p>
   ${m.error ? `<p class="tag impostor">${esc(m.error)}</p>` : ""}`;
 }
 
