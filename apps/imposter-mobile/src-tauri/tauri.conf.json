@@ -11,8 +11,13 @@
   },
   "app": {
     "windows": [
-      { "title": "Imposter", "width": 960, "height": 640 }
-    ]
+      {
+        "title": "Imposter",
+        "width": 960,
+        "height": 640
+      }
+    ],
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
