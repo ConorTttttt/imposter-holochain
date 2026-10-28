@@ -97,3 +97,64 @@ impl H2hcStartup {
         Ok(H2hcStarted { conductor, agent: info.agent_pub_key, provisioned_cell: base })
     }
 }
+
+#[derive(Default, Clone)]
+pub(crate) struct BootState(std::sync::Arc<std::sync::Mutex<Option<H2hcStarted>>>);
+
+/// An explicit debug-only integration harness. Production must obtain
+/// per-install key material from Android Keystore rather than a text file.
+#[cfg(debug_assertions)]
+pub(crate) fn start_debug(app: &mut tauri::App) {
+    use tauri::Manager;
+    use std::os::unix::fs::PermissionsExt;
+
+    let read = || -> Result<H2hcStartup, String> {
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let bundle = std::env::var("IMPOSTER_H2HC_HAPP")
+            .map_err(|_| "IMPOSTER_H2HC_HAPP not set")?;
+        let url = std::env::var("IMPOSTER_H2HC_LINKER_URL")
+            .map_err(|_| "IMPOSTER_H2HC_LINKER_URL not set")?;
+        let key = std::env::var("IMPOSTER_H2HC_LINKER_KEY_B64")
+            .map_err(|_| "IMPOSTER_H2HC_LINKER_KEY_B64 not set")?;
+        let secret = std::env::var("IMPOSTER_H2HC_PASSPHRASE_FILE")
+            .map_err(|_| "IMPOSTER_H2HC_PASSPHRASE_FILE not set")?;
+        let meta = std::fs::metadata(&secret).map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+            return Err("debug passphrase must be a mode-0600 private file".into());
+        }
+        let password = std::fs::read(secret).map_err(|e| e.to_string())?;
+        Ok(H2hcStartup {
+            data_root: root.join("holochain-h2hc"),
+            app_bundle: PathBuf::from(bundle),
+            linker_url: url,
+            linker_public_key_b64: key,
+            keystore_passphrase: password,
+        })
+    };
+
+    let config = match read() {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("H2HC debug startup not configured: {message}");
+            return;
+        }
+    };
+    let state = app.state::<BootState>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        match config.open().await {
+            Ok(started) => {
+                eprintln!("H2HC conductor started with Imposter installed (IPC not attached yet)");
+                if let Ok(mut guard) = state.0.lock() {
+                    *guard = Some(started);
+                }
+            }
+            Err(error) => eprintln!("H2HC conductor startup refused: {error}"),
+        }
+    });
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn start_debug(_app: &mut tauri::App) {
+    // Encrypted, AndroidKeyStore-backed key retrieval must be implemented
+    // before enabling H2HC startup in release builds.
+}
