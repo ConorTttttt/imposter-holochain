@@ -54,16 +54,44 @@ serialization and fail-closed behavior without exposing a fake identity or
 making insecure localhost connections. JS contract tests run in `npm test`,
 and the Rust bridge includes validation unit tests.
 
-## H2HC conductor integration — next milestone
+## Pinned H2HC conductor integration (experimental)
 
-- [ ] Adapt the H2HC phone conductor from
-      ConorTttttt/Holochain-mobile (branch h2hc-prototype).
+The next native layer is now in `src-tauri/src/h2hc.rs`, behind the
+`h2hc-runtime` feature. It is based on the exact tested Holochain-mobile
+revision `1d77076`, rather than a drifting branch or a copy of Turbo Kart.
+See [the H2HC integration notes](docs/h2hc-integration.md).
+
+From `apps/imposter-mobile`:
+
+```sh
+bash scripts/prepare-h2hc.sh
+bash scripts/build-h2hc-overlay.sh
+cargo check --manifest-path .h2hc-build/src-tauri/Cargo.toml --features h2hc-runtime
+```
+
+The source script verifies the Git commit and its SHA256-pinned patched
+Holochain 0.7.1 / Wasmer 7.1.0 crates. The overlay is generated separately
+so the existing Holochain 0.7.0 game lockfile is not changed.
+
+The feature-gated Tauri startup can instantiate the zero-arc H2HC conductor
+and install or resume Imposter in **debug integration mode**, provided
+native-only environment variables supply the .happ, pinned linker key,
+authenticated linker URL and a mode-0600 passphrase file. It is intentionally
+not enabled in releases. Android Keystore integration is still required.
+
+**The native game bridge is not attached to this conductor yet.** It remains
+fail-closed and does not report a playable multiplayer connection.
+
+## Remaining mobile multiplayer milestones
+
+- [x] Pin the H2HC source and add a feature-gated in-process boot and
+      install/resume path (compilation and real network still unverified).
 - [ ] Package Imposter's Holochain 0.7.0 DNA and test with the 0.7.1
       H2HC conductor before changing lockfiles or DNA hashes.
 - [x] Define the native-only IPC contract with bounded, allowlisted requests,
       no WebView credentials and no silent desktop fallback.
-- [ ] Replace the fail-closed Rust commands with an embedded H2HC conductor,
-      secure persistent keystore and verified linker identity.
+- [ ] Attach a fully implemented H2HC backend (clone, zome calls, signals)
+      after the debug bootstrap, and provide Android Keystore unlocking.
 - [ ] Bridge app signals and clone-cell lifecycle (createCloneCell,
       disableCloneCell); preserve the lobby network-seed scheme.
 - [ ] Verify PeerKit relay/WebRTC and microphone permissions on Android WebView.
