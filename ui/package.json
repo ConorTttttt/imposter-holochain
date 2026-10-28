@@ -10,7 +10,7 @@
     "package": "vite build && cd dist && bestzip ../dist.zip * && cd ..",
     "relay": "tsx src/relay.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/game/*.test.ts"
+    "test": "node --import tsx --test src/game/*.test.ts src/mobile/*.test.ts"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
