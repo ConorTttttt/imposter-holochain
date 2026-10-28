@@ -1,0 +1,43 @@
+name: Experimental H2HC Android runtime compile
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/android-mobile-foundation]
+    paths:
+      - 'apps/imposter-mobile/src-tauri/src/h2hc.rs'
+      - 'apps/imposter-mobile/scripts/prepare-h2hc.sh'
+      - 'apps/imposter-mobile/scripts/build-h2hc-overlay.sh'
+      - '.github/workflows/h2hc-smoke.yml'
+jobs:
+  h2hc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Native Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Build frontend and generate icons
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          cd apps/imposter-mobile
+          npm install
+          npx tauri icon branding/icon.svg
+      - name: Recreate verified patched H2HC source
+        run: |
+          cd apps/imposter-mobile
+          bash scripts/prepare-h2hc.sh
+          bash scripts/build-h2hc-overlay.sh
+      - name: Compile in-process H2HC bootstrap
+        run: |
+          cargo check --manifest-path apps/imposter-mobile/.h2hc-build/src-tauri/Cargo.toml --features h2hc-runtime
