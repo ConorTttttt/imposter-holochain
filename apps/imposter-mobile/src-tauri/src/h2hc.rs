@@ -13,7 +13,7 @@ use holochain::conductor::config::{ConductorConfig, KeystoreConfig, WasmBackend}
 use holochain::conductor::ConductorHandle;
 use holochain::prelude::*;
 use holochain_conductor_api::CellInfo;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const APP_ID: &str = "imposter";
@@ -103,7 +103,7 @@ pub(crate) struct BootState(std::sync::Arc<std::sync::Mutex<Option<H2hcStarted>>
 
 /// An explicit debug-only integration harness. Production must obtain
 /// per-install key material from Android Keystore rather than a text file.
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, unix))]
 pub(crate) fn start_debug(app: &mut tauri::App) {
     use tauri::Manager;
     use std::os::unix::fs::PermissionsExt;
@@ -153,7 +153,7 @@ pub(crate) fn start_debug(app: &mut tauri::App) {
     });
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(debug_assertions, unix)))]
 pub(crate) fn start_debug(_app: &mut tauri::App) {
     // Encrypted, AndroidKeyStore-backed key retrieval must be implemented
     // before enabling H2HC startup in release builds.
