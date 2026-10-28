@@ -3,6 +3,7 @@ mod native;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(native::NativeConductorState::default())
         .invoke_handler(tauri::generate_handler![
             native::mobile_status,
             native::mobile_app_info,
