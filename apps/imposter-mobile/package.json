@@ -1,0 +1,15 @@
+{
+  "name": "imposter-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Android Tauri shell for the existing Imposter Vite game",
+  "scripts": {
+    "dev": "tauri dev",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build --apk"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
