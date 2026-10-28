@@ -1,4 +1,6 @@
 mod native;
+#[cfg(feature = "h2hc-runtime")]
+mod h2hc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
