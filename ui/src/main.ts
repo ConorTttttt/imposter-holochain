@@ -1,5 +1,6 @@
 import { encodeHashToBase64, decodeHashFromBase64 } from "@holochain/client";
 import { Hc, type Signal } from "./holochain.js";
+import { TouchJoystick } from "./mobile/joystick.js";
 import { currentGame as findCurrentGame, lobbySeed } from "./game/rooms.js";
 import { RoomRegistry, normalizeRoomCode, ROOM_UNAVAILABLE } from "./game/registry.js";
 import { Movement } from "./peerkit/movement.js";
@@ -79,7 +80,14 @@ app.innerHTML = `
   </div>
   <div id="play" hidden>
     <div id="minigame" class="card" hidden></div>
-    <canvas id="map" width="${VIEW_W}" height="${VIEW_H}"></canvas>
+    <div id="stage">
+      <canvas id="map" width="${VIEW_W}" height="${VIEW_H}"></canvas>
+      <div id="mobile-controls">
+        <div id="mobile-joystick" class="mobile-pad" aria-label="Move character with touch joystick">
+          <div class="mobile-stick"></div>
+        </div>
+      </div>
+    </div>
     <div id="hud"></div>
   </div>`;
 const screenEl = document.getElementById("screen")!;
@@ -88,6 +96,7 @@ const hudEl = document.getElementById("hud")!;
 const miniEl = document.getElementById("minigame")! as HTMLDivElement;
 const canvas = document.getElementById("map") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
+const joystick = new TouchJoystick(document.getElementById("mobile-joystick")!);
 // The chat card lives outside #screen so re-renders never wipe a half-typed line.
 const chatEl = document.getElementById("chat")! as HTMLDivElement;
 const chatLogEl = document.getElementById("chat-log")!;
@@ -865,6 +874,7 @@ function tick() {
   requestAnimationFrame(tick);
   const s = model.state;
   if (!s || !inPlay(model)) {
+    joystick.reset();
     if (miniGame || vitalsOpen || camsOpen) closeMiniGame(); // a meeting, the end, a new game: the task card or vitals go
     if (model.vent !== null) leaveVent(false); // …and impostors come out of vents
     return;
@@ -885,6 +895,9 @@ function tick() {
   if (keys.has("arrowright") || keys.has("d")) dx += 1;
   if (keys.has("arrowup") || keys.has("w")) dy -= 1;
   if (keys.has("arrowdown") || keys.has("s")) dy += 1;
+  // Desktop keyboard and mobile touch share collision/vision/gameplay rules.
+  dx += joystick.direction.x;
+  dy += joystick.direction.y;
   if (miniGame || vitalsOpen || camsOpen) dx = dy = 0; // at a console, vitals or security: no walking off mid-task
   // killed mid-task: a crewmate's ghost carries on (the task still counts)
   if (miniGame && iAmDead && myRole(model) === 1) closeMiniGame();
@@ -894,11 +907,12 @@ function tick() {
   }
   if (dx || dy) {
     const n = Math.hypot(dx, dy) || 1;
+    const moveSpeed = speed * Math.min(1, n); // preserve analog travel speed
     // walls stop the living; ghosts drift through
     // in steps no longer than normal speed, so a fast walker can't skip through a wall
-    const steps = Math.ceil(speed / WALK_SPEED);
+    const steps = Math.max(1, Math.ceil(moveSpeed / WALK_SPEED));
     for (let i = 0; i < steps; i++) {
-      const c = moveWithin(self.x, self.y, ((dx / n) * speed) / steps, ((dy / n) * speed) / steps, iAmDead, walls);
+      const c = moveWithin(self.x, self.y, ((dx / n) * moveSpeed) / steps, ((dy / n) * moveSpeed) / steps, iAmDead, walls);
       self.x = c.x;
       self.y = c.y;
     }
