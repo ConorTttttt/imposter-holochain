@@ -187,6 +187,22 @@ jobs:
           echo 'PASS: pinned authenticated H2HC binary online, local authority fallback disabled'
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-native-authority-browser-bridge.mjs 2>&1 | tee runtime-evidence/real-hwc-h2hc-bridge.log
 
+      - name: Redact ephemeral Lair socket access tokens before artifact upload
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for path in Path('runtime-evidence').glob('*'):
+              if not path.is_file() or path.suffix not in {'.log', '.txt', '.json'}:
+                  continue
+              original = path.read_text(encoding='utf-8', errors='replace')
+              redacted = re.sub(r'(\\?k=)[^\\s#]+', r'\\1[REDACTED_EPHEMERAL_LAIR_TOKEN]', original)
+              if redacted != original:
+                  path.write_text(redacted, encoding='utf-8')
+          PY
+
       - name: Preserve first real HWC→H2HC wire evidence, no keys
         if: always()
         uses: actions/upload-artifact@v4
