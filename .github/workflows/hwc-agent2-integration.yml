@@ -106,6 +106,8 @@ jobs:
           git -C hwc diff --check
           cp compatibility/hwc-imposter-compatibility/tests/imposter-real-wasm.integration.test.ts \
             hwc/packages/core/src/ribosome/imposter-real-wasm.integration.test.ts
+          cp compatibility/hwc-imposter-compatibility/tests/cell-isolation.imposter.test.ts \
+            hwc/packages/core/src/storage/cell-isolation.imposter.test.ts
 
       - name: Download Agent 4's immutable, genuine WASM artifact from run 44157187629
         uses: actions/download-artifact@v4
@@ -173,7 +175,8 @@ jobs:
           npm ci 2>&1 | tee ../real-wasm-evidence/npm-ci.log
           npm run build --workspace=@hwc/shared 2>&1 | tee ../real-wasm-evidence/shared-build.log
           npm run build --workspace=@holo-host/lair 2>&1 | tee ../real-wasm-evidence/lair-build.log
-          npx vitest run packages/core/src/ribosome/imposter-real-wasm.integration.test.ts --reporter=verbose \
+          npx vitest run packages/core/src/ribosome/imposter-real-wasm.integration.test.ts \
+            packages/core/src/storage/cell-isolation.imposter.test.ts --reporter=verbose \
             2>&1 | tee ../real-wasm-evidence/real-imposter-wasm.log
 
       - name: Upload exact first WASM failure, logs and branch source diff
