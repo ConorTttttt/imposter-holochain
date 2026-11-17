@@ -274,8 +274,9 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
         identity: 'DIAGNOSTIC ONLY: NOT packaged DNA hash',
       }));
       const authored = storage.queryActions(testDna, host);
+      expect(authored.every(a => Buffer.from(a.author).equals(Buffer.from(host)))).toBe(true);
       expect(authored.some(a => a.actionType === 'Create' &&
-        'entryType' in a && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
+        'entryType' in a && (a as any).entryType !== null && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
         (a as any).entryType.entry_index === 0)).toBe(true);
     } catch (error) {
       console.error('REAL_WASM_CANONICAL_SYNTHETIC_HOST_FAILURE',
@@ -287,8 +288,9 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
       ...hostLobby, code: 'UNAUTH-CANONICAL', display_name: 'NonHost',
     })).rejects.toThrow(/game seed host does not match lobby author/);
     const nonhostActions = storage.queryActions(testDna, nonhost);
+    expect(nonhostActions.every(a => Buffer.from(a.author).equals(Buffer.from(nonhost)))).toBe(true);
     expect(nonhostActions.some(a => a.actionType === 'Create' &&
-      'entryType' in a && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
+      'entryType' in a && (a as any).entryType !== null && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
       (a as any).entryType.entry_index === 0)).toBe(false);
     console.log('REAL_WASM_CANONICAL_SYNTHETIC_NONHOST_DENIED', JSON.stringify({
       authored: nonhostActions.length, validSeed: seed,
