@@ -2,7 +2,7 @@
 
 **Purpose:** Reproducible, single-DNA HWC/H2HC **P0 lobby experiment** using Imposter's real `game` and `game_integrity` WASMs. **Not** a playable hidden-role browser game. Last updated: 17 November 2026.
 
-Read the architect-supplied `docs/h2hc-browser-architecture.md` before any implementation. The architecture file may not yet be committed; use the supplied 17 November 2026 document. Agent 4 owns only `workdir/browser-poc.happ.yaml`, `scripts/browser-poc-*.sh`, this runbook and isolated fixtures. Do not touch the native `workdir/happ.yaml`, Rust validation, room registry, main UI, or Agent 6's test directories.
+Read the architect-supplied `docs/h2hc-browser-architecture.md` before any implementation. The architecture file may not yet be committed; use the supplied 17 November 2026 document. Agent 4 owns only `workdir/browser-poc.happ.yaml`, `scripts/browser-poc-*` (including the Node packaging helper and its tests), this runbook and isolated fixtures. Do not touch the native `workdir/happ.yaml`, Rust validation, room registry, main UI, or Agent 6's test directories.
 
 ## Source pins and limitations
 
@@ -30,7 +30,7 @@ npm run test:ui
 (cd ui && npm run build)
 ```
 
-For the native end-to-end tests, run `npm run build:happ` as their documented prerequisite; it compiles the original WASMs and packs only the native hApp. The round runner isolates each sweettest in its own process. Never change tests or ignore an exit code just to obtain green results. Missing tools/checkout mean **NOT RUN**, never PASS. Note: the pinned `ui/package.json` has no `typecheck` script; record the actual missing-script error if reproduced, and ask the UI owner to coordinate any change.
+For the native end-to-end tests, run `npm run build:happ` as their documented prerequisite; it compiles the original WASMs and packs only the native hApp. The round runner isolates each sweettest in its own process. Never change tests or ignore an exit code just to obtain green results. Missing tools/checkout mean **NOT RUN**, never PASS. Note: the pinned `ui/package.json` DOES define `typecheck` as `tsc --noEmit`; execute it after installing its pinned dependencies. Do not edit the UI package manifest.
 
 ## B. Establish actual host HWC identity first
 
@@ -219,6 +219,10 @@ await hc.installApp({ bundle, installedAppId: 'imposter-browser-poc' });
 const info = await hc.appInfo('imposter-browser-poc');
 if (!info || info.cells.length !== 1) throw Error('expected exactly one provisioned cell');
 const cellId = info.cells[0].map(v => new Uint8Array(v));
+const toHoloHash = bytes => 'u' + btoa(String.fromCharCode(...bytes))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const actualDnaHash = toHoloHash(cellId[0]);
+if (actualDnaHash !== deployment.dna_hash) throw Error('installed DNA hash mismatch');
 const myKey = 'u' + btoa(String.fromCharCode(...new Uint8Array(info.agentPubKey)))
   .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const call = (fn_name, payload = null) =>
