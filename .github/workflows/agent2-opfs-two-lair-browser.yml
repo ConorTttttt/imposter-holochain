@@ -1,0 +1,169 @@
+name: "Agent 2 — issue #7 TWO REAL LAIR CELLS in ONE OPFS acceptance"
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - ".github/workflows/agent2-opfs-two-lair-browser.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent2-two-real-lair-opfs-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  real-hwc-first-cell:
+    name: "Two genuine Lair-backed browser origins, one OPFS, identical CapGrants, restart"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BROWSER_POC_IDENTITY_SOURCE: EPHEMERAL_HWC_BROWSER_PROFILE
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout Agent 4 harness and pinned source history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Checkout immutable Agent 4 headed-Chromium-tested harness
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 91c4d306e18d27a6d8936063b5505e0f53d5d61c
+          path: agent4-harness
+          persist-credentials: false
+
+      - name: Stage the pinned genuine Lair browser smoke scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p scripts
+          cp agent4-harness/scripts/browser-poc* scripts/
+          test -s scripts/browser-poc-hwc-smoke.mjs
+          test -s scripts/browser-poc-build.sh
+          test -s scripts/browser-poc-verify.sh
+
+
+      - name: Checkout Agent 2 ExternIO-corrected, real-WASM CI-green HWC patch kit
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: e72340c018b1353c6d403de83f1f89e9ca8829f6
+          path: agent2-kit
+          persist-credentials: false
+
+      - name: Checkout EXACT pinned HWC source
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source pins and prepare clean local patch branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "e72340c018b1353c6d403de83f1f89e9ca8829f6"
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          git -C hwc diff --check
+          mkdir -p runtime-evidence
+          git -C hwc diff --stat > runtime-evidence/patched-hwc-diff-stat.txt
+          git -C hwc status --short >> runtime-evidence/patched-hwc-diff-stat.txt
+
+      - name: Set up Node 22 for patched HWC
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+
+      - name: Instrument ephemeral CI HWC worker for read-only source-chain metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node compatibility/hwc-imposter-compatibility/browser/genuine-two-cell-probe.mjs hwc
+          git -C hwc diff --check
+
+      - name: Build patched Chrome extension and verify bundle layout
+        shell: bash
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc 2>&1 | tee runtime-evidence/hwc-npm-install.log
+          # Agent 2 CI-green integration builds shared + Lair declarations first.
+          # The root build:extension script's order is not valid from a clean checkout.
+          (
+            cd hwc
+            npx tsc -p packages/shared/tsconfig.json
+            npx tsc -p packages/lair/tsconfig.json
+            npx tsc -p packages/core/tsconfig.json
+            npx tsc --noEmit -p packages/extension/tsconfig.json
+            npm run build:chrome --workspace @hwc/extension
+          ) 2>&1 | tee runtime-evidence/hwc-extension-build.log
+          test -s hwc/packages/extension/dist-chrome/manifest.json
+          test -s hwc/packages/extension/dist-chrome/inject/index.js
+          test -s hwc/packages/extension/dist-chrome/background/index.js
+          test -s hwc/packages/extension/dist-chrome/offscreen/ribosome-worker.js
+          (cd hwc/packages/extension/dist-chrome && find . -type f -print0 | sort -z | xargs -0 sha256sum) > runtime-evidence/patched-chrome-sha256.txt
+
+      - name: Install Playwright Chromium plus headed test prerequisites
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          (cd hwc && npx playwright install --with-deps chromium) 2>&1 | tee runtime-evidence/playwright-install.log
+          command -v xvfb-run
+
+      - name: Install pinned Nix with Holochain 0.7.0 binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+
+      - name: Resolve exact pinned Holochain build toolchain
+        shell: bash
+        timeout-minutes: 28
+        run: |
+          set -euo pipefail
+          git diff --exit-code 111e6a44795e6572ed01191a98245ed723788c12 HEAD -- Cargo.toml Cargo.lock flake.nix flake.lock dnas/game
+          timeout --signal=TERM --kill-after=60s 1550s nix -L develop --no-write-lock-file --command bash -c 'hc --version; cargo --version; node --version' 2>&1 | tee runtime-evidence/pinned-toolchain.log
+
+      - name: Real HWC Lair key, host-bound rebuild, install and game zome calls
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          echo "Real Chromium/HWC smoke and SAME OPFS synthetic second-cell entry, no key export."
+          node compatibility/hwc-imposter-compatibility/browser/genuine-two-cell-smoke-patch.mjs scripts/browser-poc-hwc-smoke.mjs
+          timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/browser-poc-hwc-smoke.mjs 2>&1 | tee runtime-evidence/hwc-runtime-smoke.log
+
+      - name: Upload patched Chrome and Firefox build for operator inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-TWO-REAL-LAIR-CI-ONLY-Chromium-extension-NOT-DEPLOYABLE
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            hwc/packages/extension/dist-chrome/
+            runtime-evidence/patched-chrome-sha256.txt
+
+      - name: Upload first real browser failure or success evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-two-REAL-LAIR-identical-grants-OPFS-restart
+          retention-days: 14
+          if-no-files-found: warn
+          path: runtime-evidence/
