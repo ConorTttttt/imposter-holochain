@@ -240,6 +240,62 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
       JSON.stringify({ reason: 'Invalid fixture host key, NOT an author-mismatch verdict' }));
   }, 90000);
 
+  it('independently probes host-versus-nonhost validator with canonical synthetic seed (NOT packaged DNA)', async () => {
+    // This is a separate diagnostic DNA identity, deliberately NOT the
+    // packaged game.dna. The real WASMs and native Rust validator are unchanged.
+    // It cannot certify Agent 4's original synthetic package/deployment.
+    const host = hashFrom32AndType(fixture.agent.subarray(3, 35), HoloHashType.Agent);
+    const hostB64 = 'u' + Buffer.from(host).toString('base64url');
+    const randomId = fixture.metadata.network_seed.split('.')[2];
+    const seed = 'g1.' + hostB64 + '.' + randomId;
+    const testDna = hashFrom32AndType(new Uint8Array(32).fill(0x73), HoloHashType.Dna);
+    const testManifest: DnaManifestRuntime = { ...fixture.manifest, network_seed: seed };
+    const invoke = (who: Uint8Array, fn: string, payload: unknown) => callZomeAsExtension({
+      dnaWasm: fixture.coordinator,
+      cellId: [testDna, who],
+      zome: 'game',
+      fn,
+      payload,
+      provenance: who,
+      dnaManifest: testManifest,
+    });
+    const hostLobby = {
+      code: 'CANONICAL-HOST', player_count: 3,
+      impostor_count: 1, task_target: 5, display_name: 'ValidSyntheticHost',
+    };
+    try {
+      const result = await invoke(host, 'create_lobby', hostLobby);
+      console.log('REAL_WASM_CANONICAL_SYNTHETIC_HOST_SUCCESS', JSON.stringify({
+        result: result.result,
+        authored: storage.queryActions(testDna, host).map(a => ({
+          seq: a.actionSeq, type: a.actionType,
+          entryType: 'entryType' in a ? (a as any).entryType : undefined,
+        })),
+        identity: 'DIAGNOSTIC ONLY: NOT packaged DNA hash',
+      }));
+      const authored = storage.queryActions(testDna, host);
+      expect(authored.some(a => a.actionType === 'Create' &&
+        'entryType' in a && typeof (a as any).entryType === 'object' &&
+        (a as any).entryType.entry_index === 0)).toBe(true);
+    } catch (error) {
+      console.error('REAL_WASM_CANONICAL_SYNTHETIC_HOST_FAILURE',
+        error instanceof Error ? error.stack : String(error));
+      throw error;
+    }
+    const nonhost = hashFrom32AndType(new Uint8Array(32).fill(0x59), HoloHashType.Agent);
+    await expect(invoke(nonhost, 'create_lobby', {
+      ...hostLobby, code: 'UNAUTH-CANONICAL', display_name: 'NonHost',
+    })).rejects.toThrow(/game seed host does not match lobby author/);
+    const nonhostActions = storage.queryActions(testDna, nonhost);
+    expect(nonhostActions.some(a => a.actionType === 'Create' &&
+      'entryType' in a && typeof (a as any).entryType === 'object' &&
+      (a as any).entryType.entry_index === 0)).toBe(false);
+    console.log('REAL_WASM_CANONICAL_SYNTHETIC_NONHOST_DENIED', JSON.stringify({
+      authored: nonhostActions.length, validSeed: seed,
+      identity: 'DIAGNOSTIC ONLY: NOT packaged DNA hash',
+    }));
+  }, 90000);
+
   it('rejects an interrupted genesis missing InitZomesComplete', async () => {
     const interrupted = hashFrom32AndType(new Uint8Array(32).fill(0x61), HoloHashType.Agent);
     const g = await initializeGenesis(storage as any, fixture.dna, interrupted, undefined, true);
