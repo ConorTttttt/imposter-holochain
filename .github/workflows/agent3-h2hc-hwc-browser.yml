@@ -1,0 +1,187 @@
+name: Agent 3 — REAL HWC browser to authenticated H2HC wire integration
+on:
+  push:
+    branches: [ci/agent3-h2hc-security-validation]
+    paths:
+      - '.github/workflows/agent3-h2hc-hwc-browser.yml'
+      - 'ci/agent3-h2hc-kit/instrument_agent4_browser.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent3-real-hwc-h2hc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-ephemeral-hwc-to-h2hc:
+    name: Actual HWC Lair challenge signing and DHT POST into secure H2HC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BROWSER_POC_IDENTITY_SOURCE: EPHEMERAL_HWC_BROWSER_PROFILE
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout EXACT verified Agent4 genuine-HWC first-cell harness
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 8b167bf7f5bda0b213cd0a1679b35e9d252a4a36
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout EXACT corrected Agent 2 HWC implementation
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: f888dc21110acff3e093ebe20b8ca16f60f1877d
+          path: agent2-kit
+          persist-credentials: false
+
+      - name: Checkout Agent 3 test-only browser instrumentation (not an HWC source change)
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: ${{ github.sha }}
+          path: agent3-kit
+          persist-credentials: false
+
+      - name: Checkout pinned upstream HWC
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Agent4/Agent2/HWC pins and apply HWC patch only in runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 8b167bf7f5bda0b213cd0a1679b35e9d252a4a36
+          test "$(git -C agent2-kit rev-parse HEAD)" = f888dc21110acff3e093ebe20b8ca16f60f1877d
+          test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          git -C hwc diff --check
+          python3 agent3-kit/ci/agent3-h2hc-kit/instrument_agent4_browser.py scripts/browser-poc-hwc-smoke.mjs
+          mkdir -p runtime-evidence
+          git -C hwc diff --stat > runtime-evidence/hwc-temporary-diff-stat.txt
+          printf '%s\n' "Agent4=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent2=f888dc21110acff3e093ebe20b8ca16f60f1877d" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
+          echo "Original Agent4 and HWC source remain untouched in repositories"
+
+      - name: Reuse exact successful H2HC executable from prior CI (no rebuild)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 44165793922
+          repository: ConorTttttt/imposter-holochain
+          name: agent3-h2hc-authenticated-runtime-44165793922
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: h2hc-binary
+
+      - name: Validate H2HC artifact checksum and pinned source record
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(head -1 h2hc-binary/SHA256SUMS | cut -d' ' -f1)"
+          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | cut -d' ' -f1)"
+          test "$expected" = "$actual"
+          applied="$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)"
+          test "$applied" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
+          grep -q cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
+          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_RUN=44165793922\n' "$applied" "$actual" > runtime-evidence/h2hc-provenance.txt
+
+      - name: Set up Node 22 for actual patched HWC
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+
+      - name: Build corrected HWC Chrome extension and typecheck runtime workspaces
+        shell: bash
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc 2>&1 | tee runtime-evidence/hwc-npm-install.log
+          (
+            cd hwc
+            npx tsc -p packages/shared/tsconfig.json
+            npx tsc -p packages/lair/tsconfig.json
+            npx tsc -p packages/core/tsconfig.json
+            npx tsc --noEmit -p packages/extension/tsconfig.json
+            npm run build:chrome --workspace @hwc/extension
+          ) 2>&1 | tee runtime-evidence/hwc-build.log
+          test -s hwc/packages/extension/dist-chrome/manifest.json
+          test -s hwc/packages/extension/dist-chrome/background/index.js
+
+      - name: Install Playwright Chromium and Xvfb prerequisites
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          (cd hwc && npx playwright install --with-deps chromium) 2>&1 | tee runtime-evidence/playwright-install.log
+          command -v xvfb-run
+
+      - name: Install Nix with exact Agent4 Holochain 0.7 binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+
+      - name: Resolve exactly pinned Imposter native Holochain build tooling
+        shell: bash
+        timeout-minutes: 28
+        run: |
+          set -euo pipefail
+          git diff --exit-code 111e6a44795e6572ed01191a98245ed723788c12 HEAD -- Cargo.toml Cargo.lock flake.nix flake.lock dnas/game
+          timeout --signal=TERM --kill-after=60s 1550s nix -L develop --no-write-lock-file --command bash -c 'hc --version; cargo --version' 2>&1 | tee runtime-evidence/pinned-toolchain.log
+
+      - name: Run real HWC ephemeral browser against secure H2HC server
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-evidence
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$H2HC_LINKER_ADMIN_SECRET"
+          export H2HC_LINKER_ADDRESS=127.0.0.1
+          export H2HC_LINKER_PORT=8090
+          export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/ephemeral-H2HC-identity.key"
+          export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_RELAY_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_ALLOW_INSECURE_DEV=false
+          export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false
+          export H2HC_BASE_URL="http://127.0.0.1:8090"
+          export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
+          RUST_LOG="h2hc_linker=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
+          H2HC_PID=$!
+          trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8090/health >/dev/null; then ok=1;break;fi
+            if ! kill -0 "$H2HC_PID" 2>/dev/null; then break;fi
+            sleep 1
+          done
+          if test "$ok" != 1; then tail -80 "$H2HC_SERVER_LOG"; exit 1; fi
+          echo 'PASS: pinned authenticated H2HC binary online, local authority fallback disabled'
+          timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-h2hc-real-browser-bridge.mjs 2>&1 | tee runtime-evidence/real-hwc-h2hc-bridge.log
+
+      - name: Preserve first real HWC→H2HC wire evidence, no keys
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent3-real-HWC-Lair-to-authenticated-H2HC-wire-evidence-${{ github.run_id }}
+          path: runtime-evidence/
+          retention-days: 14
+          if-no-files-found: warn
