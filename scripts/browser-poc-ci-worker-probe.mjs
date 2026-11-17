@@ -17,8 +17,8 @@ const edits=[
     "after": "let sqlite3: any = null;\nlet ciStorageBackend='UNKNOWN';\nlet ciLairSignCount=0;"
   },
   {
-    "anchor": "  // Create schema\n  db.exec(SCHEMA_SQL);",
-    "after": "  // Create schema\n  db.exec(SCHEMA_SQL);\n  ciStorageBackend=usingOpfs?'OPFS_SAHPOOL':'MEMORY_FALLBACK';"
+    "anchor": "  const migration = migrateEntrySchema(db);\n  log.info('Entry schema ready', migration.status, migration.entries);",
+    "after": "  const migration = migrateEntrySchema(db);\n  log.info('Entry schema ready', migration.status, migration.entries);\n  ciStorageBackend=usingOpfs?'OPFS_SAHPOOL':'MEMORY_FALLBACK';"
   },
   {
     "anchor": "const storage = new DirectSQLiteStorage();",
