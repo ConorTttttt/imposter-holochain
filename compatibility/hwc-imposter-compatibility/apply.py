@@ -875,8 +875,8 @@ change(P,'''CREATE TABLE IF NOT EXISTS entries (
   entry_content BLOB NOT NULL,
   entry_type TEXT NOT NULL
 );''','''CREATE TABLE IF NOT EXISTS entries (
-  cell_id TEXT NOT NULL,
   entry_hash BLOB NOT NULL,
+  cell_id TEXT NOT NULL,
   entry_content BLOB NOT NULL,
   entry_type TEXT NOT NULL,
   PRIMARY KEY (cell_id, entry_hash)
