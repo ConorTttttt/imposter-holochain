@@ -22,6 +22,7 @@ git add -N \
   packages/core/src/ribosome/host-fn/dna-info-imposter.test.ts \
   packages/core/src/dht/private-entry.imposter.test.ts \
   packages/core/src/storage/private-entry-persistence.imposter.test.ts \
+  packages/core/src/storage/cell-isolation.imposter.test.ts \
   packages/core/src/dht/publish-upgrade.imposter.test.ts
 git diff --check
 # Record all stages; a failure never becomes a misleading PASS.
@@ -56,7 +57,7 @@ run npm run build:firefox --workspace @hwc/extension
 run npm run test --workspace @hwc/core
 run npm run test --workspace @hwc/extension
 run npm run test:integration
-run npm run test --workspace @hwc/core -- src/ribosome/wasm-io-types.imposter.test.ts src/hash/system-entry.imposter.test.ts src/storage/private-entry-persistence.imposter.test.ts src/dht/private-entry.imposter.test.ts src/dht/publish-upgrade.imposter.test.ts src/ribosome/host-fn/dna-info-imposter.test.ts
+run npm run test --workspace @hwc/core -- src/ribosome/wasm-io-types.imposter.test.ts src/hash/system-entry.imposter.test.ts src/storage/private-entry-persistence.imposter.test.ts src/storage/cell-isolation.imposter.test.ts src/dht/private-entry.imposter.test.ts src/dht/publish-upgrade.imposter.test.ts src/ribosome/host-fn/dna-info-imposter.test.ts
 run npm run test --workspace @holo-host/lair
 run npm run test --workspace @hwc/shared
 if [[ $FAILED -ne 0 ]]; then echo 'FAIL: one or more integration steps failed' | tee -a "$LOG"; exit 1; fi
