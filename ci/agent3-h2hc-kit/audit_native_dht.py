@@ -28,7 +28,7 @@ def field_names(cnx, table):
     return {row[1] for row in cnx.execute(f"PRAGMA table_info({table})")}
 
 
-def one_table(cnx, table, expected_host, target_ops, lobby_action):
+def one_table(cnx, table, expected_host, target_ops, lobby_action, negative_agent):
     fields = field_names(cnx, table)
     if not {"hash", "action_hash", "op_type"}.issubset(fields):
         return []
@@ -47,16 +47,14 @@ def one_table(cnx, table, expected_host, target_ops, lobby_action):
         d = dict(zip(cols, row))
         op_id = holo_hash(d["hash"])
         action = holo_hash(d["action_hash"])
-        # Include remote authored records only for explicitly requested ops
-        # or the lobby action, preventing exposure of irrelevant source chains.
-        if op_id not in target_ops and action != lobby_action:
-            continue
+        # Match requested ops, genuine lobby, or the isolated test author.
         author = None
         action_type = None
         record_validity = None
+        action_seq = None
         if {"hash", "author"}.issubset(action_fields):
             a_cols = ["author"] + [
-                x for x in ("action_type", "record_validity") if x in action_fields]
+                x for x in ("action_type", "record_validity", "seq") if x in action_fields]
             a = cnx.execute("SELECT " + ",".join(a_cols) +
                 " FROM Action WHERE hash=?", (d["action_hash"],)).fetchone()
             if a:
@@ -64,12 +62,20 @@ def one_table(cnx, table, expected_host, target_ops, lobby_action):
                 author = holo_hash(av.get("author"))
                 action_type = av.get("action_type")
                 record_validity = av.get("record_validity")
+                action_seq = av.get("seq")
+        matches_negative = bool(
+            negative_agent and author == negative_agent
+            and action_seq is not None and action_seq >= 4
+        )
+        if op_id not in target_ops and action != lobby_action and not matches_negative:
+            continue
         item = {
             "op_hash": op_id, "action_hash": action,
             "matched_lobby_action": bool(lobby_action and action == lobby_action),
             "op_type": d["op_type"], "author": author,
             "matches_host": author == expected_host if author else None,
             "action_type": action_type, "record_validity": record_validity,
+            "seq": action_seq, "matches_negative_author": matches_negative,
             "table": table
         }
         for f in statuses:
@@ -90,13 +96,22 @@ def main():
     root = pathlib.Path(sys.argv[1]).resolve()
     host = sys.argv[2]
     lobby = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "null" else None
-    targets = set(sys.argv[4:])
+    extra = sys.argv[4:]
+    negative_agent = None
+    if "--invalid-agent" in extra:
+        idx = extra.index("--invalid-agent")
+        if idx + 1 >= len(extra):
+            raise SystemExit("missing --invalid-agent value")
+        negative_agent = extra[idx + 1]
+        extra = extra[:idx] + extra[idx + 2:]
+    targets = set(extra)
     out = {
         "schema_version": 1,
         "readonly": True,
         "host_agent": host,
         "lobby_action_hash": lobby,
         "target_op_hashes": sorted(targets),
+        "negative_isolated_agent": negative_agent,
         "conductors": {},
         "warnings": [],
     }
@@ -121,7 +136,7 @@ def main():
                         for table in ("ChainOp", "LimboChainOp"):
                             if table in tables:
                                 entries.extend(one_table(
-                                    cnx, table, host, targets, lobby))
+                                    cnx, table, host, targets, lobby, negative_agent))
                 except (sqlite3.DatabaseError, OSError) as e:
                     # Only report exception class, never database paths.
                     out["warnings"].append(sandbox + ":" + type(e).__name__)
