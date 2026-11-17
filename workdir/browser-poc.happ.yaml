@@ -1,0 +1,23 @@
+# Agent 4 browser POC PACKAGING TEMPLATE; do not run `hc app pack workdir`
+# expecting this file to be selected. `scripts/browser-poc-build.sh` renders it
+# into target/browser-poc/<seed-id>/app/happ.yaml after verifying the host-bound
+# seed and calculating the real DNA hash. Never install the unrendered template.
+# The native workdir/happ.yaml remains the authoritative clone-enabled hApp.
+manifest_version: '0'
+name: imposter-browser-poc
+description: P0 host-bound single-room lobby only; no secret-role gameplay
+roles:
+  - name: game
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: ./game.dna
+      modifiers:
+        network_seed: __BROWSER_POC_SEED__
+        properties: null
+      installed_hash: __BROWSER_POC_DNA_HASH__
+      clone_limit: 0
+allow_deferred_memproofs: false
+bootstrap_url: null
+relay_url: null
