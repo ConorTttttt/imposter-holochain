@@ -312,3 +312,29 @@ The security-patched linker must be built from the *in-run Agent 3 source kit*, 
 For controlled operator deployment, configure server-side only: `H2HC_LINKER_BOOTSTRAP_URL=<same-network-bootstrap>`, `H2HC_LINKER_ADMIN_SECRET=<server-only-secret>`, `H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false`, persistent key file and durable session-store settings approved by Agent 3. Expose a trustworthy `wss://` endpoint with TLS and origin restrictions. Provision individual browser agents through Agent 3's verified authenticated joining/registration mechanism, **never by placing server secrets, bearer tokens, or HWC signing keys in browser JavaScript**. Independently verify `window.holochain.getConnectionStatus()` reports `authenticated === true` and `wsHealthy === true` in **each** profile. A green `cargo test` is not proof of deployed WSS authentication, native-validation parity or three-agent DHT convergence.
 
 **P0 outcome (at drafting):** Identity-from-HWC supported by pinned source (**API VERIFIED, BROWSER NOT YET VERIFIED**); real HWC browser smoke workflow **RUNNING/RESULT AWAITED**; operator-held persistent host key **NOT CREATED**; host-specific deployment candidate **NOT CREATED**; first real install/genesis/zome/lobby **NOT RUN or awaiting smoke evidence**; three-profile secure DHT **NOT RUN**. Keep PR #4 **Draft**.
+
+
+### Server-only authenticated H2HC configuration example (not yet exercised against browsers)
+
+Run **only** the reviewed Agent 3 *patched* linker binary after establishing its source provenance. The pinned upstream `cab242d` binary alone does not include the CI-green Agent 3 security transformations. Preserve the installed executable's SHA-256 and full patched Git diff under operator control.
+
+```bash
+# Execute only in the private operator server shell; never in page JS or CI logs.
+export H2HC_LINKER_ADDRESS='127.0.0.1'
+export H2HC_LINKER_PORT='8090'
+export H2HC_LINKER_BOOTSTRAP_URL='https://REPLACE-WITH-PINNED-BOOTSTRAP'
+export H2HC_LINKER_KEY_FILE='/var/lib/h2hc/imposter-linker.key'
+export H2HC_LINKER_SESSION_STORE='sqlite:///var/lib/h2hc/imposter-sessions.db'
+export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK='false'
+export H2HC_LINKER_JOINING_SERVICE_URL='https://REPLACE-WITH-JOINING-SERVICE'
+export H2HC_LINKER_PUBLIC_URL='wss://REPLACE-WITH-TRUSTED-LINKER-DOMAIN'
+# Input secret interactively or inject from a secret manager; no secret in shell history.
+read -r -s -p 'H2HC server ADMIN secret: ' H2HC_LINKER_ADMIN_SECRET
+printf '\n'
+export H2HC_LINKER_ADMIN_SECRET
+# Use the actual pinned+patched binary path from the reviewed build (not upstream).
+sha256sum /opt/h2hc-patched/bin/h2hc-linker
+/opt/h2hc-patched/bin/h2hc-linker
+```
+
+`H2HC_LINKER_JOINING_SERVICE_URL` and `H2HC_LINKER_PUBLIC_URL` **must be set together** at the pinned revision; for the operator-ready path above we require both. The `wss://` public address must terminate TLS at a trusted proxy, while `127.0.0.1:8090` binds the linker only on loopback. Use a protected writable directory for the linker identity and SQLite sessions, and do not commit a private-key file, bearer token, joining invite token, or server secret. Confirm network bootstrap and joining-service authorization under the *patched* binary before enabling guest connections. A real linker `authenticated` indication without cross-agent DHT validation is still **NOT** evidence that P0 multiplayer passed.
