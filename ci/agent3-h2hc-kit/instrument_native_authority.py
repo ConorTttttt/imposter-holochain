@@ -106,9 +106,32 @@ repl = [
    if(!ready)throw Error('Native 0.7 admin WebSocket never opened: '+
        String(exited||'50 seconds elapsed')+'; inspect native-holochain-0.7.log');
    record('NATIVE_AUTHORITY','CANDIDATE_RUNNING',
-      'Real hc sandbox 0.7 native process with independent Lair and configured arc=1; '+
-      'admin WS reachable, but peer discovery and integrity validation NOT YET PROVEN');
-   // Port readiness must never be mistaken for joined peers or validated DHT ops.
+      'Two native 0.7 conductors with the byte-identical host DNA; both admin ports reachable. '+
+      'Native agent signed arc advertisements and validation still must be proven.');
+   // In pinned kitsune2 0.5: core_space starts current storage arc Empty.
+   // It expands only after a successful gossip DHT snapshot against another
+   // full-target native peer. HWC's zero-arc proxy cannot make this happen.
+   let synced=false, ids=[];
+   for(let i=0;i<120;i++){
+     if(exited)break;
+     const log=fs.readFileSync(nativeLogPath,'utf8');
+     const cells=[...log.matchAll(/Creating a cell[^\n]*CellId\(DnaHash\((uhC0k[^)]*)\), AgentPubKey\((uhCAk[^)]*)\)\)/g)];
+     ids=[...new Set(cells.filter(c=>c[1]===m.dna_hash).map(c=>c[2]))];
+     const fullArcEvents=(log.match(/Updating storage arc to full/g)||[]).length;
+     if(ids.length===2&&fullArcEvents>=2){synced=true;break;}
+     await new Promise(resolve=>setTimeout(resolve,1000));
+   }
+   evidence.native_authority_config.native_agents=ids;
+   if(!synced){
+     record('NATIVE_NONEMPTY_CURRENT_ARC','BLOCKED',
+       'Two independent native 0.7 cells must complete DHT gossip and advertise a FULL '+
+       'current storage arc; timed out waiting for both updates.');
+     throw Error('Native current DHT storage arcs not proven nonempty; '+
+       'inspect native-holochain-0.7.log for gossip/snapshot failures');
+   }
+   record('NATIVE_NONEMPTY_CURRENT_ARC','PASS',
+     'Two distinct native agent identities on matching DNA logged update to FULL; '+
+     'gateway peer-store agent-info eligibility and native validation still need proof.');
  });
  const info=await step('PATCHED_HWC_INSTALL_APP',async()=>{"""),
     (" if(context)await context.close().catch(()=>{});", r""" if(nativeConductor?.pid){
