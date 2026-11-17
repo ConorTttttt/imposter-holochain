@@ -128,14 +128,32 @@ async function main(){
       await hc.installApp({bundle:bytes,installedAppId:'imposter-browser-poc'});
       const info=await hc.appInfo('imposter-browser-poc');
       if(!info?.cells||info.cells.length!==1)throw Error('appInfo lacks one provisioned cell');
-      const b64=b=>'u'+btoa(String.fromCharCode(...new Uint8Array(b)))
-        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      // HWC's extension messaging serializes Uint8Array as numeric-key objects
+      // on Chrome; new Uint8Array(object) silently yields ZERO bytes.
+      const toBytes=v=>{
+        if(v instanceof Uint8Array)return v;
+        if(Array.isArray(v))return new Uint8Array(v);
+        if(v && typeof v==='object' && Array.isArray(v.data))return new Uint8Array(v.data);
+        if(v && typeof v==='object'){
+          const keys=Object.keys(v).sort((a,b)=>Number(a)-Number(b));
+          if(keys.length && keys.every((k,i)=>k===String(i) && Number.isInteger(v[k]) && v[k]>=0 && v[k]<256))
+            return new Uint8Array(keys.map(k=>v[k]));
+        }
+        throw Error('HWC returned unsupported byte encoding');
+      };
+      const b64=v=>{
+        const b=toBytes(v);
+        if(b.length!==39)throw Error('HWC installed HoloHash length '+b.length+' not 39');
+        return 'u'+btoa(String.fromCharCode(...b))
+          .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      };
       return {agent:b64(info.agentPubKey),dna:b64(info.cells[0][0]),status:info.status,
         contextId:info.contextId,cellAgent:b64(info.cells[0][1])};
     },m.happ_bundle_sha256);
  });
+ evidence.installed_public_identity={agent:info.agent,dna:info.dna,cell_agent:info.cellAgent,status:info.status};
  await step('HWC_INSTALLED_DNA_AND_AGENT',async()=>{
-   must(info.agent===host&&info.cellAgent===host,'HWC installed cell agent changed from origin host');
+   must(info.agent===host&&info.cellAgent===host,'HWC installed cell agent changed from origin host; public comparison: '+JSON.stringify(evidence.installed_public_identity));
    must(info.dna===m.dna_hash,'HWC installed DNA hash differs from pinned native hc hash');
    must(info.status==='enabled','Installed hApp is not enabled: '+info.status);
    evidence.hwc_cell_id=[info.dna,info.agent];
