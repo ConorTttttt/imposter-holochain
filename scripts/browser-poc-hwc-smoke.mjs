@@ -40,7 +40,11 @@ function must(cond,message){if(!cond)throw Error(message);}
 const hash=b=>'u'+Buffer.from(b).toString('base64url');
 function run(cmd,args,label,timeoutMs){
  const file=path.join(OUT_LOG,label+'.log');
- const r=spawnSync(cmd,args,{cwd:ROOT,env:{...process.env,BROWSER_POC_IDENTITY_SOURCE:'EPHEMERAL_HWC_BROWSER_PROFILE'},encoding:'utf8',timeout:timeoutMs,maxBuffer:8*1024*1024});
+ const childEnv={...process.env,BROWSER_POC_IDENTITY_SOURCE:'EPHEMERAL_HWC_BROWSER_PROFILE'};
+ // The runner alone owns the H2HC allowlist admin credential. Subprocess
+ // compilers/builders must never inherit it.
+ delete childEnv.H2HC_LINKER_ADMIN_SECRET;
+ const r=spawnSync(cmd,args,{cwd:ROOT,env:childEnv,encoding:'utf8',timeout:timeoutMs,maxBuffer:8*1024*1024});
  fs.writeFileSync(file,(r.stdout||'')+'\n---STDERR---\n'+(r.stderr||''));
  if(r.error||r.status!==0)throw Error(label+' failed (exit '+r.status+'): '+(r.error?.message||r.stderr||r.stdout||'').slice(-1300));
  return r.stdout||'';
@@ -115,7 +119,10 @@ async function main(){
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(8765,'127.0.0.1',resolve);});
  const ext=path.join(HWC,'packages/extension/dist-chrome');
  must(fs.existsSync(path.join(ext,'manifest.json')),'patched HWC Chrome dist missing');
- const launchOptions={headless:false,viewport:{width:1100,height:800},
+ const browserEnv={...process.env};
+ // Never inherit the H2HC operator secret in a Chromium child process.
+ delete browserEnv.H2HC_LINKER_ADMIN_SECRET;
+ const launchOptions={env:browserEnv,headless:false,viewport:{width:1100,height:800},
     args:['--disable-extensions-except='+ext,'--load-extension='+ext,'--no-first-run',
       '--disable-default-apps','--no-sandbox','--disable-dev-shm-usage']};
  context=await chromium.launchPersistentContext(PROFILE,launchOptions);
@@ -223,7 +230,7 @@ async function main(){
  threeProfiles=await step('THREE_PROFILE_REAL_HWC_H2HC_SETUP',async()=>await prepareThreeProfiles({
    chromium,launchOptions,origin:ORIGIN,hostPage:page,hostAgent:host,
    dna:m.dna_hash,happSha:m.happ_bundle_sha256,networkSeed:m.network_seed,
-   record,evidence,snapshotFor,verifyChain
+   record,evidence,snapshotFor,snapshotCursor:()=>ciSnapshots.length,verifyChain
  }));
  await step('HOST_LOBBY_CREATION',async()=>{
    const v=await page.evaluate(async(seed)=>{
@@ -238,7 +245,13 @@ async function main(){
    verifyChain(s);
    record('CAP_GRANT_RECORD_PERSISTENCE','PASS','Single private CapGrant at seq=3; hidden in DHT record conversion');
    must(s.links>=2,'Host lobby call did not author lobby and join link actions');
-   evidence.host_source_chain_actions=s.actions.map(x=>({seq:x.seq,type:x.type,hash:x.hash}));
+   const lobbyActions=s.actions.filter(x=>x.type==='Create'
+      &&x.entry_type&&typeof x.entry_type==='object'
+      &&x.entry_type.entry_index===0&&x.entry_type.visibility==='Public');
+   must(lobbyActions.length===1,'Cannot uniquely identify the real authored public lobby action');
+   evidence.host_lobby_action_hash=lobbyActions[0].hash;
+   evidence.host_source_chain_actions=s.actions.map(x=>({seq:x.seq,type:x.type,hash:x.hash,
+      public_entry_index:x.entry_type?.visibility==='Public'?x.entry_type.entry_index:null}));
    evidence.host_link_count=s.links;
    return s;
  });

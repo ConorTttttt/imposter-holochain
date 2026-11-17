@@ -107,7 +107,7 @@ async function getState(page){
  */
 export async function prepareThreeProfiles({
  chromium,launchOptions,origin,hostPage,hostAgent,dna,happSha,networkSeed,
- record,evidence,snapshotFor,verifyChain
+ record,evidence,snapshotFor,snapshotCursor,verifyChain
 }){
  const profiles=[];
  try{
@@ -146,7 +146,7 @@ export async function prepareThreeProfiles({
     'Gateway independently authenticated/registered host, guest B and guest C');
   // Deny *before* legitimate host creation, at the real Rust integrity validator.
   const guest=profiles[0];
-  const mark=await (async()=>{
+  await (async()=>{
    const test=await guest.page.evaluate(async()=>{
     try{
      await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
@@ -178,8 +178,9 @@ export async function prepareThreeProfiles({
        item.label+' Lair signing identity changed on full browser restart');
      await checkApp(item.page,item.agent,dna);
      await joinGateway(item.page,item.agent,dna,item.label,evidence,record);
+     const beforeRestartProbe=snapshotCursor();
      await getState(item.page);
-     const snapshot=await snapshotFor(item.agent,0,
+     const snapshot=await snapshotFor(item.agent,beforeRestartProbe,
        x=>x.fn==='get_game_state'&&x.actions.length>=item.chain.actions.length);
      verifyChain(snapshot,false);
      requireTrue(before===snapshot.actions.map(x=>x.hash).join(','),

@@ -205,7 +205,7 @@ jobs:
           echo "Three genuine Chromium/HWC profiles; identity, H2HC auth and local privacy gates required."
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/browser-poc-hwc-smoke.mjs 2>&1 | tee runtime-evidence/hwc-runtime-smoke.log
 
-      - name: Upload patched Chrome and Firefox build for operator inspection
+      - name: Upload CI-only instrumented Chrome build for inspection
         if: always()
         uses: actions/upload-artifact@v4
         with:

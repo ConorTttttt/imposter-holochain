@@ -15,7 +15,7 @@
 | Native investigation | [Agent 3 run 44178431806](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44178431806) | `hc-spin` Electron SUID failure; no native authority |
 | Native follow-up | [Agent 3 native sandbox workflow](https://github.com/ConorTttttt/imposter-holochain/actions/workflows/agent3-h2hc-native-conductor.yml) | `hc sandbox generate/run` experiment; requires independently verified native integration |
 
-**Identity invariant:** `g1.<host HWC Lair AgentPubKey>.<32 lowercase hexadecimal bytes>` is minted **after** the host's Lair key exists. All three contexts install identical `.happ` bytes, DNA hash and seed. Three different OS-level browser user-data directories prevent extensions, local storage, OPFS and signing material from being shared. H2HC `auth_ok`/registration logs must each name exactly the corresponding individual public agent and one DNA. A transport queue is *not* native validation.
+**Identity invariant:** `g1.<host HWC Lair AgentPubKey>.<32 lowercase hexadecimal characters (16 random bytes)>` is minted **after** the host's Lair key exists. All three contexts install identical `.happ` bytes, DNA hash and seed. Three different OS-level browser user-data directories prevent extensions, local storage, OPFS and signing material from being shared. H2HC `auth_ok`/registration logs must each name exactly the corresponding individual public agent and one DNA. A transport queue is *not* native validation.
 
 ## Reproducible CI topology
 
@@ -29,7 +29,7 @@ The gateway starts with `H2HC_LINKER_ALLOW_INSECURE_DEV=false`, `H2HC_LINKER_LOC
 
 ## Full acceptance matrix
 
-Statuses below distinguish **historical proven** results from this new three-profile revision. Before its own Actions run succeeds, no new executable test receives a PASS.
+Statuses below distinguish **historical proven** results from this new three-profile revision. Three-profile browser run [44189760201](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44189760201) **PASSED** the independent Lair/H2HC identity, real coordinator, unauthorized Rust denial, and all three profile restart checks. It did **not** deliver signed ops to a validating native authority: 25 queued / 0 failed / 0 published. Guest B and C each saw no lobby and 0 players. Separate native sandbox run [44188965376](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44188965376) reached only CANDIDATE_RUNNING. Issue #7 remains open.
 
 | Gate | Historic observation | Three-profile revision / completion bar |
 | --- | --- | --- |
@@ -38,21 +38,28 @@ Statuses below distinguish **historical proven** results from this new three-pro
 | Real `get_game_state` coordinator and private CapGrant | **PASS** in first-cell browser | Per-profile real-wasm read-only worker inspection required |
 | Host creates three-seat lobby | **PASS** in first-cell browser | Record native Lobby action hash, fixed seed and DNA |
 | Unauthorized Guest B host creation rejected | **PASS** in first-cell browser | Repeat on hardened HWC, before host creates |
-| Three independent browser Lair keys | **NOT RUN** | Distinct three public 39-byte keys and profile paths |
-| Three independently signed H2HC WebSocket sessions | **NOT RUN** | 3 separate gateway `Auth OK` + exact own-key/DNA `registered` |
-| Signed HWC operation accepted by H2HC queue | **PASS** for one host (11 real ops, 44176199123) | Counter separately reports `queued`, `failed`, `published` |
+| Three independent browser Lair keys | **PASS (44189760201)** | Distinct host/B/C genuine keys and profile paths |
+| Three independently signed H2HC WebSocket sessions | **PASS (44189760201)** | 3 separate gateway `Auth OK` + exact own-key/DNA `registered`, twice across restart |
+| Signed HWC operation accepted by H2HC queue | **PASS (44189760201)** for 3 real agents, 25 queued / 0 failed / 0 published | Counter separately reports `queued`, `failed`, `published` |
 | H2HC operation actually delivered to authority | **BLOCKED** | `published>0`, receiving native peer/ack logged; transport only |
 | Native 0.7 validation | **BLOCKED** | Same DNA, nonempty arc, `ValidationStatus::Valid`, exact action hashes |
 | B independently retrieves host lobby | **BLOCKED** | Authenticated HWC B nonnull same record, proven DHT authority source |
 | B join, C join | **NOT RUN** | Two separate real zome writes, network-received action hashes |
 | All three observe same three-seat lobby | **NOT RUN** | Identical lobby action ID, seed, players and join hashes independently |
-| Host + B + C Chromium restart | Historic host **PASS**, two guest **NOT RUN** | Stable Lair keys and unmodified local chain + same cell |
+| Host + B + C Chromium restart | **PASS (44189760201)** | Stable Lair keys, source-chain continuity and same cell; strict post-restart source-chain probes rerun in next revision |
 | Reconnecting guests recover existing seats | **NOT RUN** | No new join action, same seat/agent after restart |
 | Private grant is hidden from outgoing record conversion | First-cell worker **PASS** | Per-cell production worker read-only checks |
 | Same-entry-hash multi-cell SQLite/IndexedDB migration | **BLOCKED: issue #7** | Agent 2 approved transactional migration, identical private grant bytes in headed Chrome+Firefox |
 | Private bytes absent from retry queues/network and logs | **NOT PROVEN END-TO-END** | Strict nonsecret scan and actual gateway/worker trace |
 | Remote calls/signals | **DISABLED (required)** | Must remain disabled |
 | Genuine operator-held signing identity/hApp | **NOT RUN** | Complete procedure below using *persistent* operator profile |
+
+
+### Actual three-browser evidence / known status discrepancy
+
+In [successful integration run 44189760201](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44189760201), all three HWC/Lair identities were distinct public keys: host `uhCAk2reni2CRsWpr4rjIZZJOWq_pfrHvTGmcs_9sfT0DAT4G-13L`, Guest B `uhCAkabjLuICy-LI2aWvBYNpIcNghHwKSP04vtmChgN3lnU6JnWPQ`, Guest C `uhCAkQWDCpvRsDDl9IgelOffvSpj6zvpnwZeYspoaCcMKo5Euxw1U`. They shared the actual installed DNA `uhC0kmmnz38exDaBpV3RKgvQ4Y7EKV-iZqZQfEm-947N_64Qva1Cu` and hApp SHA256 `f1dacc8937b8c259d2c18aeb09b70a0bba60ae5a814e95e13a75e75e89b9f9f8`. The native host's public Lobby Create action from real WASM was `uhCkkTn0mLEUKe0Csn_gSOho7t09CxUffLqIkHWyZiP8OQ_tjsgNS`, source-chain sequence 5. No guest was able to retrieve this action or join; do **not** present it as converged lobby state. The CI identities and host-bound bundle are destroyed/undeployable.
+
+All three browsers showed `getConnectionStatus().authenticated=true` and their own H2HC signed challenge/registration, but HWC's `getNetworkStatus().hasSession=false` for **all three**: this is an independently reported background-status defect candidate for Agent 2, *not* server-side authentication failure. The downloaded gateway log contained no instances of the explicit private-grant strings `remote-signals`, `recv_remote_signal`, `CapGrant`, or an HTTP `Bearer ` value; this is a bounded log inspection, **not a proof about all network bytes or retry queues**. Source-chain probes show each private CapGrant hidden in the DHT record conversion, but same-hash worker collision tests remain BLOCKED on #7.
 
 ## Operator-held deployment procedure (separate from CI)
 
