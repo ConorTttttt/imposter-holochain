@@ -1,7 +1,5 @@
 name: Agent 3 - pinned H2HC P0 security (real Rust)
 on:
-  push:
-    branches: [ci/agent3-h2hc-security-validation]
   workflow_dispatch:
 
 permissions:
