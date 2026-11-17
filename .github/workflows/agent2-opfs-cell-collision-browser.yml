@@ -40,6 +40,9 @@ jobs:
           set -euo pipefail
           mkdir -p scripts
           cp agent4-harness/scripts/browser-poc* scripts/
+          mkdir -p workdir
+          cp agent4-harness/workdir/browser-poc.happ.yaml workdir/browser-poc.happ.yaml
+          test -s workdir/browser-poc.happ.yaml
           test -s scripts/browser-poc-hwc-smoke.mjs
           test -s scripts/browser-poc-build.sh
           test -s scripts/browser-poc-verify.sh
