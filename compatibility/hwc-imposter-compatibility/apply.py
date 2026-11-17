@@ -845,6 +845,34 @@ change(P,'''        if (!storable) {
         resolve({
           entryHash: new Uint8Array(storable.entryHash),''')
 
+# P0 production worker defense: the offscreen SQLite database can hold
+# multiple local cells. Hash-only lookup is NOT authorization to inspect
+# another author's source-chain actions, entry history or capability grants.
+# The worker already calls setCellContext before CALL_ZOME and RUN_GENESIS.
+P='packages/extension/src/offscreen/ribosome-worker.ts'
+change(P,'''  getAction(actionHash: ActionHash): Action | null {
+    const stmt = db.prepare('SELECT * FROM actions WHERE action_hash = ?');
+    try {
+      stmt.bind([toBytes(actionHash)]);''','''  getAction(actionHash: ActionHash): Action | null {
+    if (!this.currentCellId) return null;
+    const stmt = db.prepare('SELECT * FROM actions WHERE action_hash = ? AND cell_id = ?');
+    try {
+      stmt.bind([toBytes(actionHash), this.currentCellId]);''')
+change(P,'''  getActionByEntryHash(entryHash: EntryHash): Action | null {
+    const stmt = db.prepare('SELECT * FROM actions WHERE entry_hash = ? ORDER BY action_seq ASC LIMIT 1');
+    try {
+      stmt.bind([toBytes(entryHash)]);''','''  getActionByEntryHash(entryHash: EntryHash): Action | null {
+    if (!this.currentCellId) return null;
+    const stmt = db.prepare('SELECT * FROM actions WHERE entry_hash = ? AND cell_id = ? ORDER BY action_seq ASC LIMIT 1');
+    try {
+      stmt.bind([toBytes(entryHash), this.currentCellId]);''')
+change(P,'''    const stmt = db.prepare('SELECT entry_hash, entry_content, entry_type, cell_id FROM entries WHERE entry_hash = ?');
+    try {
+      stmt.bind([toBytes(entryHash)]);''','''    if (!this.currentCellId) return null;
+    const stmt = db.prepare('SELECT entry_hash, entry_content, entry_type, cell_id FROM entries WHERE entry_hash = ? AND cell_id = ?');
+    try {
+      stmt.bind([toBytes(entryHash), this.currentCellId]);''')
+
 TESTS = {
   'packages/core/src/ribosome/wasm-io-types.imposter.test.ts': 'tests/wasm-io-types.imposter.test.ts',
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
