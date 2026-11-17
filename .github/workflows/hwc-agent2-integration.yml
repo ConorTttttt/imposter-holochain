@@ -1,0 +1,77 @@
+name: Agent 2 - pinned HWC compatibility integration
+
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/hwc-agent2-integration.yml'
+      - 'compatibility/hwc-imposter-compatibility/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/hwc-agent2-integration.yml'
+      - 'compatibility/hwc-imposter-compatibility/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent2-hwc-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pinned-hwc:
+    name: Apply, typecheck, Vitest, Chrome and Firefox builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    steps:
+      - name: Checkout Agent 2 compatibility kit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact pinned HWC source (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+
+      - name: Switch pinned HWC into local integration branch
+        shell: bash
+        run: |
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
+          git -C hwc status --porcelain
+
+      - name: Set up Node.js 22 and npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+
+      - name: Apply original kit and run real HWC integration suite
+        shell: bash
+        run: bash compatibility/hwc-imposter-compatibility/integrate_pinned.sh hwc
+
+      - name: Preserve exact applied diff and stage exit codes
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-evidence
+          git -C hwc rev-parse HEAD > ci-evidence/hwc-pinned-sha.txt || true
+          git -C hwc status --porcelain > ci-evidence/hwc-status.txt || true
+          git -C hwc diff > ci-evidence/applied-hwc.diff || true
+          cp hwc/.git/imposter-integration.log ci-evidence/ 2>/dev/null || true
+          cp hwc/.git/imposter-hwc.patch ci-evidence/ 2>/dev/null || true
+
+      - name: Upload integration evidence (even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-hwc-integration-${{ github.run_id }}
+          if-no-files-found: warn
+          path: ci-evidence/
