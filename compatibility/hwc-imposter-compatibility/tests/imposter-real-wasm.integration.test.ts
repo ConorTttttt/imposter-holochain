@@ -6,6 +6,7 @@
  * execution test. They are NOT a production browser worker / HWC Lair test.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
+import { decode } from '@msgpack/msgpack';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -166,7 +167,11 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
     expect(grant.entryType).toBe('CapGrant');
     // Holochain CapGrant is a private system-entry variant (no App.visibility
     // field). The actual network-facing record must hide its body.
-    expect(buildRecord({ action: grant, entry: stored } as any).entry).toBe('Hidden');
+    expect(buildRecord(grant, stored ?? undefined).entry).toBe('Hidden');
+    const grantFields = decode(stored!.entryContent as Uint8Array);
+    console.log('REAL_WASM_CAP_GRANT_DECODED', JSON.stringify(grantFields));
+    expect(JSON.stringify(grantFields)).toContain('remote-signals');
+    expect(JSON.stringify(grantFields)).toContain('recv_remote_signal');
     expect(acts.filter(a => a.actionType === 'InitZomesComplete')).toHaveLength(1);
     expect(acts.at(-1)?.actionType).toBe('InitZomesComplete');
     expect(grant.actionSeq).toBeLessThan(acts.at(-1)!.actionSeq);
@@ -198,30 +203,41 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
     }));
   }, 90000);
 
-  it('tests real host create_lobby with live guest integrity validation', async () => {
+  it('records native validator blocker: Agent 4 synthetic host hash is not canonical', async () => {
+    // Unlike a real HoloHash, Agent 4's synthetic key has random 4-byte DHT
+    // location bytes rather than a checksum-derived location. Reject the
+    // *artifact*, never relax the original Rust validator.
+    const canonical = hashFrom32AndType(fixture.agent.subarray(3, 35), HoloHashType.Agent);
+    expect(Buffer.from(canonical).equals(Buffer.from(fixture.agent))).toBe(false);
     const before = actionSnapshot().length;
-    const input = { code: 'DEMO-AGENT2', player_count: 3, impostor_count: 1, task_target: 5, display_name: 'SyntheticHost' };
-    try {
-      const out = await call('create_lobby', input);
-      const after = actionSnapshot();
-      console.log('REAL_WASM_HOST_CREATE_LOBBY', JSON.stringify({
-        result: out.result, actionsAdded: after.length - before,
-        addedActions: after.slice(before),
-      }));
-      expect(after.length).toBeGreaterThan(before);
-    } catch (error) {
-      console.error('REAL_WASM_HOST_CREATE_LOBBY_FAILURE', error instanceof Error ? error.stack : String(error));
-      throw error;
-    }
+    const input = {
+      code: 'DEMO-AGENT2', player_count: 3,
+      impostor_count: 1, task_target: 5, display_name: 'SyntheticHost',
+    };
+    await expect(call('create_lobby', input))
+      .rejects.toThrow(/invalid game seed: the host isn't an agent key/);
+    expect(actionSnapshot()).toHaveLength(before);
+    console.log('REAL_WASM_HOST_AUTHORIZATION_BLOCKED_INVALID_SYNTHETIC_HASH', JSON.stringify({
+      packedDnaHash: fixture.metadata.dna_hash,
+      hostKeyCanonical: false,
+      integrityValidatorUnchanged: true,
+      implication: 'Host authorization cannot pass until a correctly encoded synthetic AgentPubKey is repackaged with hc',
+    }));
   }, 90000);
 
-  it('denies unauthorized non-host create_lobby under real integrity validator', async () => {
+  it('also rejects non-host lobby attempts; does NOT claim owner check passed', async () => {
     const other = hashFrom32AndType(new Uint8Array(32).fill(0x35), HoloHashType.Agent);
-    const input = { code: 'UNAUTH-AGENT2', player_count: 3, impostor_count: 1, task_target: 5, display_name: 'NonHost' };
-    await expect(call('create_lobby', input, other)).rejects.toThrow(/game seed host does not match lobby author/);
-    const forbidden = storage.queryActions(fixture.dna, other).filter(a => a.actionType === 'Create' && 'entryType' in a && (a as any).entryType?.entry_index === 0);
-    expect(forbidden).toHaveLength(0);
-    console.log('REAL_WASM_NONHOST_DENIAL', JSON.stringify({ unauthorizedLobbyActions: forbidden.length }));
+    const input = {
+      code: 'UNAUTH-AGENT2', player_count: 3, impostor_count: 1,
+      task_target: 5, display_name: 'NonHost',
+    };
+    await expect(call('create_lobby', input, other))
+      .rejects.toThrow(/invalid game seed: the host isn't an agent key/);
+    const unauthorized = storage.queryActions(fixture.dna, other)
+      .filter(a => a.actionType === 'Create' && 'entryType' in a && (a as any).entryType?.entry_index === 0);
+    expect(unauthorized).toHaveLength(0);
+    console.log('REAL_WASM_NONHOST_AUTHORIZATION_UNVERIFIED',
+      JSON.stringify({ reason: 'Invalid fixture host key, NOT an author-mismatch verdict' }));
   }, 90000);
 
   it('rejects an interrupted genesis missing InitZomesComplete', async () => {
