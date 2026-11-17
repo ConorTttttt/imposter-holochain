@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   real-hwc-first-cell:
-    name: "Real Lair/DirectSQLiteStorage/OPFS migration, identical CapGrant and browser restart"
+    name: "Real Lair/DirectSQLiteStorage/OPFS collision and browser restart (retry)"
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
