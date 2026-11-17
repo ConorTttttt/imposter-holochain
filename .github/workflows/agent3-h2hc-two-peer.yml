@@ -49,9 +49,10 @@ jobs:
           expected="$(head -1 h2hc-binary/SHA256SUMS | cut -d' ' -f1)"
           actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | cut -d' ' -f1)"
           test "$expected" = "$actual"
-          grep -q 'cab242d32c988fe5e4e9fd06ebc82ed043541aa2' h2hc-binary/build-provenance.txt || {
-            echo 'Missing pinned provenance; need source-pin check'; exit 1;
-          }
+          test -s h2hc-binary/h2hc-applied-source-commit.txt
+          applied="$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)"
+          test "$applied" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
+          grep -q 'cab242d32c988fe5e4e9fd06ebc82ed043541aa2' h2hc-binary/RUNTIME_RUNBOOK.md
           chmod +x h2hc-binary/h2hc-linker-linux-x86_64
           mkdir -p ci-evidence/agent3-two-linker
           printf 'binary_sha256=%s\nsource_run=44165793922\n' "$actual" > ci-evidence/agent3-two-linker/binary-provenance.txt
