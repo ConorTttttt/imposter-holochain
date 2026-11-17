@@ -21,7 +21,7 @@ repl=[
  const nativeLogs=path.join(OUT_LOG,'native-holochain-0.7.log');
  await (async()=>{
    const test=spawnSync('nix',['develop','--no-write-lock-file','--command',
-      'bash','-lc','command -v hc-spin && hc-spin --version'],{
+      'bash','-lc','command -v hc-spin && hc-spin --help'],{
       cwd:ROOT,env:{...process.env},encoding:'utf8',timeout:90000});
    fs.writeFileSync(path.join(OUT_LOG,'native-toolchain-probe.log'),
       String(test.stdout||'')+'\n---stderr---\n'+String(test.stderr||''));
