@@ -451,6 +451,78 @@ change(P,'''  async preloadChainForCell(dnaHash: Uint8Array, agentPubKey: Uint8A
     this.sessionCache.entries.clear();
     this.sessionCache.links.clear();''')
 
+# Test-only IndexedDB StorageProvider is a singleton. Its synchronous
+# action/entry/link cache is a local source-chain context, NOT a union of all
+# cells. Even direct genesis writes (which do not preload) must switch context.
+P='packages/core/src/storage/source-chain-storage.ts'
+change(P,'''  private static instance: SourceChainStorage | null = null;''','''  private static instance: SourceChainStorage | null = null;
+  // Only the active cell is permitted in the synchronous session cache.
+  private activeCellId: string | null = null;''')
+change(P,'''  private getCellId(dnaHash: Uint8Array, agentPubKey: Uint8Array): string {''','''  private activateCell(dnaHash: Uint8Array, agentPubKey: Uint8Array): void {
+    const cellId = this.getCellId(dnaHash, agentPubKey);
+    if (this.activeCellId === cellId) return;
+    if (this.pendingTransaction) {
+      throw new Error('Cross-cell source-chain operation inside active transaction');
+    }
+    // Do not expose another cell's private entries or CapGrants by hash.
+    this.sessionCache.actions.clear();
+    this.sessionCache.entries.clear();
+    this.sessionCache.links.clear();
+    this.activeCellId = cellId;
+  }
+
+  private getCellId(dnaHash: Uint8Array, agentPubKey: Uint8Array): string {''')
+change(P,'''    this.sessionCache.links.clear();
+
+    // Load all actions for this cell''','''    this.sessionCache.links.clear();
+    this.activeCellId = cellId;
+
+    // Load all actions for this cell''')
+change(P,'''  async putAction(action: Action, dnaHash: Uint8Array, agentPubKey: Uint8Array): Promise<void> {
+    if (this.pendingTransaction) {''','''  async putAction(action: Action, dnaHash: Uint8Array, agentPubKey: Uint8Array): Promise<void> {
+    this.activateCell(dnaHash, agentPubKey);
+    if (this.pendingTransaction) {''')
+change(P,'''  async putEntry(entry: StoredEntry, dnaHash: Uint8Array, agentPubKey: Uint8Array): Promise<void> {
+    if (this.pendingTransaction) {''','''  async putEntry(entry: StoredEntry, dnaHash: Uint8Array, agentPubKey: Uint8Array): Promise<void> {
+    this.activateCell(dnaHash, agentPubKey);
+    if (this.pendingTransaction) {''')
+change(P,'''  putLink(link: Link, dnaHash: Uint8Array, agentPubKey: Uint8Array): void | Promise<void> {
+    if (this.pendingTransaction) {''','''  putLink(link: Link, dnaHash: Uint8Array, agentPubKey: Uint8Array): void | Promise<void> {
+    this.activateCell(dnaHash, agentPubKey);
+    if (this.pendingTransaction) {''')
+change(P,'''  async updateChainHead(
+    dnaHash: Uint8Array,
+    agentPubKey: Uint8Array,
+    actionSeq: number,
+    actionHash: Uint8Array,
+    timestamp: bigint
+  ): Promise<void> {
+    const cellId = this.getCellId(dnaHash, agentPubKey);''','''  async updateChainHead(
+    dnaHash: Uint8Array,
+    agentPubKey: Uint8Array,
+    actionSeq: number,
+    actionHash: Uint8Array,
+    timestamp: bigint
+  ): Promise<void> {
+    this.activateCell(dnaHash, agentPubKey);
+    const cellId = this.getCellId(dnaHash, agentPubKey);''')
+change(P,'''    // Get all actions from session cache
+    let actions: Action[] = Array.from(this.sessionCache.actions.values());''','''    // Never return a different cell's local actions or capability grants.
+    if (this.activeCellId !== this.getCellId(dnaHash, agentPubKey)) return [];
+    let actions: Action[] = Array.from(this.sessionCache.actions.values());''')
+change(P,'''    // Get all actions from cache
+    const actions = Array.from(this.sessionCache.actions.values());''','''    // Entry histories belong to the local cell, not the global cache.
+    if (this.activeCellId !== this.getCellId(dnaHash, agentPubKey)) return null;
+    const actions = Array.from(this.sessionCache.actions.values());''')
+change(P,'''    // Get from session cache (synchronous)
+    const baseKey = this.hashToKey(baseAddress);''','''    if (this.activeCellId !== this.getCellId(dnaHash, agentPubKey)) return [];
+    // Get from session cache (synchronous)
+    const baseKey = this.hashToKey(baseAddress);''')
+change(P,'''    // Clear session cache
+    this.sessionCache.actions.clear();''','''    // Clear session cache
+    this.activeCellId = null;
+    this.sessionCache.actions.clear();''')
+
 # Old pending publishes may already contain unsafe entry bodies produced before
 # the fix. A versioned storage upgrade MUST discard them, not resend them.
 P='packages/core/src/dht/publish-tracker.ts'
