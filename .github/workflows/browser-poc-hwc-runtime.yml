@@ -1,4 +1,4 @@
-name: "Agent 4 — REAL patched HWC + Imposter P0 browser smoke"
+name: "Agent 4 — three isolated HWC browsers + authenticated H2HC P0"
 on:
   push:
     branches: [feature/browser-compatibility-harness]
@@ -7,10 +7,12 @@ on:
       - "scripts/browser-poc-hwc-smoke.mjs"
       - "scripts/browser-poc-lib.mjs"
       - "scripts/browser-poc-ci-worker-probe.mjs"
+      - "docs/browser-poc-runbook.md"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: agent4-real-hwc-smoke-${{ github.ref_name }}
@@ -18,7 +20,7 @@ concurrency:
 
 jobs:
   real-hwc-first-cell:
-    name: "Real HWC keystore, host seed, Imposter WASM install and first zome call"
+    name: "Three genuine HWC/Lair profiles, same DNA, signed H2HC sessions (DHT gated)"
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -30,11 +32,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout Agent 2 ExternIO-corrected, real-WASM CI-green HWC patch kit
+      - name: Checkout Agent 2 latest approved security-hardening HWC patch kit
         uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: f888dc21110acff3e093ebe20b8ca16f60f1877d
+          ref: 76ffda33b8c5796a298ce09f3bdbbb668ebd43bb
           path: agent2-kit
           persist-credentials: false
 
@@ -52,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
-          test "$(git -C agent2-kit rev-parse HEAD)" = "f888dc21110acff3e093ebe20b8ca16f60f1877d"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "76ffda33b8c5796a298ce09f3bdbbb668ebd43bb"
           git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
@@ -60,6 +62,29 @@ jobs:
           mkdir -p runtime-evidence
           git -C hwc diff --stat > runtime-evidence/patched-hwc-diff-stat.txt
           git -C hwc status --short >> runtime-evidence/patched-hwc-diff-stat.txt
+
+      # Immutable, previously executed secure gateway; NOT native DHT authority.
+      - name: Download Agent 3 signed-op H2HC gateway binary from known-good run
+        uses: actions/download-artifact@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          run-id: 44165793922
+          name: agent3-h2hc-authenticated-runtime-44165793922
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: h2hc-binary
+
+      - name: Verify exact H2HC executable checksum and patch provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s h2hc-binary/h2hc-linker-linux-x86_64
+          (cd h2hc-binary && sha256sum --check SHA256SUMS)
+          test "$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
+          grep -Fq cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
+          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          mkdir -p runtime-evidence
+          sha256sum h2hc-binary/h2hc-linker-linux-x86_64 > runtime-evidence/h2hc-runtime-binary-sha256.txt
+          printf '%s\n' 'H2HC base=cab242d32c988fe5e4e9fd06ebc82ed043541aa2' 'binary_source_run=44165793922' 'local_authority_fallback=false' > runtime-evidence/h2hc-source-pins.txt
 
       - name: Set up Node 22 for patched HWC
         uses: actions/setup-node@v4
@@ -129,7 +154,34 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo "Real Chromium/HWC smoke, no fake keys. First failure halts the experiment."
+          # Secrets exist only in the runner process and the protected H2HC service.
+          # Browser pages see only loopback H2HC_BASE_URL; NEVER inject this secret or tokens.
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$H2HC_LINKER_ADMIN_SECRET"
+          export H2HC_LINKER_ADDRESS=127.0.0.1
+          export H2HC_LINKER_PORT=8090
+          export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/h2hc-ephemeral-identity.key"
+          export H2HC_LINKER_BOOTSTRAP_URL=https://dev-test-bootstrap2.holochain.org/
+          export H2HC_LINKER_RELAY_URL=https://dev-test-bootstrap2.holochain.org/
+          export H2HC_LINKER_ALLOW_INSECURE_DEV=false
+          export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false
+          export H2HC_BASE_URL=http://127.0.0.1:8090
+          export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
+          test "$H2HC_LINKER_ALLOW_INSECURE_DEV" = false
+          test "$H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK" = false
+          RUST_LOG="h2hc_linker=info,kitsune2=warn,iroh=warn" \
+            h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 \
+            > "$H2HC_SERVER_LOG" 2>&1 &
+          H2HC_PID=$!
+          trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 45); do
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8090/health >/dev/null; then ready=1; break; fi
+            if ! kill -0 "$H2HC_PID" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          test "$ready" = 1 || { echo 'Secure H2HC gateway did not start'; exit 1; }
+          echo "Three genuine Chromium/HWC profiles; identity, H2HC auth and local privacy gates required."
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/browser-poc-hwc-smoke.mjs 2>&1 | tee runtime-evidence/hwc-runtime-smoke.log
 
       - name: Upload patched Chrome and Firefox build for operator inspection
