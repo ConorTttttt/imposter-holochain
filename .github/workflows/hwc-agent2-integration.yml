@@ -24,7 +24,7 @@ concurrency:
 jobs:
   pinned-hwc:
     # Run the full suite on explicit dispatch, or this one audited security
-    # verification push. Avoid expensive duplicate runs for every test commit.
+    # verification push. This includes transaction-binding regression coverage.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
