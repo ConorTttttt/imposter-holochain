@@ -13,8 +13,8 @@ const file = path.resolve(process.argv[2] || 'scripts/browser-poc-hwc-smoke.mjs'
 let src = fs.readFileSync(file, 'utf8');
 const anchors = [
   [
-    "  must(snap.capgrant_count===1&&snap.capgrant_stored&&snap.capgrant_wire_hidden,\n       'Private CapGrant missing or exposed in network-facing record conversion');",
-    "  must(snap.capgrant_count===1&&snap.capgrant_stored&&snap.capgrant_wire_hidden,\n       'Private CapGrant missing or exposed in network-facing record conversion');\n" +
+    " must(snap.capgrant_count===1&&snap.capgrant_stored&&snap.capgrant_wire_hidden,\n      'Private CapGrant missing or exposed in network-facing record conversion');",
+    " must(snap.capgrant_count===1&&snap.capgrant_stored&&snap.capgrant_wire_hidden,\n      'Private CapGrant missing or exposed in network-facing record conversion');\n" +
     "  must(snap.p0_collision?.ready && snap.p0_collision.rows === 2 &&\n" +
     "       snap.p0_collision.both_local_reads && snap.p0_collision.wrong_cell_denied,\n" +
     "       'Same-OPFS, same-DNA private CapGrant collision or cross-cell disclosure');",
