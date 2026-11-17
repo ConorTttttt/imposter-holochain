@@ -20,23 +20,25 @@ repl=[
  const bootstrap='https://dev-test-bootstrap2.holochain.org/';
  const nativeLogs=path.join(OUT_LOG,'native-holochain-0.7.log');
  await (async()=>{
+   const cli=path.join(ROOT,'node_modules/.bin/hc-spin');
+   must(fs.existsSync(cli),'Pinned hc-spin missing after npm ci root');
    const test=spawnSync('nix',['develop','--no-write-lock-file','--command',
-      'bash','-lc','command -v hc-spin && hc-spin --help'],{
+      cli,'--help'],{
       cwd:ROOT,env:{...process.env},encoding:'utf8',timeout:90000});
    fs.writeFileSync(path.join(OUT_LOG,'native-toolchain-probe.log'),
       String(test.stdout||'')+'\n---stderr---\n'+String(test.stderr||''));
    if(test.status!==0){
      record('NATIVE_HOLOCHAIN_0_7_TOOL','BLOCKED',
-       'Pinned toolchain does not provide executable hc-spin (see probe log)');
+       'Pinned Nix + npm-locked hc-spin CLI cannot execute (see probe log)');
      record('NATIVE_AUTHORITY','NOT RUN','No pinned native executable available');
      return;
    }
-   record('NATIVE_HOLOCHAIN_0_7_TOOL','PASS','hc-spin CLI found in pinned Holonix');
+   record('NATIVE_HOLOCHAIN_0_7_TOOL','PASS','npm-locked hc-spin 0.700.0 CLI executable within pinned Holochain 0.7 Nix');
    const env={...process.env, RUST_LOG:'holochain=info,kitsune2=info'};
    delete env.H2HC_LINKER_ADMIN_SECRET;
    // hc-spin's --bootstrap-url/--relay-url are standard native 0.7 options.
    const args=['develop','--no-write-lock-file','--command',
-     'hc-spin','-n','1','--bootstrap-url',bootstrap,
+     cli,'-n','1','--ui-port','8765','--bootstrap-url',bootstrap,
      '--relay-url',bootstrap,nativeHapp];
    nativeConductor=spawn('nix',args,{cwd:ROOT,env,stdio:['ignore','pipe','pipe']});
    const log=fs.createWriteStream(nativeLogs,{flags:'w'});
