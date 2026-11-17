@@ -215,10 +215,10 @@ replace_once(
         'No exact native accepted+locally_validated+integrated lobby ChainOp row');
   }
   const getReqs=[...gatewayLog.matchAll(
-    /Preparing GetReq message[^\\n]*msg_id=(\\d+)[^\\n]*hash=(uhCkk[^\\s]+)/g)]
+    /Preparing GetReq message[^\n]*msg_id=(\d+)[^\n]*hash=(uhCkk[^\s]+)/g)]
     .filter(x=>x[2]===lobbyActionHash).map(x=>Number(x[1]));
   const getResponses=[...gatewayLog.matchAll(
-    /Got GetRes response[^\\n]*msg_id=(\\d+)/g)].map(x=>Number(x[1]));
+    /Got GetRes response[^\n]*msg_id=(\d+)/g)].map(x=>Number(x[1]));
   const confirmedGetReqIds=getReqs.filter(x=>getResponses.includes(x));
   evidence.independent_exact_action_query={
     action_hash:lobbyActionHash,dna:m.dna_hash,guest_agent:evidence.independent_guest?.agent,
