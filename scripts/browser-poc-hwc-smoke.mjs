@@ -92,11 +92,12 @@ async function snapshotFor(agent,after=0,filter=()=>true){
  }
  throw Error('No production worker CI source-chain metadata available for selected HWC identity');
 }
-function verifyChain(snap){
+function verifyChain(snap,requireNewSignatures=true){
  const a=snap.actions;
  must(snap.storage_class==='DirectSQLiteStorage'&&snap.backend==='OPFS_SAHPOOL',
       'Production HWC worker not using persistent DirectSQLiteStorage/OPFS');
- must(snap.chrome_lair_signing&&snap.lair_signatures>0,'No real Lair synchronous signing observed');
+ must(snap.chrome_lair_signing,'Browser worker missing Lair signing buffers');
+ if(requireNewSignatures)must(snap.lair_signatures>0,'Initial authoring did not exercise real Lair signing');
  must(a.slice(0,3).map(x=>x.type).join(',')==='Dna,AgentValidationPkg,Create',
       'Unexpected first three source-chain actions');
  must(a[3]?.type==='Create'&&a[3]?.entry_type==='CapGrant','Private CapGrant not at source-chain index 3');
@@ -213,7 +214,7 @@ async function main(){
    });
    evidence.init_zome_result_kind=typeof v;
    // Returning a value is a WASM execution pass, NOT proof grants persisted.
-   record('CAP_GRANT_RECORD_PERSISTENCE','BLOCKED','No authorized read-only source-chain grant inspector exposed by page API');
+   // Grant persistence is verified independently by the CI-only internal worker inspector.
  });
  await step('HOST_LOBBY_CREATION',async()=>{
    const v=await page.evaluate(async(seed)=>{
@@ -226,6 +227,7 @@ async function main(){
  const authored=await step('CI_READ_ONLY_CHAIN_GENESIS_AND_PRIVACY',async()=>{
    const s=await snapshotFor(host,0,x=>x.links>=2);
    verifyChain(s);
+   record('CAP_GRANT_RECORD_PERSISTENCE','PASS','Single private CapGrant at seq=3; hidden in DHT record conversion');
    must(s.links>=2,'Host lobby call did not author lobby and join link actions');
    evidence.host_source_chain_actions=s.actions.map(x=>({seq:x.seq,type:x.type,hash:x.hash}));
    evidence.host_link_count=s.links;
@@ -249,7 +251,7 @@ async function main(){
      zome_name:'game',fn_name:'get_game_state',payload:null
    }));
    const s=await snapshotFor(host,start);
-   verifyChain(s);
+   verifyChain(s,false); // read-only reload should not sign any new actions
    must(s.actions.map(x=>x.hash).join(',')===authored.actions.map(x=>x.hash).join(','),
      'Source chain mutated or restarted after full Chrome process/profile restart');
  });
