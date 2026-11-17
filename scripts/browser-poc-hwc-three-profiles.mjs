@@ -81,7 +81,7 @@ async function checkApp(page,agent,dna){
  requireTrue(info.status==='enabled'&&info.cells?.length===1,'App not installed in profile');
  const cell=info.cells[0].map(x=>b64(asBytes(x)));
  requireTrue(cell[0]===dna&&cell[1]===agent,
-  'Profile's installed DNA/cell agent does not match host-bound deployment');
+  'Profile installed DNA/cell agent does not match host-bound deployment');
  return {agent,dna:cell[0]};
 }
 async function install(page,agent,dna,happSha){
