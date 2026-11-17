@@ -124,6 +124,7 @@ jobs:
           if-no-files-found: error
           path: |
             target/browser-poc/*/app/*.happ
+            target/browser-poc/*/app/*.dna
             target/browser-poc/*/app/*.yaml
             target/browser-poc/*/dna/*.dna
             target/browser-poc/*/dna/*.wasm
