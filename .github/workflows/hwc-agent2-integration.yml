@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: agent2-hwc-compat-${{ github.ref }}
@@ -22,6 +23,8 @@ concurrency:
 
 jobs:
   pinned-hwc:
+    # Already green at a892a3c; run again only by explicit manual dispatch.
+    if: github.event_name == 'workflow_dispatch'
     name: Apply, typecheck, Vitest, Chrome and Firefox builds
     runs-on: ubuntu-24.04
     timeout-minutes: 80
@@ -75,3 +78,119 @@ jobs:
           name: agent2-hwc-integration-${{ github.run_id }}
           if-no-files-found: warn
           path: ci-evidence/
+
+  real-imposter-wasm:
+    name: Real Imposter WASM execution (synthetic identity, NOT DEPLOYABLE)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout the Agent 2 integration branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned HWC (read only)
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - name: Create local-only HWC compatibility branch and apply pinned kit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          git -C hwc diff --check
+          cp compatibility/hwc-imposter-compatibility/tests/imposter-real-wasm.integration.test.ts \
+            hwc/packages/core/src/ribosome/imposter-real-wasm.integration.test.ts
+
+      - name: Download Agent 4's immutable, genuine WASM artifact from run 44157187629
+        uses: actions/download-artifact@v4
+        with:
+          name: browser-poc-real-WASM-and-hApp-NOT-DEPLOYABLE
+          run-id: 44157187629
+          repository: ConorTttttt/imposter-holochain
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: agent4-real-wasm
+
+      - name: Verify all checksums, source pins, synthetic identity and manifest consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t METADATA < <(find agent4-real-wasm -name deployment.json -type f)
+          test "${#METADATA[@]}" -eq 1
+          FIXTURE="$(realpath "$(dirname "${METADATA[0]}")")"
+          printf 'HWC_IMPOSTER_FIXTURE=%s\n' "$FIXTURE" >> "$GITHUB_ENV"
+          mkdir -p real-wasm-evidence
+          (cd "$FIXTURE" && sha256sum --check SHA256SUMS) | tee real-wasm-evidence/checksums.log
+          node - "$FIXTURE" <<'JS'
+          const fs=require('node:fs'),p=require('node:path'),crypto=require('node:crypto');
+          const root=process.argv[2], m=JSON.parse(fs.readFileSync(p.join(root,'deployment.json'),'utf8'));
+          const required={imposter:'111e6a44795e6572ed01191a98245ed723788c12',
+            hwc:'0c391226e78769d44ccb4661881ed8998b15f903',
+            h2hc:'cab242d32c988fe5e4e9fd06ebc82ed043541aa2'};
+          for(const [k,v] of Object.entries(required))if(m.pin?.[k]!==v)throw Error('Wrong pin '+k);
+          if(m.source_head!=='69a8ca9d82d0e977c34afc5244063432102b7e1f')throw Error('Wrong Agent 4 source head');
+          if(m.signature_status!=='UNSIGNED'||m.host_identity_source!=='SYNTHETIC_CI_FIXTURE'||
+             m.deployment_ready!==false||m.runtime_validation!=='NOT_RUN')throw Error('Unexpected deployment metadata');
+          if(m.network_seed.split('.')[1]!==m.host_agent_pub_key)throw Error('Seed host mismatch');
+          for(const [z,sha] of Object.entries(m.wasm_sha256)){
+            const bytes=fs.readFileSync(p.join(root,'dna',z+'.wasm'));
+            if(!bytes.subarray(0,8).equals(Buffer.from([0,97,115,109,1,0,0,0])))
+              throw Error('Invalid WASM header '+z);
+            if(crypto.createHash('sha256').update(bytes).digest('hex')!==sha)
+              throw Error('WASM hash mismatch '+z);
+            const mod=new WebAssembly.Module(bytes);
+            console.log('GENUINE_WASM',z,'bytes',bytes.length,
+              'imports',WebAssembly.Module.imports(mod).length,
+              'exports',WebAssembly.Module.exports(mod).length);
+          }
+          const dna=fs.readFileSync(p.join(root,'dna/dna.yaml'),'utf8');
+          const happ=fs.readFileSync(p.join(root,'app/happ.yaml'),'utf8');
+          if(!dna.includes('network_seed: '+m.network_seed)||
+             !happ.includes('network_seed: '+m.network_seed)||
+             !happ.includes('installed_hash: '+m.dna_hash))
+            throw Error('Manifest or installed DNA hash drift');
+          console.log('GENUINE_ARTIFACT_VERIFIED',JSON.stringify({
+            dna_hash:m.dna_hash,network_seed:m.network_seed,source_head:m.source_head,
+            host_identity_source:m.host_identity_source,deployment_ready:m.deployment_ready}));
+          JS
+
+      - name: Install pinned HWC dependencies (no Rust rebuild, no gameplay edits)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: HWC dependency install and real coordinator compatibility probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hwc
+          npm ci 2>&1 | tee ../real-wasm-evidence/npm-ci.log
+          npm run build --workspace=@hwc/shared 2>&1 | tee ../real-wasm-evidence/shared-build.log
+          npm run build --workspace=@holo-host/lair 2>&1 | tee ../real-wasm-evidence/lair-build.log
+          npx vitest run packages/core/src/ribosome/imposter-real-wasm.integration.test.ts --reporter=verbose \
+            2>&1 | tee ../real-wasm-evidence/real-imposter-wasm.log
+
+      - name: Upload exact first WASM failure, logs and branch source diff
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p real-wasm-evidence
+          git -C hwc diff > real-wasm-evidence/patched-hwc.diff || true
+          git -C hwc status --porcelain > real-wasm-evidence/patched-hwc-status.txt || true
+          git -C hwc rev-parse HEAD > real-wasm-evidence/hwc-base-sha.txt || true
+          cp compatibility/hwc-imposter-compatibility/tests/imposter-real-wasm.integration.test.ts \
+             real-wasm-evidence/real-wasm-test.ts || true
+
+      - name: Archive WASM execution evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-real-imposter-wasm-${{ github.run_id }}
+          path: real-wasm-evidence/
+          if-no-files-found: warn
