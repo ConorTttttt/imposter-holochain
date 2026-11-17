@@ -144,7 +144,8 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo "Real Chromium/HWC smoke and SAME OPFS synthetic second-cell entry, no key export."\n          node compatibility/hwc-imposter-compatibility/browser/collision-smoke-patch.mjs scripts/browser-poc-hwc-smoke.mjs
+          echo "Real Chromium/HWC smoke and SAME OPFS synthetic second-cell entry, no key export."
+          node compatibility/hwc-imposter-compatibility/browser/collision-smoke-patch.mjs scripts/browser-poc-hwc-smoke.mjs
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/browser-poc-hwc-smoke.mjs 2>&1 | tee runtime-evidence/hwc-runtime-smoke.log
 
       - name: Upload patched Chrome and Firefox build for operator inspection
