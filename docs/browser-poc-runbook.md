@@ -311,7 +311,7 @@ The security-patched linker must be built from the *in-run Agent 3 source kit*, 
 
 For controlled operator deployment, configure server-side only: `H2HC_LINKER_BOOTSTRAP_URL=<same-network-bootstrap>`, `H2HC_LINKER_ADMIN_SECRET=<server-only-secret>`, `H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false`, persistent key file and durable session-store settings approved by Agent 3. Expose a trustworthy `wss://` endpoint with TLS and origin restrictions. Provision individual browser agents through Agent 3's verified authenticated joining/registration mechanism, **never by placing server secrets, bearer tokens, or HWC signing keys in browser JavaScript**. Independently verify `window.holochain.getConnectionStatus()` reports `authenticated === true` and `wsHealthy === true` in **each** profile. A green `cargo test` is not proof of deployed WSS authentication, native-validation parity or three-agent DHT convergence.
 
-**P0 outcome (at drafting):** Identity-from-HWC supported by pinned source (**API VERIFIED, BROWSER NOT YET VERIFIED**); real HWC browser smoke workflow **RUNNING/RESULT AWAITED**; operator-held persistent host key **NOT CREATED**; host-specific deployment candidate **NOT CREATED**; first real install/genesis/zome/lobby **NOT RUN or awaiting smoke evidence**; three-profile secure DHT **NOT RUN**. Keep PR #4 **Draft**.
+**P0 outcome (real HWC browser CI 44165999414):** HWC Lair host identity and reload stability **PASS**; real host-bound WASM/hApp rebuilt and hash-verified **PASS**; HWC install API acceptance **PASS**; installed cell agent and DNA hash consistency **PASS**; first `game::get_game_state` real WASM call **FAIL** with `holochain_wasmer_guest` deserialization of byte `192` (`0xC0`, MessagePack nil). Coordinator `init`/CapGrant persistence and actual WASM `dna_info_v2` **NOT PROVEN**, authorized lobby creation **NOT RUN**, independent guest authorization/DHT/reconnect **NOT RUN**. CI HWC identity is ephemeral and therefore **NON-DEPLOYABLE**; operator-held persistent host key remains **NOT CREATED**. Keep PR #4 **Draft**.
 
 
 ### Server-only authenticated H2HC configuration example (not yet exercised against browsers)
@@ -338,3 +338,42 @@ sha256sum /opt/h2hc-patched/bin/h2hc-linker
 ```
 
 `H2HC_LINKER_JOINING_SERVICE_URL` and `H2HC_LINKER_PUBLIC_URL` **must be set together** at the pinned revision; for the operator-ready path above we require both. The `wss://` public address must terminate TLS at a trusted proxy, while `127.0.0.1:8090` binds the linker only on loopback. Use a protected writable directory for the linker identity and SQLite sessions, and do not commit a private-key file, bearer token, joining invite token, or server secret. Confirm network bootstrap and joining-service authorization under the *patched* binary before enabling guest connections. A real linker `authenticated` indication without cross-agent DHT validation is still **NOT** evidence that P0 multiplayer passed.
+
+
+### First actual Imposter WASM failure — reproducible HWC handoff (17 Nov 2026)
+
+**Exact executed workflow:** [Agent 4 real Chromium HWC run 44165999414](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44165999414), commit `bb49566f19fb9a5a2d1fce52b4e950fcb23b9210`. Failed job `134332086677`; the job log, `runtime-evidence.json`, `hwc-runtime-smoke.log`, original pinned HWC diff, extension build log, real WASM build log, and `ephemeral-deployment.json` are included in [evidence artifact 14366785171](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44165999414/artifacts/14366785171). The runner uses the original unmodified Imposter Rust zomes and Agent 2's exact CI-green patched HWC kit `a892a3c0b3141f0ffe9daf868cce4e8e29af2efc`.
+
+| First-cell gate | Actual outcome |
+| --- | --- |
+| Headed Chromium loads real patched HWC extension | **PASS** |
+| `connect()` mints/returns an HWC-owned Lair key and reconnect keeps it | **PASS** |
+| `browser-poc-build.sh` compiles **both real WASMs**, packs host-bound DNA and hApp | **PASS** |
+| `browser-poc-verify.sh` and real `hc dna hash` | **PASS** |
+| `installApp()` returns, `appInfo()` provides provisioned cell | **PASS (API acceptance only)** |
+| Installed cell's 39-byte agent key equals original HWC host key | **PASS** |
+| Installed cell DNA hash equals native computed hash | **PASS** |
+| `game::get_game_state` executes successfully | **FAIL** |
+| Source-chain `InitZomesComplete`, private `CapGrant` persistence | **BLOCKED: no independent trace / inspector** |
+| Actual WASM `dna_info_v2` effective seed | **BLOCKED: no read-only probe** |
+| Host `create_lobby` with genuine seed | **NOT RUN (stop on first WASM failure)** |
+| Unauthorized guest lobby attempt | **NOT RUN** |
+| Authenticated three-profile DHT convergence / reconnect | **NOT RUN** |
+
+Exact stop error from the **real** `window.holochain.callZome({zome_name:'game',fn_name:'get_game_state',payload:null})` call:
+
+```text
+game::get_game_state: Zome error: {"module_path":"holochain_wasmer_guest","line":246,"error":{"Deserialize":{"0":192}}}
+```
+
+Byte `192` is `0xc0`, MessagePack nil. This indicates deserialization failure at the guest boundary; **it does NOT, by itself, identify which host function/callback, initialization stage or type rejected the nil byte**. Do not change the Rust zome to mask it. Agent 2 should trace the first guest invocation and its host/guest MessagePack input/return bytes, `init()` ordering and `CapGrant` storage using the pinned HWC patched checkout and real WASMs. Preserve the already-passing identity, install metadata and exact DNA hash. Stop at the earliest failing function; fail closed.
+
+**Ephemeral, real HWC-generated host key for this exact run (public only):**
+`uhCAkCTrM1BlKW19juwch6qXBdiYYkPcZM52Pzz5nejAqnGzlwY6D`.
+Host-bound seed:
+`g1.uhCAkCTrM1BlKW19juwch6qXBdiYYkPcZM52Pzz5nejAqnGzlwY6D.8cec78124387a2d1463d797a1273c5b3`.
+Native DNA hash:
+`uhC0kcbNWJurCTpYKnU5pQj0dgAu6a9pf11wMw6VH8qyGvgetmmqW`.
+hApp SHA-256:
+`e86af83bd8b73981d8facaa95bc018da55b7081a1583096869a523052dceb991`.
+Both real WASMs have the already-known unchanged package hashes (`game` `a17a75cdf1c3dcfd6788885f34505dd96cfcba78f46e8b9acbd1e9dd12858c4a`, `game_integrity` `42f633a760cf252fa835474105070d5fb5071865c8c6e52ce2de39e71f07676f`). `deployment_ready:false` and `host_identity_source:EPHEMERAL_HWC_BROWSER_PROFILE`. **No hApp from this ephemeral CI keystore may be presented as a deployable operator-host bundle.**
