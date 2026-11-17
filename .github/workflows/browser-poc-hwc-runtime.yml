@@ -29,11 +29,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout Agent 2 VERIFIED HWC patch kit at CI-green source commit
+      - name: Checkout Agent 2 ExternIO-corrected, real-WASM CI-green HWC patch kit
         uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: a892a3c0b3141f0ffe9daf868cce4e8e29af2efc
+          ref: f888dc21110acff3e093ebe20b8ca16f60f1877d
           path: agent2-kit
           persist-credentials: false
 
@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
-          test "$(git -C agent2-kit rev-parse HEAD)" = "a892a3c0b3141f0ffe9daf868cce4e8e29af2efc"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "f888dc21110acff3e093ebe20b8ca16f60f1877d"
           git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
