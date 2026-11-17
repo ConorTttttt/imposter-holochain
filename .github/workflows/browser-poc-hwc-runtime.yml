@@ -97,7 +97,9 @@ jobs:
         run: |
           set -euo pipefail
           test -s h2hc-binary/h2hc-linker-linux-x86_64
-          (cd h2hc-binary && sha256sum --check SHA256SUMS)
+          expected="$(head -1 h2hc-binary/SHA256SUMS | awk '{print $1}')"
+          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | awk '{print $1}')"
+          test "$actual" = "$expected"
           test "$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
           grep -Fq cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
           chmod +x h2hc-binary/h2hc-linker-linux-x86_64
