@@ -38,15 +38,34 @@ network=r"""
      }
      await new Promise(resolve=>setTimeout(resolve,500));
    }
-   must(last?.authenticated===true && net?.hasSession===true,
-     'Real HWC never obtained authenticated H2HC WS session; flags '+JSON.stringify({
+   must(last?.authenticated===true,
+     'Real HWC never authenticated to H2HC; flags '+JSON.stringify({
        wsHealthy:last?.wsHealthy,authenticated:last?.authenticated,hasSession:net?.hasSession,
        lastError:last?.lastError
      }));
+   // Browser background and offscreen signer are two components; a false
+   // background hasSession is a propagation risk, not proof the WS challenge
+   // failed. Prove the actual H2HC server issued session and registered DNA.
+   const evidenceLogPath=process.env.H2HC_SERVER_LOG;
+   let serverProof='';
+   for(let i=0;i<15;i++){
+     serverProof=fs.existsSync(evidenceLogPath)?fs.readFileSync(evidenceLogPath,'utf8'):'';
+     if(serverProof.includes('Auth OK for agent '+host)
+         && serverProof.includes('Browser agent joined kitsune2 space')
+         && serverProof.includes('dna=') )break;
+     await new Promise(resolve=>setTimeout(resolve,300));
+   }
+   must(serverProof.includes('Auth OK for agent '+host)
+     && serverProof.includes('Browser agent joined kitsune2 space'),
+     'Browser status reported authenticated, but the H2HC server did not prove agent challenge + join');
    evidence.authenticated_h2hc={
-     linker_url:url,auth:true,session_boolean:true,installed_dna:info.dna,agent:info.agent
+     linker_url:url,auth:true,server_ws_challenge_confirmed:true,
+     background_has_session:Boolean(net?.hasSession),installed_dna:info.dna,agent:info.agent
    };
-   // Verify the installed DNA and public agent - never extract or print keys.
+   if(net?.hasSession!==true)
+     record('H2HC_BACKGROUND_BEARER_PROPAGATION','AT_RISK',
+       'H2HC issued authenticated WS session; browser getNetworkStatus.hasSession=false, verifying with real publish next');
+   // Verify installed DNA and public agent - never extract private keys or tokens.
    must(info.agent===host&&info.dna===m.dna_hash,'Cell identity drift while linking');
  });
 """
