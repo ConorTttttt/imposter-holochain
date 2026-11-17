@@ -52,4 +52,35 @@ describe.sequential('P0 multi-cell source-chain isolation', () => {
     expect(db.getDetails(ae, dna, b)).toBeNull();
     console.log('MULTI_CELL_PRIVATE_CAPGRANT_ISOLATION_PASS', {dna: 'same', agents: 2});
   });
+
+  it('binds first transaction write and rejects changing the author before commit', async () => {
+    const db = SourceChainStorage.getInstance();
+    await db.init();
+    await db.clear();
+    const dna = new Uint8Array(39).fill(1);
+    const a = new Uint8Array(39).fill(2);
+    const b = new Uint8Array(39).fill(3);
+    const makeAction = (author: Uint8Array, hashByte: number): CreateAction => ({
+      actionHash: new Uint8Array(39).fill(hashByte),
+      actionSeq: 0,
+      author,
+      timestamp: 1000n,
+      prevActionHash: null,
+      actionType: 'Create',
+      signature: new Uint8Array(64).fill(1),
+      entryHash: new Uint8Array(39).fill(hashByte + 2),
+      entryType: 'CapGrant',
+    });
+    const aliceAction = makeAction(a, 0x41);
+    const bobAction = makeAction(b, 0x42);
+    db.beginTransaction();
+    await expect(db.putAction(aliceAction, dna, a)).resolves.toBeUndefined();
+    await expect(db.putAction(bobAction, dna, b)).rejects.toThrow(
+      'Cross-cell source-chain operation inside active transaction',
+    );
+    expect(db.queryActions(dna, a)).toHaveLength(1);
+    expect(db.queryActions(dna, b)).toHaveLength(0);
+    db.rollbackTransaction();
+    expect(db.getAction(aliceAction.actionHash)).toBeNull();
+  });
 });
