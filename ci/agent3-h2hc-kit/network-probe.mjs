@@ -7,7 +7,7 @@ import { createPrivateKey, sign as edSign } from 'node:crypto';
 const fixture = JSON.parse(readFileSync(process.env.H2HC_FIXTURE_FILE, 'utf8'));
 const root = process.env.H2HC_BASE_URL || 'http://127.0.0.1:18090';
 const secret = process.env.H2HC_LINKER_ADMIN_SECRET;
-assert(secret && !process.env.H2HC_LINKER_ALLOW_INSECURE_DEV, 'production authentication required');
+assert(secret && process.env.H2HC_LINKER_ALLOW_INSECURE_DEV === 'false', 'production authentication required');
 const observations = [];
 function record(label, detail) {
   const line = { label, ...detail };
