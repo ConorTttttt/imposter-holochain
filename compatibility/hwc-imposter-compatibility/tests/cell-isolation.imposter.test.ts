@@ -53,7 +53,7 @@ async function assertPrivateCell(storage: SourceChainStorage, who: Uint8Array, o
   expect(storage.getAction(hash(excludedId + 2))).toBeNull();
   expect(storage.getActionByEntryHash(hash(excludedId + 3))).toBeNull();
   expect(storage.getDetails(hash(excludedId + 1), cellDna, who)).toBeNull();
-  expect(storage.getRecord(hash(excludedId + 2))).toBeNull();
+  expect(await storage.getRecord(hash(excludedId + 2))).toBeNull();
 }
 describe.sequential('SourceChainStorage — cross-cell private entry and CapGrant isolation', () => {
   let storage: SourceChainStorage;
