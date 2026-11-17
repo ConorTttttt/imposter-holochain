@@ -991,6 +991,7 @@ TESTS = {
   'packages/core/src/storage/cell-isolation.imposter.test.ts': 'tests/cell-isolation.imposter.test.ts',
   'packages/core/src/ribosome/host-fn/dna-info-imposter.test.ts': 'tests/dna-info-imposter.test.ts',
   'packages/core/src/dht/publish-upgrade.imposter.test.ts': 'tests/publish-upgrade.imposter.test.ts',
+  'packages/core/src/network/websocket-session.imposter.test.ts': 'tests/websocket-session.imposter.test.ts',
 }
 P='packages/extension/src/lib/happ-context-manager.test.ts'
 change(P,'''  describe("Get cell IDs", () => {''','''  describe("Imposter host-bound DNA modifiers", () => {
@@ -1093,6 +1094,203 @@ change(P,'''  // STEP 2: Call ribosome with wrapped payload
     dnaManifest: testManifest,
     payload: payloadBytes,
   });''')
+
+
+# Agent 2 session lifecycle and DNA-scoped signing hardening.
+# Session bearer credentials remain in the executor/offscreen runtime, never page APIs.
+P='packages/extension/src/lib/zome-executor.ts'
+change(P,'''  authenticated: boolean;
+  registrations?: Array<{ dna_hash: string; agent_pubkey: string }>;''','''  authenticated: boolean;
+  /** Live authenticated HTTP bearer available, not a stored credential. */
+  hasSession?: boolean;
+  registrations?: Array<{ dna_hash: string; agent_pubkey: string }>;''')
+
+P='packages/extension/src/background/chrome-offscreen-executor.ts'
+change(P,'''          authenticated: response.authenticated || false,
+          registrations: response.registrations,''','''          authenticated: response.authenticated || false,
+          hasSession: response.isConnected === true &&
+            response.authenticated === true && response.hasSession === true,
+          registrations: response.registrations;'''.replace('registrations: response.registrations;', 'registrations: response.registrations,'))
+
+P='packages/extension/src/background/base-executor.ts'
+change(P,'''      authenticated: this.wsService?.isAuthenticated() || false,
+      registrations: this.wsService?.getRegistrations(),''','''      authenticated: this.wsService?.isAuthenticated() || false,
+      hasSession: !!this.sessionToken && !!this.wsService?.isConnected(),
+      registrations: this.wsService?.getRegistrations(),''')
+change(P,'''    this.wsService.onStateChange((state: ConnectionState) => {
+      logNetwork.info(''','''    this.wsService.onStateChange((state: ConnectionState) => {
+      // A bearer belongs to the current authenticated WebSocket lifecycle.
+      if (state !== "connected" || !this.wsService?.isAuthenticated()) {
+        this.sessionToken = null;
+        this.publishService?.setSessionToken("");
+      }
+      logNetwork.info(''')
+
+P='packages/extension/src/offscreen/index.ts'
+change(P,'''  log.debug("handleNetworkRequest:", request.method, request.url, "sessionToken:", sessionToken ? sessionToken.substring(0, 20) + "..." : "NULL");''','''  log.debug("handleNetworkRequest:", request.method, request.url, "hasSession:", !!sessionToken);''')
+change(P,'''    const headers = { ...(request.headers || {}) };
+    if (sessionToken) {
+      headers['Authorization'] = ''','''    const headers = { ...(request.headers || {}) };
+    // Never forward a worker-supplied or stale bearer after a WS disconnect.
+    delete headers['Authorization'];
+    delete headers['authorization'];
+    if (sessionToken && wsService?.isConnected()) {
+      headers['Authorization'] = ''')
+change(P,'''    // Notify background of connection state changes
+    chrome.runtime.sendMessage({''','''    // The bearer may outlive the WS unless explicitly invalidated.
+    // Keep it local to offscreen, clear publishing and worker copies on loss.
+    if (state !== "connected" || !wsService?.isAuthenticated()) {
+      sessionToken = null;
+      publishService?.setSessionToken("");
+      if (workerReady && ribosomeWorker) {
+        sendToWorker('CONFIGURE_NETWORK', { linkerUrl, sessionToken: null })
+          .catch((err) => logNetwork.warn("Could not clear worker session:", err));
+      }
+    }
+
+    // Notify background of connection state changes
+    chrome.runtime.sendMessage({''')
+change(P,'''    log.debug("onSessionToken fired, token:", token?.substring(0, 30), "workerReady:", workerReady, "hasWorker:", !!ribosomeWorker);''','''    log.debug("onSessionToken fired, workerReady:", workerReady, "hasWorker:", !!ribosomeWorker);''')
+change(P,'''    if (sessionToken) {
+      publishService.setSessionToken(sessionToken);
+    }
+  }
+
+  // Convert transported records''','''    publishService.setSessionToken(sessionToken || "");
+  }
+
+  // Convert transported records''')
+change(P,'''        authenticated: wsService?.isAuthenticated() || false,
+        registrations: wsService?.getRegistrations() || [],''','''        authenticated: wsService?.isAuthenticated() || false,
+        hasSession: !!sessionToken && !!wsService?.isConnected(),
+        registrations: wsService?.getRegistrations() || [],''')
+
+P='packages/extension/src/background/index.ts'
+change(P,'''let linkerConfig: { linkerUrl: string; sessionToken?: string } | null = null;''','''let linkerConfig: { linkerUrl: string } | null = null;''')
+change(P,'''function setLinkerConfig(url: string, sessionToken?: string): void {
+  linkerConfig = { linkerUrl: url, sessionToken };''','''function setLinkerConfig(url: string): void {
+  linkerConfig = { linkerUrl: url };''')
+change(P,'''  chrome.storage.local.set({ hwc_linker_config: { linkerUrl: url, sessionToken } }).catch''','''  chrome.storage.local.set({ hwc_linker_config: { linkerUrl: url } }).catch''')
+change(P,'''      linkerConfig = { linkerUrl: saved.linkerUrl, sessionToken: saved.sessionToken };
+      connectionStatusManager.startHealthChecks();''','''      linkerConfig = { linkerUrl: saved.linkerUrl };
+      // Discard any legacy persisted token; restoration always reauthenticates.
+      await chrome.storage.local.set({ hwc_linker_config: { linkerUrl: saved.linkerUrl } });
+      connectionStatusManager.startHealthChecks();''')
+change(P,'''      await executor.configureNetwork({ linkerUrl: saved.linkerUrl, sessionToken: saved.sessionToken });''','''      await executor.configureNetwork({ linkerUrl: saved.linkerUrl });''')
+change(P,'''// Persist session token from WS auth so it survives Firefox background page suspension
+executor.onSessionToken((token) => {
+  if (linkerConfig) {
+    setLinkerConfig(linkerConfig.linkerUrl, token);
+  }
+});''','''// Session credentials live in the executor/offscreen only. Firefox reauthenticates
+// after event-page restart; Chrome queries its live offscreen session state.''')
+change(P,'''async function handleLinkerGetStatus(
+  message: RequestMessage
+): Promise<ResponseMessage> {
+  return createSuccessResponse(message.id, {
+    configured: linkerConfig !== null,
+    linkerUrl: linkerConfig?.linkerUrl || null,
+    hasSession: !!linkerConfig?.sessionToken,
+    networkConfigured: executor.networkConfigured,
+  });
+}''','''async function handleLinkerGetStatus(
+  message: RequestMessage
+): Promise<ResponseMessage> {
+  // Query the owner of the active WebSocket and bearer, not a stale storage
+  // snapshot. Only a boolean crosses the public status response boundary.
+  const wsState = await executor.getWebSocketState();
+  return createSuccessResponse(message.id, {
+    configured: linkerConfig !== null,
+    linkerUrl: linkerConfig?.linkerUrl || null,
+    hasSession: linkerConfig !== null && wsState.isConnected &&
+      wsState.authenticated && wsState.hasSession === true,
+    networkConfigured: executor.networkConfigured,
+  });
+}''')
+
+P='packages/core/src/network/websocket-service.ts'
+change(P,'''  private pendingAuthAgent: string | null = null;''','''  private pendingAuthAgent: string | null = null;
+  /** Authentication is for exactly one agent, regardless of queued DNA registrations. */
+  private authenticatedAgent: string | null = null;''')
+change(P,'''    this.authenticated = true;
+    this.pendingAuthAgent = null;
+
+    // Capture session token''','''    this.authenticated = true;
+    this.authenticatedAgent = this.pendingAuthAgent;
+    this.pendingAuthAgent = null;
+
+    // Capture session token''')
+change(P,'''    this.authenticated = false;
+
+    // Track the failed agent''','''    this.authenticated = false;
+    this.authenticatedAgent = null;
+    this.options.sessionToken = "";
+
+    // Track the failed agent''')
+change(P,'''    // Build set of registered spaces for this agent (base64url-no-pad encoded)
+    // Currently not available in a directly usable form, so pass undefined
+    // to skip space validation. The agent_pubkey check is the critical one.
+    const registeredSpaces: Set<string> | undefined = undefined;''','''    // Never sign for a different agent on a WS authenticated to this agent.
+    if (!this.isConnected() || this.authenticatedAgent !== message.agent_pubkey) {
+      this.send({
+        type: "sign_response",
+        request_id: message.request_id,
+        error: "Agent is not the authenticated WebSocket identity",
+      });
+      return;
+    }
+
+    // Kitsune2 AgentInfo.space is the base64url-no-pad 32-byte DNA core,
+    // not the HoloHash wire bytes with 3-byte prefix and 4-byte location.
+    // Derive allowed spaces solely from locally registered DNA/agent pairs.
+    const registeredSpaces = new Set<string>();
+    for (const reg of [...this.registrations, ...this.pendingRegistrations]) {
+      if (reg.agent_pubkey !== message.agent_pubkey) continue;
+      try {
+        const dna = decodeHashFromBase64(reg.dna_hash);
+        if (dna.length !== 39 || dna[0] !== 0x84 ||
+            dna[1] !== 0x2d || dna[2] !== 0x24) continue;
+        const core = dna.slice(3, 35);
+        const binary = Array.from(core, (byte) => String.fromCharCode(byte)).join("");
+        registeredSpaces.add(btoa(binary).replace(/\\+/g, "-")
+          .replace(/\\//g, "_").replace(/=+$/, ""));
+      } catch {
+        // Invalid local registration must never grant a foreign space.
+      }
+    }'''.replace('/\\\\+/g', '/\\+/g').replace('/\\\\//g', '/\\//g'))
+change(P,'''    this.authenticated = false;
+    this.failedAuthAgents.clear();
+    this.lastPeerCount = undefined;''','''    this.authenticated = false;
+    this.authenticatedAgent = null;
+    this.options.sessionToken = "";
+    this.failedAuthAgents.clear();
+    this.lastPeerCount = undefined;''')
+P='packages/core/src/network/agent-info-validator.ts'
+change(P,'''  if (registeredSpaces && registeredSpaces.size > 0) {
+    if (!registeredSpaces.has(agentInfo.space)) {''','''  if (registeredSpaces) {
+    // An explicitly supplied empty set means no signing authorization.
+    if (!registeredSpaces.has(agentInfo.space)) {''')
+
+P='packages/extension/src/background/chrome-offscreen-executor.test.ts'
+change(P,'''    it("getWebSocketState returns peer count from offscreen", async () => {''','''    it("projects only live session presence from offscreen, never a bearer", async () => {
+      sendMessageMock.mockResolvedValue({
+        success: true, state: "connected", isConnected: true,
+        authenticated: true, hasSession: true,
+        sessionToken: "must-not-be-exposed",
+      });
+      const executor = await createReadyExecutor();
+      const state = await executor.getWebSocketState();
+      expect(state.hasSession).toBe(true);
+      expect(JSON.stringify(state)).not.toContain("must-not-be-exposed");
+
+      sendMessageMock.mockResolvedValue({
+        success: true, state: "reconnecting", isConnected: false,
+        authenticated: false, hasSession: true,
+      });
+      expect((await executor.getWebSocketState()).hasSession).toBe(false);
+    });
+
+    it("getWebSocketState returns peer count from offscreen", async () => {''')
 
 def main():
     p = argparse.ArgumentParser()

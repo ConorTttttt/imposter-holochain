@@ -23,12 +23,8 @@ concurrency:
 
 jobs:
   pinned-hwc:
-    # Run the full suite on explicit dispatch, or this one audited security
-    # verification push. This includes SQLite legacy column-order compatibility.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       github.event.head_commit.message == 'ci(hwc): verify issue 7 composite entry migration')
+    # Execute security regressions on every Agent 2 branch push and PR update.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'pull_request'
     name: Apply, typecheck, Vitest, Chrome and Firefox builds
     runs-on: ubuntu-24.04
     timeout-minutes: 80
