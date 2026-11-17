@@ -41,7 +41,14 @@ run npm ci
 # Do not run misleading test commands without dependencies.
 if [[ $FAILED -ne 0 ]]; then echo 'BLOCKED: dependency installation failed' | tee -a "$LOG"; exit 1; fi
 # Build first because existing extension unit tests inspect generated browser bundles.
-run npm run typecheck
+# Typecheck HWC runtime workspaces independently: the pinned standalone
+# @holo-host/web-conductor-client's @holo-host/joining-service/client exports
+# are unresolved in npm ci and fail the upstream root typecheck for reasons
+# outside HWC core/extension; first two CI attempts preserve that exact error.
+run npx tsc -p packages/shared/tsconfig.json
+run npx tsc -p packages/lair/tsconfig.json
+run npx tsc -p packages/core/tsconfig.json
+run npx tsc --noEmit -p packages/extension/tsconfig.json
 run npm run build:chrome --workspace @hwc/extension
 run npm run build:firefox --workspace @hwc/extension
 # HWC core/extension are the integration gates; @holo-host/web-conductor-client's
