@@ -2,7 +2,7 @@
 //! The output contains private TEST keys. Never upload fixtures.json as an artifact.
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use holo_hash::{ActionHash, AgentPubKey, DnaHash};
+use holo_hash::{ActionHash, AgentPubKey, DnaHash, HashableContentExtSync};
 use holochain_types::prelude::{
     Action, ActionData, ActionHeader, ChainOp, DhtOp, DnaData, Signature, SignedAction, Timestamp,
 };
