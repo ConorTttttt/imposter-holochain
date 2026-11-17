@@ -150,7 +150,7 @@ replace(
   record('UNAUTHORIZED_GUEST_REJECTED','NOT RUN',"""
 )
 replace(
-    "  const publication=evidence.h2hc_dht_result;",
+    " const publication=evidence.h2hc_dht_result;",
     r"""  // The job may only return success with all three independently anchored
   // proofs, including native negative validation. Never accept generic counters.
   const allP0Green=
