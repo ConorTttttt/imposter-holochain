@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/browser-poc-hwc-runtime.yml"
       - "scripts/browser-poc-hwc-smoke.mjs"
+      - "scripts/browser-poc-hwc-three-profiles.mjs"
+      - "docs/browser-poc-three-profile-p0.md"
       - "scripts/browser-poc-lib.mjs"
       - "scripts/browser-poc-ci-worker-probe.mjs"
       - "docs/browser-poc-runbook.md"
@@ -19,6 +21,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  static-harness-validation:
+    name: "Preflight syntax and packaging tests (no DHT claims)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JavaScript syntax and baseline immutable packager regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/browser-poc-hwc-three-profiles.mjs
+          node --check scripts/browser-poc-hwc-smoke.mjs
+          node --test scripts/browser-poc.test.mjs
+
   real-hwc-first-cell:
     name: "Three genuine HWC/Lair profiles, same DNA, signed H2HC sessions (DHT gated)"
     runs-on: ubuntu-24.04
