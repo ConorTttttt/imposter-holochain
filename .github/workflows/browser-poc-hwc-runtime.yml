@@ -73,7 +73,16 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix hwc 2>&1 | tee runtime-evidence/hwc-npm-install.log
-          npm run build:extension --prefix hwc 2>&1 | tee runtime-evidence/hwc-extension-build.log
+          # Agent 2 CI-green integration builds shared + Lair declarations first.
+          # The root build:extension script's order is not valid from a clean checkout.
+          (
+            cd hwc
+            npx tsc -p packages/shared/tsconfig.json
+            npx tsc -p packages/lair/tsconfig.json
+            npx tsc -p packages/core/tsconfig.json
+            npx tsc --noEmit -p packages/extension/tsconfig.json
+            npm run build:chrome --workspace @hwc/extension
+          ) 2>&1 | tee runtime-evidence/hwc-extension-build.log
           test -s hwc/packages/extension/dist-chrome/manifest.json
           test -s hwc/packages/extension/dist-chrome/inject/index.js
           test -s hwc/packages/extension/dist-chrome/background/index.js
