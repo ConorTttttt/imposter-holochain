@@ -787,11 +787,19 @@ change(P,'''  private activeCellId: string | null = null;''','''  private active
   private entryCellIds = new Map<string, string>();''')
 change(P,'''      this.sessionCache.actions.set(key, action);''','''      this.sessionCache.actions.set(key, action);
       this.actionCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''', occurrences=2)
-change(P,'''    this.sessionCache.actions.set(key, action);''','''    this.sessionCache.actions.set(key, action);
+change(P,'''    // CRITICAL: Also update session cache so subsequent reads are synchronous
+    const key = this.hashToKey(action.actionHash);
+    this.sessionCache.actions.set(key, action);''','''    // CRITICAL: Also update session cache so subsequent reads are synchronous
+    const key = this.hashToKey(action.actionHash);
+    this.sessionCache.actions.set(key, action);
     this.actionCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''')
 change(P,'''      this.sessionCache.entries.set(key, entry);''','''      this.sessionCache.entries.set(key, entry);
       this.entryCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''', occurrences=2)
-change(P,'''    this.sessionCache.entries.set(key, entry);''','''    this.sessionCache.entries.set(key, entry);
+change(P,'''    // CRITICAL: Also update session cache so subsequent reads are synchronous
+    const key = this.hashToKey(entry.entryHash);
+    this.sessionCache.entries.set(key, entry);''','''    // CRITICAL: Also update session cache so subsequent reads are synchronous
+    const key = this.hashToKey(entry.entryHash);
+    this.sessionCache.entries.set(key, entry);
     this.entryCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''')
 change(P,'''    let actions: Action[] = Array.from(this.sessionCache.actions.values());''','''    let actions: Action[] = Array.from(this.sessionCache.actions.values())
       .filter(action => this.actionCellIds.get(this.hashToKey(action.actionHash)) ===
