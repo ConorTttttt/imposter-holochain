@@ -437,6 +437,22 @@ change(P,'''        if (entryType && entryType.startsWith('{')) {
         return {
           entryHash: new Uint8Array(row.entry_hash),''')
 
+# DirectSQLiteStorage is the production worker source-chain provider.
+# It already scopes queryActions/getDetails by cell, but its hash-only
+# action readers allow another active cell to fetch a private action / CapGrant.
+# The local chain's action lookups must be restricted to the worker cell.
+P='packages/extension/src/offscreen/ribosome-worker.ts'
+change(P,'''    const stmt = db.prepare('SELECT * FROM actions WHERE action_hash = ?');
+    try {
+      stmt.bind([toBytes(actionHash)]);''','''    const stmt = db.prepare('SELECT * FROM actions WHERE cell_id = ? AND action_hash = ?');
+    try {
+      stmt.bind([this.currentCellId, toBytes(actionHash)]);''')
+change(P,'''    const stmt = db.prepare('SELECT * FROM actions WHERE entry_hash = ? ORDER BY action_seq ASC LIMIT 1');
+    try {
+      stmt.bind([toBytes(entryHash)]);''','''    const stmt = db.prepare('SELECT * FROM actions WHERE cell_id = ? AND entry_hash = ? ORDER BY action_seq ASC LIMIT 1');
+    try {
+      stmt.bind([this.currentCellId, toBytes(entryHash)]);''')
+
 # The IndexedDB fallback reuses a shared synchronous cache across cells.
 # It must not retain other cells' entries during the preload transition.
 P='packages/core/src/storage/source-chain-storage.ts'
@@ -769,6 +785,7 @@ TESTS = {
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
   'packages/core/src/hash/system-entry.imposter.test.ts': 'tests/system-entry.imposter.test.ts',
   'packages/core/src/storage/private-entry-persistence.imposter.test.ts': 'tests/private-entry-persistence.imposter.test.ts',
+  'packages/core/src/storage/cell-isolation.imposter.test.ts': 'tests/cell-isolation.imposter.test.ts',
   'packages/core/src/ribosome/host-fn/dna-info-imposter.test.ts': 'tests/dna-info-imposter.test.ts',
   'packages/core/src/dht/publish-upgrade.imposter.test.ts': 'tests/publish-upgrade.imposter.test.ts',
 }
