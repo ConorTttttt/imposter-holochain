@@ -34,21 +34,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Isolate standalone H2HC checkout from Imposter Cargo workspace
+        run: cp -a h2hc "$RUNNER_TEMP/h2hc"
+
       - name: Verify signed-off source and decode complete source kit
         run: |
           set -euo pipefail
-          test "$(git -C h2hc rev-parse HEAD)" = cab242d32c988fe5e4e9fd06ebc82ed043541aa2
+          test "$(git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD)" = cab242d32c988fe5e4e9fd06ebc82ed043541aa2
           cat ci/agent3-h2hc-kit/part00.b64 ci/agent3-h2hc-kit/part01.b64 ci/agent3-h2hc-kit/part02.b64 | base64 --decode > "$RUNNER_TEMP/h2hc-security-kit.tar.xz"
           echo "afcf5c406b6b6040ac00060d31052a9eaa121c5b8540ca6a7354898b6752be62  $RUNNER_TEMP/h2hc-security-kit.tar.xz" | sha256sum --check
           tar -xJf "$RUNNER_TEMP/h2hc-security-kit.tar.xz" -C "$GITHUB_WORKSPACE"
           python3 -m py_compile agent3-h2hc-patches/apply_security_patches.py
           echo "CI source: $(git rev-parse HEAD)"
-          echo "Pinned H2HC: $(git -C h2hc rev-parse HEAD)"
+          echo "Pinned H2HC: $(git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD)"
 
       - name: Apply three existing security transformations to pinned checkout
         run: |
           set -euo pipefail
-          cd h2hc
+          cd "$RUNNER_TEMP/h2hc"
           git config user.name 'Agent 3 security CI'
           git config user.email 'agent3-security-ci@users.noreply.github.com'
           bash "$GITHUB_WORKSPACE/agent3-h2hc-patches/run_security_checks.sh" --apply-only | tee "$RUNNER_TEMP/h2hc-apply.log"
@@ -71,10 +74,10 @@ jobs:
       - name: Cache pinned Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: h2hc
+          workspaces: ${{ runner.temp }}/h2hc
 
       - name: Format generated Rust sources
-        working-directory: h2hc
+        working-directory: ${{ runner.temp }}/h2hc
         run: |
           set -euo pipefail
           cargo fmt
@@ -82,20 +85,20 @@ jobs:
           git diff --check
 
       - name: cargo fmt --check
-        working-directory: h2hc
+        working-directory: ${{ runner.temp }}/h2hc
         run: |
           set -o pipefail
           cargo fmt --check 2>&1 | tee "$RUNNER_TEMP/h2hc-fmt.log"
 
       - name: cargo test --locked
-        working-directory: h2hc
+        working-directory: ${{ runner.temp }}/h2hc
         run: |
           set -o pipefail
           cargo test --locked 2>&1 | tee "$RUNNER_TEMP/h2hc-test.log"
 
       - name: cargo clippy --locked --all-targets -- -D warnings
         if: success() || failure()
-        working-directory: h2hc
+        working-directory: ${{ runner.temp }}/h2hc
         run: |
           set -o pipefail
           cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/h2hc-clippy.log"
@@ -104,9 +107,9 @@ jobs:
         if: always()
         run: |
           mkdir -p ci-evidence
-          git -C h2hc log -5 --format='%H %s' > ci-evidence/h2hc-commits.txt 2>/dev/null || true
-          git -C h2hc diff cab242d32c988fe5e4e9fd06ebc82ed043541aa2 > ci-evidence/h2hc-source-diff.patch 2>/dev/null || true
-          git -C h2hc status --short > ci-evidence/h2hc-status.txt 2>/dev/null || true
+          git -C "$RUNNER_TEMP/h2hc" log -5 --format='%H %s' > ci-evidence/h2hc-commits.txt 2>/dev/null || true
+          git -C "$RUNNER_TEMP/h2hc" diff cab242d32c988fe5e4e9fd06ebc82ed043541aa2 > ci-evidence/h2hc-source-diff.patch 2>/dev/null || true
+          git -C "$RUNNER_TEMP/h2hc" status --short > ci-evidence/h2hc-status.txt 2>/dev/null || true
           for file in h2hc-apply.log h2hc-fmt.log h2hc-test.log h2hc-clippy.log; do
             if test -e "$RUNNER_TEMP/$file"; then cp "$RUNNER_TEMP/$file" "ci-evidence/$file"; fi
           done
