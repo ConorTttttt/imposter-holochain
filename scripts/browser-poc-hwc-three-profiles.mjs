@@ -224,6 +224,8 @@ export async function prepareThreeProfiles({
       h2hc_queued:2,h2hc_published:2,h2hc_failed:0,
       authority_validation:'NOT_PROVEN',independent_browser_get:'NOT_PROVEN',
       same_run_browser_native_receipt:false,
+      host_lobby_action_hash:evidence.host_lobby_action_hash,
+      native_validated_dht_op_hashes:[],
       note:'External transport evidence is NOT a runtime authority grant or a validated record'};
     record('NATIVE_DHT_AUTHORITY_VALIDATED','BLOCKED',
       'Agent 3 run 44192859072: two native 0.7 FULL arcs and transport publication 2; native integrity verdict and independent read NOT proven');
@@ -231,10 +233,10 @@ export async function prepareThreeProfiles({
       'H2HC accepted queued ops; cannot infer native ValidationStatus::Valid or remote DHT receipt');
     record('GUEST_B_NATIVE_DHT_LOBBY_DISCOVERY','BLOCKED',
       'Requires independent validated non-null HWC DHT read of the host Lobby action hash');
-    record('GUEST_B_LOBBY_JOIN','BLOCKED','Cannot invoke real join_game before verified lobby retrieval');
+    record('GUEST_B_LOBBY_JOIN','BLOCKED','Cannot invoke real join_lobby before verified lobby retrieval');
     record('GUEST_C_NATIVE_DHT_LOBBY_DISCOVERY','BLOCKED',
       'Requires validated independent Guest C remote read');
-    record('GUEST_C_LOBBY_JOIN','BLOCKED','Cannot invoke real join_game before verified lobby retrieval');
+    record('GUEST_C_LOBBY_JOIN','BLOCKED','Cannot invoke real join_lobby before verified lobby retrieval');
     record('THREE_PLAYER_LOBBY_STATE_AGREEMENT','BLOCKED','No two independently validated guest joins');
     record('GUEST_B_SEAT_RECOVERY','BLOCKED','No real guest seat exists to recover yet');
     record('HOST_POST_RESTART_SHARED_LOBBY_RECOVERY','BLOCKED','Native-validated shared state not established');

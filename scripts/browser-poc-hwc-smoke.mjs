@@ -25,7 +25,7 @@ const ciSnapshots=[];
 const evidence={
  schema_version:1,mode:'REAL_HWC_EPHEMERAL_BROWSER',deployment_ready:false,
  source_head:process.env.GITHUB_SHA || 'unknown',
- agent2_hwc_patch:'76ffda33b8c5796a298ce09f3bdbbb668ebd43bb',
+ agent2_hwc_patch:'e72340c018b1353c6d403de83f1f89e9ca8829f6',
  h2hc_secure_artifact_run:44165793922,hwc_base:'0c391226e78769d44ccb4661881ed8998b15f903',
  profile:'EPHEMERAL_DELETED_ON_RUNNER_EXIT',origin:ORIGIN,checks:{},
  prohibited_gameplay:'roles/kills/sabotage/votes not exercised'
@@ -115,6 +115,13 @@ function verifyChain(snap,requireNewSignatures=true){
       'Private CapGrant missing or exposed in network-facing record conversion');
 }
 async function main(){
+ await step('HWC_FINAL_MIGRATION_SOURCE_VERIFIED',async()=>{
+  const contents=fs.readFileSync(path.join(OUT_LOG,'hwc-migration-provenance.txt'),'utf8');
+  must(contents.includes('agent2_migration_patch=e72340c018b1353c6d403de83f1f89e9ca8829f6') &&
+       contents.includes('upstream_hwc=0c391226e78769d44ccb4661881ed8998b15f903') &&
+       contents.includes('migration_schema=composite_cell_id_entry_hash'),
+       'CI runtime provenance does not match migrated HWC sources');
+ });
  server=http.createServer(site);
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(8765,'127.0.0.1',resolve);});
  const ext=path.join(HWC,'packages/extension/dist-chrome');
