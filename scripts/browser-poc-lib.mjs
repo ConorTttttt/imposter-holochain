@@ -80,9 +80,12 @@ export function sha256(file) { return createHash('sha256').update(fs.readFileSyn
 export function metadataFor(dir,seed,dnaHash,sourceHead) {
   const {host}=validateSeed(seed);validateDnaHash(dnaHash);
   requireMatch(/^[0-9a-f]{40}$/.test(sourceHead),'invalid source git SHA');
+  const identitySource=process.env.BROWSER_POC_IDENTITY_SOURCE || 'UNVERIFIED_OPERATOR_INPUT';
+  requireMatch(['UNVERIFIED_OPERATOR_INPUT','SYNTHETIC_CI_FIXTURE'].includes(identitySource),'invalid host identity source flag');
   return {
     schema_version:1,purpose:'P0 lobby ONLY; not full gameplay',runtime_validation:'NOT_RUN',
-    signature_status:'UNSIGNED',host_agent_pub_key:host,network_seed:seed,dna_hash:dnaHash,source_head:sourceHead,
+    signature_status:'UNSIGNED',host_identity_source:identitySource,deployment_ready:false,
+    host_agent_pub_key:host,network_seed:seed,dna_hash:dnaHash,source_head:sourceHead,
     pin:{imposter:PIN,hwc:HWC_PIN,h2hc:H2HC_PIN},
     wasm_sha256:{game:sha256(path.join(dir,'dna/game.wasm')),game_integrity:sha256(path.join(dir,'dna/game_integrity.wasm'))},
     dna_bundle_sha256:sha256(path.join(dir,'dna/game.dna')),
@@ -99,6 +102,8 @@ export function verifyMetadata(dir) {
   requireMatch(m.host_agent_pub_key===host,'host/seed mismatch');
   requireMatch(m.pin?.imposter===PIN&&m.pin?.hwc===HWC_PIN&&m.pin?.h2hc===H2HC_PIN,'pin mismatch');
   requireMatch(m.runtime_validation==='NOT_RUN'&&m.signature_status==='UNSIGNED','metadata must not claim runtime or signature checks');
+  requireMatch(['UNVERIFIED_OPERATOR_INPUT','SYNTHETIC_CI_FIXTURE'].includes(m.host_identity_source) && m.deployment_ready===false,
+    'packaging metadata cannot assert deployment-ready HWC identity');
   requireMatch(/^[0-9a-f]{40}$/.test(m.source_head),'invalid head SHA');
   requireMatch(m.dna_bundle_sha256===sha256(path.join(dir,'dna/game.dna')),'DNA bundle checksum mismatch');
   requireMatch(m.happ_bundle_sha256===sha256(path.join(dir,'app/imposter-browser-poc.happ')),'hApp bundle checksum mismatch');
