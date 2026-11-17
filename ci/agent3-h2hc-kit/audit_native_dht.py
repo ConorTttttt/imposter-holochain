@@ -121,11 +121,19 @@ def main():
         d = root / sandbox
         entries = []
         count = 0
+        candidates = []
         if d.is_dir():
             for db in d.rglob("*"):
                 if not db.is_file() or db.suffix not in (".sqlite", ".sqlite3", ".db"):
                     continue
                 try:
+                    # Only archive metadata, never file contents, paths or secrets.
+                    with db.open("rb") as fd:
+                        sqlite_header = fd.read(16) == b"SQLite format 3\x00"
+                    candidates.append({"suffix": db.suffix,
+                                       "sqlite_header": sqlite_header})
+                    if not sqlite_header:
+                        continue
                     url = "file:" + quote(str(db), safe="/") + "?mode=ro"
                     with sqlite3.connect(url, uri=True, timeout=2) as cnx:
                         tables = {t[0] for t in cnx.execute(
@@ -138,10 +146,23 @@ def main():
                                 entries.extend(one_table(
                                     cnx, table, host, targets, lobby, negative_agent))
                 except (sqlite3.DatabaseError, OSError) as e:
-                    # Only report exception class, never database paths.
-                    out["warnings"].append(sandbox + ":" + type(e).__name__)
+                    # Replace temp storage path and filenames before emitting.
+                    message = str(e).replace(str(db), "<db>").replace(str(root), "<root>")
+                    out["warnings"].append({
+                        "conductor": sandbox,
+                        "error_type": type(e).__name__,
+                        "error_category": (
+                            "LOCKED" if "locked" in message.lower() else
+                            "NOT_DATABASE" if "not a database" in message.lower() else
+                            "OPEN_FAILED" if "unable to open" in message.lower() else
+                            "SCHEMA" if "no such" in message.lower() else
+                            "OTHER"),
+                        "safe_message": message[:160],
+                        "suffix": db.suffix
+                    })
         out["conductors"][sandbox] = {
-            "dht_database_count": count, "matched_ops": entries
+            "dht_database_count": count, "matched_ops": entries,
+            "candidates": candidates
         }
     print(json.dumps(out, separators=(",", ":"), sort_keys=True))
 
