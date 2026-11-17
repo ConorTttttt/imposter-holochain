@@ -12,6 +12,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { prepareThreeProfiles } from './browser-poc-hwc-three-profiles.mjs';
 
 const ROOT=process.env.GITHUB_WORKSPACE || path.resolve(import.meta.dirname,'..');
 const HWC=path.resolve(ROOT,'hwc');
@@ -20,15 +21,16 @@ const ORIGIN='http://localhost:8765';
 const OUT_LOG=path.join(ROOT,'runtime-evidence');
 fs.mkdirSync(OUT_LOG,{recursive:true});
 const PROFILE=fs.mkdtempSync(path.join(os.tmpdir(),'imposter-hwc-ephemeral-'));
-const GUEST_PROFILE=fs.mkdtempSync(path.join(os.tmpdir(),'imposter-hwc-guest-'));
 const ciSnapshots=[];
 const evidence={
  schema_version:1,mode:'REAL_HWC_EPHEMERAL_BROWSER',deployment_ready:false,
- source_head:process.env.GITHUB_SHA || 'unknown',hwc_base:'0c391226e78769d44ccb4661881ed8998b15f903',
+ source_head:process.env.GITHUB_SHA || 'unknown',
+ agent2_hwc_patch:'76ffda33b8c5796a298ce09f3bdbbb668ebd43bb',
+ h2hc_secure_artifact_run:44165793922,hwc_base:'0c391226e78769d44ccb4661881ed8998b15f903',
  profile:'EPHEMERAL_DELETED_ON_RUNNER_EXIT',origin:ORIGIN,checks:{},
  prohibited_gameplay:'roles/kills/sabotage/votes not exercised'
 };
-let context,guestContext,server,artifactDir;
+let context,threeProfiles,server,artifactDir;
 function record(k,result,details){
  evidence.checks[k]={result, ...(details?{details:String(details).slice(0,2500)}:{})};
  fs.writeFileSync(path.join(OUT_LOG,'runtime-evidence.json'),JSON.stringify(evidence,null,2)+'\n');
@@ -216,6 +218,13 @@ async function main(){
    // Returning a value is a WASM execution pass, NOT proof grants persisted.
    // Grant persistence is verified independently by the CI-only internal worker inspector.
  });
+ // All three independent Chromium/Lair agents initialize the same actual game DNA.
+ // Operator-only H2HC allowlisting happens in Node; no bearer/secret enters the page.
+ threeProfiles=await step('THREE_PROFILE_REAL_HWC_H2HC_SETUP',async()=>await prepareThreeProfiles({
+   chromium,launchOptions,origin:ORIGIN,hostPage:page,hostAgent:host,
+   dna:m.dna_hash,happSha:m.happ_bundle_sha256,networkSeed:m.network_seed,
+   record,evidence,snapshotFor,verifyChain
+ }));
  await step('HOST_LOBBY_CREATION',async()=>{
    const v=await page.evaluate(async(seed)=>{
      return await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
@@ -255,59 +264,16 @@ async function main(){
    must(s.actions.map(x=>x.hash).join(',')===authored.actions.map(x=>x.hash).join(','),
      'Source chain mutated or restarted after full Chrome process/profile restart');
  });
- await step('UNAUTHORIZED_GUEST_REJECTED',async()=>{
-   guestContext=await chromium.launchPersistentContext(GUEST_PROFILE,launchOptions);
-   const guestPage=guestContext.pages()[0]||await guestContext.newPage();
-   await guestPage.goto(ORIGIN,{waitUntil:'domcontentloaded'});
-   await guestPage.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),{timeout:45000});
-   const guest=await guestPage.evaluate(async(expectedDna)=>{
-     const hc=window.holochain; await hc.connect();
-     const asBytes=v=>v instanceof Uint8Array?v:Array.isArray(v)?new Uint8Array(v):
-       v&&typeof v==='object'?new Uint8Array(Object.keys(v).sort((a,b)=>Number(a)-Number(b)).map(k=>v[k])):new Uint8Array();
-     const enc=v=>'u'+btoa(String.fromCharCode(...asBytes(v)))
-       .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-     const identity=enc(hc.myPubKey);
-     const response=await fetch('/imposter-browser-poc.happ',{cache:'no-store'});
-     if(!response.ok)throw Error('Guest hApp download failed');
-     await hc.installApp({bundle:new Uint8Array(await response.arrayBuffer()),installedAppId:'imposter-browser-poc'});
-     const info=await hc.appInfo('imposter-browser-poc');
-     if(enc(info.cells[0][0])!==expectedDna||enc(info.cells[0][1])!==identity)
-       throw Error('Guest cell identity or installed DNA mismatch');
-     await hc.callZome({zome_name:'game',fn_name:'get_game_state',payload:null});
-     return identity;
-   },m.dna_hash);
-   must(guest!==host,'Separate HWC guest profile shares host identity');
-   evidence.separate_guest_public_key=guest;
-   const prior=await snapshotFor(guest);
-   verifyChain(prior);
-   const start=ciSnapshots.length;
-   const check=await guestPage.evaluate(async()=>{
-     try{
-       await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
-          payload:{code:'UNAUTH-P0',player_count:3,impostor_count:1,task_target:1,display_name:'Guest'}});
-       return {accepted:true};
-     }catch(e){return {accepted:false,error:String(e)};}
-   });
-   must(!check.accepted,'Unauthorized guest created a lobby');
-   must(/game seed host does not match lobby author/.test(check.error),
-     'Unexpected guest failure, not native Rust host validator: '+safeRuntimeError(check.error));
-   const after=await snapshotFor(guest,start,s=>s.fn==='create_lobby');
-   must(after.actions.map(a=>a.hash).join(',')===prior.actions.map(a=>a.hash).join(','),
-     'Unauthorized guest rejection authored source-chain actions');
-   evidence.unauthorized_guest_rejection='native Rust host authorization; no extra author actions';
- });
- record('DHT_PUBLICATION','NOT VERIFIED','Signed local lobby/link actions do not establish remote DHT receipt');
- record('H2HC_AUTHENTICATED_CONVERGENCE','NOT RUN','No authenticated Agent 3 linker or independent authority');
- record('SEAT_RECONNECT','NOT RUN','Requires independent guest DHT join and reconnect');
+ await step('TWO_GUEST_FULL_CHROMIUM_RESTARTS',async()=>await threeProfiles.restart());
+ await step('REAL_AUTHENTICATED_H2HC_QUEUE_AND_DHT_GATE',async()=>await threeProfiles.probeNetwork());
 }
 try{await main();}
 catch(e){console.error('FIRST_RUNTIME_FAILURE:',safeRuntimeError(e?.stack||e));process.exitCode=1;}
 finally{
- if(guestContext)await guestContext.close().catch(()=>{});
+ if(threeProfiles)await threeProfiles.close().catch(()=>{});
  if(context)await context.close().catch(()=>{});
  if(server)await new Promise(res=>server.close(res));
  fs.rmSync(PROFILE,{recursive:true,force:true});
- fs.rmSync(GUEST_PROFILE,{recursive:true,force:true});
  if(artifactDir&&fs.existsSync(artifactDir)){
    // Do not upload a full hApp with an ephemeral deleted host identity to be
    // mistaken for an operator deployment package; evidence contains hashes.
