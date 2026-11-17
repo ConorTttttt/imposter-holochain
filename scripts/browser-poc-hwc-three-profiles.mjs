@@ -70,7 +70,7 @@ async function joinGateway(page,agent,dna,label,evidence,record){
     server_signed_challenge:true,server_registered_for_dna:true,
     background_has_session:network?.hasSession===true};
  if(network?.hasSession!==true)
-  record('H2HC_BACKGROUND_SESSION_'+label,'AT_RISK',
+  record('H2HC_BACKGROUND_SESSION_'+label,'BLOCKED',
     'Offscreen signed session verified by gateway; background hasSession is false');
 }
 async function checkApp(page,agent,dna){
@@ -209,20 +209,39 @@ export async function prepareThreeProfiles({
       const s=await getState(item.page);
       evidence.independent_guest_reads[item.label]={
        sees_seed:s?.code===networkSeed,
-       player_count:Array.isArray(s?.players)?s.players.length:null};
+       player_count:Array.isArray(s?.players)?s.players.length:null,
+       source:'independent real game::get_game_state coordinator call',
+       native_validation:'NOT_PROVEN'};
      }catch(e){
       evidence.independent_guest_reads[item.label]={error:String(e).slice(0,200)};
      }
     }
+    evidence.native_dht_handoff={
+      source:'Agent 3 ci/agent3-h2hc-security-validation @ 7e13ca05d2cd5b57016e55049c11f5337bb26c25',
+      external_workflow:44192859072,
+      native_conductors:2,
+      current_storage_arcs:'FULL (external CI)',
+      h2hc_queued:2,h2hc_published:2,h2hc_failed:0,
+      authority_validation:'NOT_PROVEN',independent_browser_get:'NOT_PROVEN',
+      same_run_browser_native_receipt:false,
+      note:'External transport evidence is NOT a runtime authority grant or a validated record'};
     record('NATIVE_DHT_AUTHORITY_VALIDATED','BLOCKED',
-      'Agent 3 native 0.7 executable / nonempty storage arc not established');
+      'Agent 3 run 44192859072: two native 0.7 FULL arcs and transport publication 2; native integrity verdict and independent read NOT proven');
     record('THREE_BROWSER_VALIDATED_LOBBY_CONVERGENCE','BLOCKED',
       'H2HC accepted queued ops; cannot infer native ValidationStatus::Valid or remote DHT receipt');
-    record('GUEST_B_LOBBY_JOIN','NOT RUN','Needs verified native-authority lobby discovery');
-    record('GUEST_C_LOBBY_JOIN','NOT RUN','Needs guest B validated join and native authority');
-    record('THREE_PLAYER_SEAT_RECONNECT','NOT RUN','No network-validated guest seats');
-    record('PRIVATE_ENTRY_SAME_HASH_COLLISION','BLOCKED',
-      'Issue #7 production SQLite + IndexedDB migration not yet completed by Agent 2');
+    record('GUEST_B_NATIVE_DHT_LOBBY_DISCOVERY','BLOCKED',
+      'Requires independent validated non-null HWC DHT read of the host Lobby action hash');
+    record('GUEST_B_LOBBY_JOIN','BLOCKED','Cannot invoke real join_game before verified lobby retrieval');
+    record('GUEST_C_NATIVE_DHT_LOBBY_DISCOVERY','BLOCKED',
+      'Requires validated independent Guest C remote read');
+    record('GUEST_C_LOBBY_JOIN','BLOCKED','Cannot invoke real join_game before verified lobby retrieval');
+    record('THREE_PLAYER_LOBBY_STATE_AGREEMENT','BLOCKED','No two independently validated guest joins');
+    record('GUEST_B_SEAT_RECOVERY','BLOCKED','No real guest seat exists to recover yet');
+    record('HOST_POST_RESTART_SHARED_LOBBY_RECOVERY','BLOCKED','Native-validated shared state not established');
+    record('AGENT2_PRODUCTION_SAME_HASH_COLLISION_EVIDENCE','PASS',
+      'Issue #7 closed; separate two genuine Lair / one OPFS / same entry hash headed run 44191974895 PASS; not rerun here');
+    record('THREE_PROFILE_SAME_HASH_COLLISION_RETEST','NOT RUN',
+      'Three-browser job uses separate OPFS; Agent 2 independently accepted collision / restart on one OPFS');
    },
    async close(){
     for(const item of profiles){

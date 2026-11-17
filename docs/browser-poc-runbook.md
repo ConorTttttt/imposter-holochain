@@ -377,3 +377,10 @@ Native DNA hash:
 hApp SHA-256:
 `e86af83bd8b73981d8facaa95bc018da55b7081a1583096869a523052dceb991`.
 Both real WASMs have the already-known unchanged package hashes (`game` `a17a75cdf1c3dcfd6788885f34505dd96cfcba78f46e8b9acbd1e9dd12858c4a`, `game_integrity` `42f633a760cf252fa835474105070d5fb5071865c8c6e52ce2de39e71f07676f`). `deployment_ready:false` and `host_identity_source:EPHEMERAL_HWC_BROWSER_PROFILE`. **No hApp from this ephemeral CI keystore may be presented as a deployable operator-host bundle.**
+
+
+### Latest three-browser migration and native handoff (17 November 2026)
+
+Agent 4's separate three-profile CI now pins browser-tested issue-#7 HWC kit `e72340c018b1353c6d403de83f1f89e9ca8829f6` against unchanged upstream `0c391226e78769d44ccb4661881ed8998b15f903`; the workflow fails if SQLite `(cell_id,entry_hash)` migration, `DirectSQLiteStorage` conflict handling, or IndexedDB composite entry key are missing. Each runner rebuilds its own **CI-only** Chrome extension, never using prior distribution artifacts. Agent 2's [headed production browser acceptance 44191974895](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44191974895) independently proves two authentic Lair-signed same-hash CapGrants in one OPFS survive restart and stay isolated. Issue #7 is complete.
+
+Agent 3's [two-native run 44192859072](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44192859072) reported current native storage arcs FULL and H2HC `queued=2,published=2,failed=0`. These are transport observations, **not** a native validation verdict or separate guest retrieval. Keep all genuine B/C discovery, join, convergence and seat recovery gates BLOCKED until Agent 3 supplies same-DNA `ValidationStatus::Valid` plus independent authenticated non-null GET of exact Lobby action. Preserve operator-controlled origin/profile and never upload Lair or H2HC secrets. CI bundles remain `deployment_ready=false`.

@@ -51,11 +51,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout Agent 2 latest approved security-hardening HWC patch kit
+      - name: Checkout Agent 2 accepted composite-entry HWC migration patch kit
         uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: 76ffda33b8c5796a298ce09f3bdbbb668ebd43bb
+          ref: e72340c018b1353c6d403de83f1f89e9ca8829f6
           path: agent2-kit
           persist-credentials: false
 
@@ -73,12 +73,20 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
-          test "$(git -C agent2-kit rev-parse HEAD)" = "76ffda33b8c5796a298ce09f3bdbbb668ebd43bb"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "e72340c018b1353c6d403de83f1f89e9ca8829f6"
           git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
           git -C hwc diff --check
+          # Fail closed on stale pre-issue-#7 extension code or a missing migration.
+          test -s hwc/packages/core/src/storage/sqlite-entry-migration.ts
+          grep -Fq 'PRIMARY KEY (cell_id, entry_hash)' hwc/packages/core/src/storage/sqlite-schema.ts
+          grep -Fq 'migrateEntrySchema' hwc/packages/extension/src/offscreen/ribosome-worker.ts
+          grep -Fq 'ON CONFLICT(cell_id, entry_hash) DO NOTHING' hwc/packages/extension/src/offscreen/ribosome-worker.ts
+          grep -Fq "keyPath: ['cellId', 'entryHash']" hwc/packages/core/src/storage/source-chain-storage.ts
           mkdir -p runtime-evidence
+          printf '%s\n' 'upstream_hwc=0c391226e78769d44ccb4661881ed8998b15f903' 'agent2_migration_patch=e72340c018b1353c6d403de83f1f89e9ca8829f6' 'migration_schema=composite_cell_id_entry_hash' 'collision_acceptance=Agent2 headed Chrome run 44191974895 (independent CI; not re-executed here)' > runtime-evidence/hwc-migration-provenance.txt
+          echo 'P0_MIGRATION_SOURCE_PIN_VERIFIED PASS composite SQLite and IndexedDB migrations present'
           git -C hwc diff --stat > runtime-evidence/patched-hwc-diff-stat.txt
           git -C hwc status --short >> runtime-evidence/patched-hwc-diff-stat.txt
 
@@ -142,6 +150,8 @@ jobs:
           test -s hwc/packages/extension/dist-chrome/background/index.js
           test -s hwc/packages/extension/dist-chrome/offscreen/ribosome-worker.js
           (cd hwc/packages/extension/dist-chrome && find . -type f -print0 | sort -z | xargs -0 sha256sum) > runtime-evidence/patched-chrome-sha256.txt
+          test -s runtime-evidence/patched-chrome-sha256.txt
+          printf '%s\n' 'This Chrome extension was freshly built from the verified HWC migration. CI-only probe included. NOT DEPLOYABLE.' > runtime-evidence/EXTENSION-CI-ONLY-NOT-DEPLOYABLE.txt
 
       - name: Install Playwright Chromium plus headed test prerequisites
         shell: bash

@@ -1,5 +1,21 @@
 # Imposter P0 — three independent production-browser profiles
 
+## 17 November 2026 — Agent 2 composite-entry migration integration
+
+**Current integration source:** Agent 4 base `5df74e825127de419f9bb3e9faa6a676006db995`; immutable Agent 2 HWC patch kit `e72340c018b1353c6d403de83f1f89e9ca8829f6`; unchanged Holo-Host HWC upstream `0c391226e78769d44ccb4661881ed8998b15f903`. The `apply.py` blob at `e72340c018b1353c6d403de83f1f89e9ca8829f6` exactly matches Agent 2's accepted `2d417498cce52da4993fe03168c4f3e0a1d2ac90`. CI rechecks these exact source SHAs, applies the patch to a clean checkout, requires physical SQLite `PRIMARY KEY(cell_id,entry_hash)`, versioned migration module, `DirectSQLiteStorage` composite conflict policy and IndexedDB `['cellId','entryHash']` keyPath, then **recompiles Chrome from source**. The checksum list and `hwc-migration-provenance.txt` are uploaded; **CI-only build, not deployable**.
+
+**Accepted independent #7 evidence:** Agent 2 full compatibility [44189638976](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44189638976) PASS and genuine two-Lair/one-OPFS/same-CapGrant-hash browser [44191974895](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44191974895) PASS, including private redaction and full restart. [Issue #7](https://github.com/ConorTttttt/imposter-holochain/issues/7) is CLOSED completed. This Agent 4 acceptance does **not** repeat the same-OPFS collision test: it verifies the exact migration source and separately checks the three independent profiles' CapGrant privacy and restart persistence.
+
+**Native boundary:** Agent 3's [44192859072](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44192859072) has two native Holochain 0.7 cells with current arcs FULL, H2HC `queued=2,published=2,failed=0` (transport acknowledgement). Overall workflow FAILED its strict DHT convergence gate: there is no proven `ValidationStatus::Valid`/independent non-null authenticated guest retrieval of the exact host Lobby action. Consequently **Guest B/C discovery, actual join_game, shared state comparison and post-seat recovery remain BLOCKED**. Do not run joins based on H2HC queue acceptance, the native peer liveness, or local host state.
+
+**Next native authority contract:** Agent 3 must provide immutable workflow/source SHA, exact host-bound DNA, native bootstrapping/relay and nonempty signed arc configuration, action/op hashes, independent authority validation, and non-null reads by distinct authenticated guest identities. The three-browser job must use the **same exact DNA** and prohibit local fallback/insecure sessions. After that proof, extend the existing browser runner to call the **real Imposter coordinator join function** twice (B then C), compare the same lobby action hash and three seats from all profiles, restart B and host, and check that no duplicate join action was authored. Do not inject DHT fixtures or release any private keys.
+
+**Current acceptance statuses:** migration source pin **PASS only after new CI completes**; external Agent 2 collision acceptance **PASS**; independent browser authentication, game coordinator, three profiles and restarts **historically PASS (44190897197 on older patch)**, pending migrated rerun; native valid DHT record **BLOCKED**; actual B/C joins **BLOCKED**; lobby convergence **BLOCKED**; seat recovery **BLOCKED**; operator deployment **NOT RUN**. A successful workflow limited to the pre-DHT gates does not establish the P0 multiplayer success criterion.
+
+---
+
+
+
 **Scope:** Host, Guest B and Guest C execute the original Holochain 0.7 Imposter coordinator under independently owned HWC/Lair keys, using **one host-bound DNA** and **one secure H2HC gateway**. No role dealing, kills, votes, remote calls or remote signals. This is an integration investigation, **not** an operator-deployable hApp release.
 
 ## Exact source and immutable evidence
@@ -8,7 +24,7 @@
 | --- | --- | --- |
 | Imposter game build | Repository pinned Rust+DNA inputs, base `111e6a44795e6572ed01191a98245ed723788c12` | Actual `game` + `game_integrity` WASM |
 | HWC upstream | `Holo-Host/holo-web-conductor@0c391226e78769d44ccb4661881ed8998b15f903` | Unchanged upstream checkout, locally patched on CI |
-| Agent 2 kit | `76ffda33b8c5796a298ce09f3bdbbb668ebd43bb` | Approved HWC hardening; **issue #7 is still open** |
+| Agent 2 kit | `e72340c018b1353c6d403de83f1f89e9ca8829f6` | Accepted composite-entry SQLite/IndexedDB migration, #7 completed |
 | H2HC upstream | `Holo-Host/h2hc-linker@cab242d32c988fe5e4e9fd06ebc82ed043541aa2` | Verified security-patched binary from run `44165793922` |
 | Prior first-cell pass | [Browser run 44175803829](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44175803829) | Real Lair, host-bound install, coordinator, grant, lobby, unauthorized guest, host restart **on older HWC patch** |
 | Verified independent auth wire | [Agent 3 run 44176199123](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44176199123) | One actual HWC host accepted into secure H2HC queue; 11 ops, `published=0` |
@@ -29,7 +45,7 @@ The gateway starts with `H2HC_LINKER_ALLOW_INSECURE_DEV=false`, `H2HC_LINKER_LOC
 
 ## Full acceptance matrix
 
-Statuses below distinguish **historical proven** results from this new three-profile revision. Three-profile browser run [44189760201](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44189760201) **PASSED** the independent Lair/H2HC identity, real coordinator, unauthorized Rust denial, and all three profile restart checks. It did **not** deliver signed ops to a validating native authority: 25 queued / 0 failed / 0 published. Guest B and C each saw no lobby and 0 players. Separate native sandbox run [44188965376](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44188965376) reached only CANDIDATE_RUNNING. Issue #7 remains open.
+Statuses below distinguish **historical proven** results from this new three-profile revision. Three-profile browser run [44189760201](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44189760201) **PASSED** the independent Lair/H2HC identity, real coordinator, unauthorized Rust denial, and all three profile restart checks. It did **not** deliver signed ops to a validating native authority: 25 queued / 0 failed / 0 published. Guest B and C each saw no lobby and 0 players. Separate native sandbox run [44188965376](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44188965376) reached only CANDIDATE_RUNNING. Issue #7 is now closed (migration accepted in later Agent 2 CI); original run used the older source.
 
 | Gate | Historic observation | Three-profile revision / completion bar |
 | --- | --- | --- |
@@ -49,7 +65,7 @@ Statuses below distinguish **historical proven** results from this new three-pro
 | Host + B + C Chromium restart | **PASS (44189760201)** | Stable Lair keys, source-chain continuity and same cell; strict post-restart source-chain probes rerun in next revision |
 | Reconnecting guests recover existing seats | **NOT RUN** | No new join action, same seat/agent after restart |
 | Private grant is hidden from outgoing record conversion | First-cell worker **PASS** | Per-cell production worker read-only checks |
-| Same-entry-hash multi-cell SQLite/IndexedDB migration | **BLOCKED: issue #7** | Agent 2 approved transactional migration, identical private grant bytes in headed Chrome+Firefox |
+| Same-entry-hash multi-cell SQLite/IndexedDB migration | **PASS in independent Agent 2 headed Chrome** | Exact kit + schema assertions in this CI, headed verification already 44191974895 |
 | Private bytes absent from retry queues/network and logs | **NOT PROVEN END-TO-END** | Strict nonsecret scan and actual gateway/worker trace |
 | Remote calls/signals | **DISABLED (required)** | Must remain disabled |
 | Genuine operator-held signing identity/hApp | **NOT RUN** | Complete procedure below using *persistent* operator profile |
@@ -69,6 +85,6 @@ All three browsers showed `getConnectionStatus().authenticated=true` and their o
 4. Independently review and sign release metadata with an operator release-signing key. Treat build output `signature_status: UNSIGNED`, `deployment_ready: false` and CI-produced archives as **not approved for deployment**. Store final release metadata and bundle behind a trusted HTTPS origin with access controls, and log its immutable checksum. Never reuse an ephemeral CI bundle: its host's keystore is gone.
 5. Deploy the independently security-reviewed Agent 3 H2HC executable behind TLS/WSS. Keep insecure development auth and local-authority fallback false. Provision the host and two other genuine public agent keys through the protected admin/joining process; server secrets remain server-only. Configure native Holochain 0.7 conductor(s) using the same DNA, bootstrap and relay and nonempty storage arcs. Obtain a native validation verdict and independent read receipt **before** allowing guests to join.
 6. Give Guest B and C their own OS/Chrome profiles and Lair identities, each retrieving the **same verified bundle**. Confirm installed DNA and individual signed H2HC connection, execute B's negative host-authorization test, then host creates, B joins, C joins, each reads the lobby. Compare the authoritative Lobby and PlayerJoin action hashes across all profiles and server/native logs, not just UI labels. Restart each profile and prove seats reappear with the same keys and **no duplicate join actions**.
-7. Do **not** treat the process as production-multicell secure until Agent 2 resolves [issue #7](https://github.com/ConorTttttt/imposter-holochain/issues/7) and the exact migrated production worker has headed Chrome/Firefox collision, redaction, replay/retry and persistence checks. Remote calls and remote signals remain off. PR #4 stays **Draft** pending validated DHT convergence.
+7. Agent 2 has resolved [issue #7](https://github.com/ConorTttttt/imposter-holochain/issues/7) with separate accepted production Chrome migration evidence. Deploy only reviewed uninstrumented builds after operator identity and native DHT acceptance; remote calls/signals remain off and PR #4 stays **Draft** until full network convergence.
 
 **Stop-on-failure:** no fabricated DHT returns, no synthetic authority records, no shared browser storage, no bypass of signing/origin/authorization, no private-key export, and no PASS for skipped DHT-dependent gates.
