@@ -1,0 +1,88 @@
+name: Agent 3 — independent H2HC DHT topology diagnostic (no recompilation)
+on:
+  push:
+    branches: [ci/agent3-h2hc-security-validation]
+    paths:
+      - '.github/workflows/agent3-h2hc-two-peer.yml'
+      - 'ci/agent3-h2hc-kit/two-linker-topology.mjs'
+      - 'ci/agent3-h2hc-kit/CONTROLLED_DHT_TOPOLOGY.md'
+  workflow_dispatch:
+    inputs:
+      require_native_proof:
+        description: 'Fail unless separately validated native conductor proof is configured'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent3-two-linker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  two-independent-gateways:
+    name: Actual two-H2HC signed network delivery probe — classify failures honestly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out Agent 3 branch
+        uses: actions/checkout@v4
+
+      - name: Reuse exact successful compiled H2HC binary (DO NOT REBUILD)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 44165793922
+          repository: ConorTttttt/imposter-holochain
+          name: agent3-h2hc-authenticated-runtime-44165793922
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: h2hc-binary
+
+      - name: Verify immutable artifact bytes and security provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s h2hc-binary/h2hc-linker-linux-x86_64
+          test -s h2hc-binary/SHA256SUMS
+          expected="$(head -1 h2hc-binary/SHA256SUMS | cut -d' ' -f1)"
+          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | cut -d' ' -f1)"
+          test "$expected" = "$actual"
+          grep -q 'cab242d32c988fe5e4e9fd06ebc82ed043541aa2' h2hc-binary/build-provenance.txt || {
+            echo 'Missing pinned provenance; need source-pin check'; exit 1;
+          }
+          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          mkdir -p ci-evidence/agent3-two-linker
+          printf 'binary_sha256=%s\nsource_run=44165793922\n' "$actual" > ci-evidence/agent3-two-linker/binary-provenance.txt
+          echo 'PASS: reused genuine checked H2HC binary; no compiler invoked'
+
+      - name: Node 22 with real WebSocket client (no external JS packages)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Two separately authenticated gateways and cross-process DHT GET
+        env:
+          H2HC_BINARY: ${{ github.workspace }}/h2hc-binary/h2hc-linker-linux-x86_64
+          H2HC_EVIDENCE_DIR: ${{ github.workspace }}/ci-evidence/agent3-two-linker
+          H2HC_TEST_BOOTSTRAP_URL: https://dev-test-bootstrap2.holochain.org/
+          H2HC_TEST_RELAY_URL: https://dev-test-bootstrap2.holochain.org/
+          H2HC_LINKER_ALLOW_INSECURE_DEV: 'false'
+          H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK: 'false'
+          H2HC_DISCOVERY_MS: '20000'
+          H2HC_REQUIRE_NATIVE_PROOF: ${{ inputs.require_native_proof || 'false' }}
+        run: |
+          set -euo pipefail
+          node ci/agent3-h2hc-kit/two-linker-topology.mjs | tee ci-evidence/agent3-two-linker/terminal.log
+          test -s ci-evidence/agent3-two-linker/results.json
+          node -e "let x=require('./ci-evidence/agent3-two-linker/results.json'); if(x.accepted_to_queue!=='PASS' || x.completion_criterion_met!==false)process.exit(1); console.log('TRUTHFUL_CLASSIFICATION',x.result)"
+
+      - name: Upload exact two-gateway runtime responses and logs (no private keys)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent3-real-two-linker-DHT-topology-NOT-NATIVE-VALIDATION-${{ github.run_id }}
+          path: ci-evidence/agent3-two-linker
+          if-no-files-found: warn
+          retention-days: 14
