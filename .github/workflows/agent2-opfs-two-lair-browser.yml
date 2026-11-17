@@ -48,11 +48,11 @@ jobs:
           test -s scripts/browser-poc-verify.sh
 
 
-      - name: Checkout Agent 2 ExternIO-corrected, real-WASM CI-green HWC patch kit
+      - name: Checkout Agent 2 live-session and DNA-signing hardened HWC patch kit
         uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: e72340c018b1353c6d403de83f1f89e9ca8829f6
+          ref: bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39
           path: agent2-kit
           persist-credentials: false
 
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
-          test "$(git -C agent2-kit rev-parse HEAD)" = "e72340c018b1353c6d403de83f1f89e9ca8829f6"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39"
           git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
