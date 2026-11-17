@@ -981,6 +981,7 @@ change(P,'''  async clear(): Promise<void> {
 TESTS = {
   'packages/core/src/storage/sqlite-entry-migration.ts': 'tests/sqlite-entry-migration.ts',
   'packages/core/src/storage/sqlite-entry-migration.imposter.test.ts': 'tests/sqlite-entry-migration.imposter.test.ts',
+  'packages/core/src/storage/idb-entry-collision.imposter.test.ts': 'tests/idb-entry-collision.imposter.test.ts',
 
   'packages/core/src/ribosome/wasm-io-types.imposter.test.ts': 'tests/wasm-io-types.imposter.test.ts',
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
