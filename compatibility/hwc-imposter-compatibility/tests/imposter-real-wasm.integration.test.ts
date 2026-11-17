@@ -266,7 +266,7 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
     try {
       const result = await invoke(host, 'create_lobby', hostLobby);
       console.log('REAL_WASM_CANONICAL_SYNTHETIC_HOST_SUCCESS', JSON.stringify({
-        result: result.result,
+        guestResultHasSignedAction: Boolean((result.result as any)?.signed_action),
         authored: storage.queryActions(testDna, host).map(a => ({
           seq: a.actionSeq, type: a.actionType,
           entryType: 'entryType' in a ? (a as any).entryType : undefined,
@@ -275,7 +275,7 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
       }));
       const authored = storage.queryActions(testDna, host);
       expect(authored.some(a => a.actionType === 'Create' &&
-        'entryType' in a && typeof (a as any).entryType === 'object' &&
+        'entryType' in a && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
         (a as any).entryType.entry_index === 0)).toBe(true);
     } catch (error) {
       console.error('REAL_WASM_CANONICAL_SYNTHETIC_HOST_FAILURE',
@@ -288,7 +288,7 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
     })).rejects.toThrow(/game seed host does not match lobby author/);
     const nonhostActions = storage.queryActions(testDna, nonhost);
     expect(nonhostActions.some(a => a.actionType === 'Create' &&
-      'entryType' in a && typeof (a as any).entryType === 'object' &&
+      'entryType' in a && typeof (a as any).entryType === 'object' && (a as any).entryType !== null &&
       (a as any).entryType.entry_index === 0)).toBe(false);
     console.log('REAL_WASM_CANONICAL_SYNTHETIC_NONHOST_DENIED', JSON.stringify({
       authored: nonhostActions.length, validSeed: seed,
@@ -302,7 +302,8 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
     expect(g.initialized).toBe(true);
     const partial = storage.queryActions(fixture.dna, interrupted);
     console.log('REAL_WASM_INTERRUPTED_GENESIS_BEFORE', JSON.stringify(partial.map(a => a.actionType)));
-    expect(partial.map(a => a.actionType)).not.toContain('InitZomesComplete');
+    expect(partial.map(a => a.actionType)).toEqual(['Dna', 'AgentValidationPkg', 'Create']);
+    expect(partial.every(a => Buffer.from(a.author).equals(Buffer.from(interrupted)))).toBe(true);
     await expect(call('ping', null, interrupted)).rejects.toThrow(/Incomplete DNA initialization/);
     expect(storage.queryActions(fixture.dna, interrupted).some(a => a.actionType === 'InitZomesComplete')).toBe(false);
     console.log('REAL_WASM_INTERRUPTED_GENESIS_FAIL_CLOSED');
