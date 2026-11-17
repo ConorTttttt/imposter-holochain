@@ -33,12 +33,21 @@ insert=r"""
         const parsed=JSON.parse(cmd.stdout);
         const items=Array.isArray(parsed?.timings)?parsed.timings:[];
         result.timings_count=items.length;
-        result.observed_ops=items.filter(t=>incomingIds.includes(t.op_hash))
-          .map(t=>({op_hash:t.op_hash,
+        // Native admin serializes DhtOpHash as bytes (not always the
+        // multibase JS string used by Kitsune2 logs). Normalize explicitly.
+        const normalizeHash=h=>publicHoloHash(h)||
+          (typeof h==='string'&&h.startsWith('uhCQk')?h:null);
+        result.hash_wire_probe=items.slice(0,2).map(t=>({
+          wire_type:typeof t.op_hash,
+          wire_keys:t.op_hash&&typeof t.op_hash==='object'?Object.keys(t.op_hash).slice(0,6):[],
+          normalized:normalizeHash(t.op_hash)
+        }));
+        result.observed_ops=items.map(t=>({op_hash:normalizeHash(t.op_hash),
             when_integrated:t.when_integrated??null,
             validation_status:t.validation_status??null,
             locally_validated:t.locally_validated??null,
-            abandoned_at:t.abandoned_at??null}));
+            abandoned_at:t.abandoned_at??null}))
+          .filter(t=>t.op_hash&&incomingIds.includes(t.op_hash));
       }catch(err){result.first_error='JSON_PARSE_'+String(err).slice(0,130);}
     }else{
       // CLI diagnostics are not secrets; limit logging to failure class,
