@@ -780,11 +780,69 @@ change(P,'''  // Initialize genesis actions if this is a new cell
   // Initialize genesis actions if this is a new cell''')
 
 # Tests are created as new files and appended to the existing extension tests.
+# P0: tag each cached action and private entry with its owning DNA/agent.
+P='packages/core/src/storage/source-chain-storage.ts'
+change(P,'''  private activeCellId: string | null = null;''','''  private activeCellId: string | null = null;
+  private actionCellIds = new Map<string, string>();
+  private entryCellIds = new Map<string, string>();''')
+change(P,'''      this.sessionCache.actions.set(key, action);''','''      this.sessionCache.actions.set(key, action);
+      this.actionCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''', occurrences=2)
+change(P,'''    this.sessionCache.actions.set(key, action);''','''    this.sessionCache.actions.set(key, action);
+    this.actionCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''')
+change(P,'''      this.sessionCache.entries.set(key, entry);''','''      this.sessionCache.entries.set(key, entry);
+      this.entryCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''', occurrences=2)
+change(P,'''    this.sessionCache.entries.set(key, entry);''','''    this.sessionCache.entries.set(key, entry);
+    this.entryCellIds.set(key, this.getCellId(dnaHash, agentPubKey));''')
+change(P,'''    let actions: Action[] = Array.from(this.sessionCache.actions.values());''','''    let actions: Action[] = Array.from(this.sessionCache.actions.values())
+      .filter(action => this.actionCellIds.get(this.hashToKey(action.actionHash)) ===
+        this.getCellId(dnaHash, agentPubKey));''')
+change(P,'''    const actions = Array.from(this.sessionCache.actions.values());''','''    const actions = this.queryActions(dnaHash, agentPubKey);''')
+change(P,'''    if (this.sessionCache.actions.has(cacheKey)) {
+      return this.sessionCache.actions.get(cacheKey)!;
+    }''','''    if (this.activeCellId && this.actionCellIds.get(cacheKey) === this.activeCellId &&
+        this.sessionCache.actions.has(cacheKey)) {
+      return this.sessionCache.actions.get(cacheKey)!;
+    }''')
+change(P,'''    if (this.sessionCache.entries.has(cacheKey)) {
+      return this.sessionCache.entries.get(cacheKey)!;
+    }''','''    if (this.activeCellId && this.entryCellIds.get(cacheKey) === this.activeCellId &&
+        this.sessionCache.entries.has(cacheKey)) {
+      return this.sessionCache.entries.get(cacheKey)!;
+    }''')
+change(P,'''    for (const action of this.sessionCache.actions.values()) {
+      if ('entryHash' in action) {''','''    for (const action of this.sessionCache.actions.values()) {
+      if (this.actionCellIds.get(this.hashToKey(action.actionHash)) !== this.activeCellId) continue;
+      if ('entryHash' in action) {''')
+change(P,'''    const entry = this.sessionCache.entries.get(entryCacheKey);''','''    const entry = this.entryCellIds.get(entryCacheKey) === this.getCellId(dnaHash, agentPubKey)
+      ? this.sessionCache.entries.get(entryCacheKey) : undefined;''')
+change(P,'''    this.sessionCache.chainHeads.clear();
+  }''','''    this.sessionCache.chainHeads.clear();
+    this.actionCellIds.clear();
+    this.entryCellIds.clear();
+    this.activeCellId = null;
+  }''')
+change(P,'''        resolve(storable ? this.storableToAction(storable) : null);''','''        resolve(storable && storable.cellId === this.activeCellId
+          ? this.storableToAction(storable) : null);''')
+change(P,'''        if (!storable) {
+          resolve(null);
+          return;
+        }
+
+        resolve({
+          entryHash: new Uint8Array(storable.entryHash),''','''        if (!storable || storable.cellId !== this.activeCellId) {
+          resolve(null);
+          return;
+        }
+
+        resolve({
+          entryHash: new Uint8Array(storable.entryHash),''')
+
 TESTS = {
   'packages/core/src/ribosome/wasm-io-types.imposter.test.ts': 'tests/wasm-io-types.imposter.test.ts',
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
   'packages/core/src/hash/system-entry.imposter.test.ts': 'tests/system-entry.imposter.test.ts',
   'packages/core/src/storage/private-entry-persistence.imposter.test.ts': 'tests/private-entry-persistence.imposter.test.ts',
+  'packages/core/src/storage/multi-cell-isolation.imposter.test.ts': 'tests/multi-cell-isolation.imposter.test.ts',
   'packages/core/src/storage/cell-isolation.imposter.test.ts': 'tests/cell-isolation.imposter.test.ts',
   'packages/core/src/ribosome/host-fn/dna-info-imposter.test.ts': 'tests/dna-info-imposter.test.ts',
   'packages/core/src/dht/publish-upgrade.imposter.test.ts': 'tests/publish-upgrade.imposter.test.ts',
