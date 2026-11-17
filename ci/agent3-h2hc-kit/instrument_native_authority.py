@@ -114,6 +114,25 @@ repl = [
  }
  if(context)await context.close().catch(()=>{});""")
 ]
+# A green investigation job must never be mistaken for successful DHT delivery.
+# Preserve all earlier positive observations in runtime-evidence.json before failing.
+repl.append((
+    " record('SEAT_RECONNECT','NOT RUN','Requires guest and host DHT state');",
+    r""" record('SEAT_RECONNECT','NOT RUN','Requires guest and host DHT state');
+ const publication=evidence.h2hc_dht_result;
+ if(!publication || publication.queued<1 || publication.failed!==0 ||
+    publication.published===0) {
+   record('NATIVE_DHT_END_TO_END','BLOCKED',
+     'Native 0.7 conductor started and peers exchanged preflight; '+
+     'H2HC remote published=0. Native integrity and independent GET are NOT RUN.');
+   throw Error('Strict DHT convergence gate: zero remotely delivered HWC operations; '+
+     'this CI job must FAIL while authority validation/retrieval are unproven');
+ }
+ record('NATIVE_DHT_END_TO_END','BLOCKED',
+   'Remote publish observed but native integrity verdict and independent authenticated retrieval NOT proven');
+ throw Error('Strict DHT convergence gate: publication acknowledgement is not native validity or retrieval');"""
+))
+
 for old, new in repl:
     if s.count(old) != 1:
         raise SystemExit(f'Native probe anchor drift {old!r}: {s.count(old)}')
