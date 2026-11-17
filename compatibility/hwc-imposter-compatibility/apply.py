@@ -866,7 +866,122 @@ change(P,'''    if (this.pendingTransaction) {
       throw new Error('Cross-cell source-chain operation inside active transaction');
     }''')
 
+# Issue #7: upgrade persistent private entries from a globally unique hash to
+# a (cell_id, entry_hash) primary key. SQLite OPFS migrations execute atomically.
+P='packages/core/src/storage/sqlite-schema.ts'
+change(P,'''CREATE TABLE IF NOT EXISTS entries (
+  entry_hash BLOB PRIMARY KEY,
+  cell_id TEXT NOT NULL,
+  entry_content BLOB NOT NULL,
+  entry_type TEXT NOT NULL
+);''','''CREATE TABLE IF NOT EXISTS entries (
+  cell_id TEXT NOT NULL,
+  entry_hash BLOB NOT NULL,
+  entry_content BLOB NOT NULL,
+  entry_type TEXT NOT NULL,
+  PRIMARY KEY (cell_id, entry_hash)
+);''')
+
+P='packages/extension/src/offscreen/ribosome-worker.ts'
+change(P,'''import { SCHEMA_SQL } from '@hwc/core/storage/sqlite-schema';''','''import { SCHEMA_SQL } from '@hwc/core/storage/sqlite-schema';
+import { migrateEntrySchema } from '@hwc/core/storage/sqlite-entry-migration';''')
+change(P,'''  // Create schema
+  db.exec(SCHEMA_SQL);
+
+  // WAL mode''','''  // SCHEMA_SQL is CREATE IF NOT EXISTS: existing v1 entry rows are retained.
+  db.exec(SCHEMA_SQL);
+  // Runs the v1 -> v2 copy, ownership audit, index swap and version marker
+  // atomically. On failure INIT rejects; never serve an ambiguously owned grant.
+  const migration = migrateEntrySchema(db);
+  log.info('Entry schema ready', migration.status, migration.entries);
+
+  // WAL mode''')
+change(P,'''      INSERT OR REPLACE INTO entries (entry_hash, cell_id, entry_content, entry_type)
+      VALUES (?, ?, ?, ?)''','''      INSERT INTO entries (entry_hash, cell_id, entry_content, entry_type)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(cell_id, entry_hash) DO NOTHING''')
+
+# IndexedDB v1 stores globally keyed entryHash. IDB upgrade transaction is
+# atomic and cannot recover a displaced former owner's private body.
+P='packages/core/src/storage/source-chain-storage.ts'
+change(P,'''const DB_VERSION = 1;''','''const DB_VERSION = 2;''')
+change(P,'''          const entriesStore = db.createObjectStore(STORES.ENTRIES, {
+            keyPath: 'entryHash',
+          });''','''          const entriesStore = db.createObjectStore(STORES.ENTRIES, {
+            keyPath: ['cellId', 'entryHash'],
+          });''')
+change(P,'''        // Links store
+        if (!db.objectStoreNames.contains(STORES.LINKS)) {''','''        // Upgrade existing globally keyed v1 entries in the versionchange
+        // transaction. An ownership contradiction aborts the entire upgrade.
+        // Only payload counts are logged: never the private entry bytes.
+        if (event.oldVersion > 0 && db.objectStoreNames.contains(STORES.ENTRIES)) {
+          const upgradeTx = request.transaction!;
+          const oldEntries = upgradeTx.objectStore(STORES.ENTRIES);
+          if (oldEntries.keyPath === 'entryHash') {
+            const entriesRequest = oldEntries.getAll();
+            entriesRequest.onsuccess = () => {
+              const rows = entriesRequest.result as StorableEntry[];
+              const actionsRequest = upgradeTx.objectStore(STORES.ACTIONS).getAll();
+              actionsRequest.onsuccess = () => {
+                const references = actionsRequest.result as StorableAction[];
+                const owners = new Map(rows.map(entry =>
+                  [this.hashToKey(new Uint8Array(entry.entryHash)), entry.cellId]));
+                const conflicting = references.filter(action =>
+                  (action.actionType === 'Create' || action.actionType === 'Update') &&
+                  action.entryHash && owners.has(this.hashToKey(new Uint8Array(action.entryHash))) &&
+                  owners.get(this.hashToKey(new Uint8Array(action.entryHash))) !== action.cellId).length;
+                const missing = rows.filter(entry => !entry.cellId || !entry.entryHash).length;
+                if (conflicting || missing) {
+                  log.error('LEGACY_IDB_ENTRY_OWNERSHIP_CONFLICT', { conflicting, missing });
+                  upgradeTx.abort(); // Preserve the original v1 database.
+                  return;
+                }
+                db.deleteObjectStore(STORES.ENTRIES);
+                const migrated = db.createObjectStore(STORES.ENTRIES, {
+                  keyPath: ['cellId', 'entryHash'],
+                });
+                migrated.createIndex('cellId', 'cellId', { unique: false });
+                for (const entry of rows) migrated.add(entry);
+              };
+            };
+          } else if (JSON.stringify(oldEntries.keyPath) !==
+              JSON.stringify(['cellId', 'entryHash'])) {
+            log.error('Unrecognized IndexedDB entries key; refusing upgrade');
+            upgradeTx.abort();
+          }
+        }
+
+        // Links store
+        if (!db.objectStoreNames.contains(STORES.LINKS)) {''')
+change(P,'''      const request = tx.objectStore(STORES.ENTRIES).get(key);''','''      if (!this.activeCellId) {
+        resolve(null);
+        return;
+      }
+      const request = tx.objectStore(STORES.ENTRIES).get([this.activeCellId, key]);''')
+change(P,'''  async clear(): Promise<void> {
+    await this.init();''','''  // Test-only provider: close without deleting the IndexedDB database.
+  // Used to simulate reopening after a browser reload.
+  closeForTests(): void {
+    if (this.pendingTransaction) this.rollbackTransaction();
+    this.db?.close();
+    this.db = null;
+    this.initPromise = null;
+    this.activeCellId = null;
+    this.sessionCache.actions.clear();
+    this.sessionCache.entries.clear();
+    this.sessionCache.links.clear();
+    this.sessionCache.chainHeads.clear();
+    this.actionCellIds.clear();
+    this.entryCellIds.clear();
+  }
+
+  async clear(): Promise<void> {
+    await this.init();''')
+
 TESTS = {
+  'packages/core/src/storage/sqlite-entry-migration.ts': 'tests/sqlite-entry-migration.ts',
+  'packages/core/src/storage/sqlite-entry-migration.imposter.test.ts': 'tests/sqlite-entry-migration.imposter.test.ts',
+
   'packages/core/src/ribosome/wasm-io-types.imposter.test.ts': 'tests/wasm-io-types.imposter.test.ts',
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
   'packages/core/src/hash/system-entry.imposter.test.ts': 'tests/system-entry.imposter.test.ts',
