@@ -81,8 +81,8 @@ export function migrateEntrySchema(
   try {
     if (legacy) {
       db.exec(`CREATE TABLE entries_v2_migration (
-        cell_id TEXT NOT NULL,
         entry_hash BLOB NOT NULL,
+        cell_id TEXT NOT NULL,
         entry_content BLOB NOT NULL,
         entry_type TEXT NOT NULL,
         PRIMARY KEY (cell_id, entry_hash)
