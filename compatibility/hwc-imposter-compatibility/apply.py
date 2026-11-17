@@ -856,6 +856,16 @@ change(P,'''    const stmt = db.prepare('SELECT entry_hash, entry_content, entry
     try {
       stmt.bind([toBytes(entryHash), this.currentCellId]);''')
 
+# Allow the first write to bind a fresh transaction to its cell. A
+# transaction already bound to ANY cell must still fail closed on switching.
+# This preserves pinned upstream's beginTransaction(); putAction() contract.
+P='packages/core/src/storage/source-chain-storage.ts'
+change(P,'''    if (this.pendingTransaction) {
+      throw new Error('Cross-cell source-chain operation inside active transaction');
+    }''','''    if (this.pendingTransaction && this.activeCellId !== null) {
+      throw new Error('Cross-cell source-chain operation inside active transaction');
+    }''')
+
 TESTS = {
   'packages/core/src/ribosome/wasm-io-types.imposter.test.ts': 'tests/wasm-io-types.imposter.test.ts',
   'packages/core/src/dht/private-entry.imposter.test.ts': 'tests/private-entry.imposter.test.ts',
