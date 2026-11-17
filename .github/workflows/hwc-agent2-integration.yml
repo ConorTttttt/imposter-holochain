@@ -28,7 +28,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
-       github.event.head_commit.message == 'ci(hwc): verify complete pinned source regression after cell isolation')
+       github.event.head_commit.message == 'ci(hwc): verify issue 7 composite entry migration')
     name: Apply, typecheck, Vitest, Chrome and Firefox builds
     runs-on: ubuntu-24.04
     timeout-minutes: 80
@@ -184,7 +184,9 @@ jobs:
           npx tsc --noEmit -p packages/extension/tsconfig.json 2>&1 | tee ../real-wasm-evidence/extension-typecheck.log
           npx vitest run packages/core/src/ribosome/imposter-real-wasm.integration.test.ts \
             packages/core/src/storage/multi-cell-isolation.imposter.test.ts \
-            packages/core/src/storage/cell-isolation.imposter.test.ts --reporter=verbose \
+            packages/core/src/storage/cell-isolation.imposter.test.ts \
+            packages/core/src/storage/sqlite-entry-migration.imposter.test.ts \
+            packages/core/src/storage/idb-entry-collision.imposter.test.ts --reporter=verbose \
             2>&1 | tee ../real-wasm-evidence/real-imposter-wasm.log
 
       - name: Upload exact first WASM failure, logs and branch source diff
