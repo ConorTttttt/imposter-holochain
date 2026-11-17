@@ -8,8 +8,9 @@
 import assert from "node:assert/strict";
 import { createPrivateKey, sign as edSign, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFileSync, mkdirSync, writeFileSync, createWriteStream } from "node:fs";
+import { mkdirSync, writeFileSync, createWriteStream, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 const bin=process.env.H2HC_BINARY;
 assert(bin && process.env.H2HC_LINKER_ALLOW_INSECURE_DEV!=="true","provide precompiled secure H2HC_BINARY");
 const out=process.env.H2HC_EVIDENCE_DIR||"/tmp/agent3-topology";
@@ -40,6 +41,7 @@ const result={
  native_authority_validated:"NOT_RUN",retrieved_by_other_authorized_agent:"NOT_RUN",
  completion_criterion_met:false,observations:[],result:"NOT_STARTED"
 };
+const privateKeysDir=mkdtempSync(join(tmpdir(),"agent3-linker-keys-"));
 const children=[], sockets=[];
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function log(label,data) {
@@ -129,7 +131,7 @@ function start(port,id,secret) {
   H2HC_LINKER_BOOTSTRAP_URL:bootstrap,H2HC_LINKER_RELAY_URL:relay,
   H2HC_LINKER_ADMIN_SECRET:secret,H2HC_LINKER_ALLOW_INSECURE_DEV:"false",
   H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK:"false",
-  H2HC_LINKER_KEY_FILE:join(out,"gateway-"+id+"-identity.key"),
+  H2HC_LINKER_KEY_FILE:join(privateKeysDir,"gateway-"+id+"-identity.key"),
   RUST_LOG:"h2hc_linker=debug,kitsune2=info,iroh=warn"
  };
  const child=spawn(bin,["--address","127.0.0.1","--port",String(port)],{env,stdio:["ignore","pipe","pipe"]});
@@ -181,8 +183,9 @@ try {
 finally {
  for(const peer of sockets){try{peer.close();}catch{}}
  for(const child of children){try{child.kill("SIGTERM");}catch{}}
- // Do not upload synthetic gateway identity key files in CI.
- await sleep(200);
+ // Gateway key files NEVER enter the artifacts directory.
+ await sleep(250);
+ rmSync(privateKeysDir,{recursive:true,force:true});
  writeFileSync(join(out,"results.json"),JSON.stringify(result,null,2));
  console.log("TOPOLOGY_RESULT",result.result);
  process.exitCode=exitCode;
