@@ -242,7 +242,7 @@ async function main(){
      await window.holochain.connect();
      const b=new Uint8Array(window.holochain.myPubKey||[]);
      return 'u'+btoa(String.fromCharCode(...b))
-        .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
    });
    must(again===host,'Authentic browser Lair host key changed after full restart');
    await page.evaluate(async()=>await window.holochain.callZome({
@@ -263,7 +263,7 @@ async function main(){
      const asBytes=v=>v instanceof Uint8Array?v:Array.isArray(v)?new Uint8Array(v):
        v&&typeof v==='object'?new Uint8Array(Object.keys(v).sort((a,b)=>Number(a)-Number(b)).map(k=>v[k])):new Uint8Array();
      const enc=v=>'u'+btoa(String.fromCharCode(...asBytes(v)))
-       .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+       .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
      const identity=enc(hc.myPubKey);
      const response=await fetch('/imposter-browser-poc.happ',{cache:'no-store'});
      if(!response.ok)throw Error('Guest hApp download failed');
