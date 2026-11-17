@@ -23,8 +23,9 @@ concurrency:
 
 jobs:
   pinned-hwc:
-    # Already green at a892a3c; run again only by explicit manual dispatch.
-    if: github.event_name == 'workflow_dispatch'
+    # Run the full suite on explicit dispatch, or this one audited security
+    # verification push. Avoid expensive duplicate runs for every test commit.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'ci(hwc): verify complete pinned source regression after cell isolation')
     name: Apply, typecheck, Vitest, Chrome and Firefox builds
     runs-on: ubuntu-24.04
     timeout-minutes: 80
