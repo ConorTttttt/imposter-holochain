@@ -46,7 +46,7 @@ repl = [
       probe.status+' signal='+probe.signal+' '+String(probe.error?.message||probe.stderr||'').slice(-600));
    record('NATIVE_HOLOCHAIN_0_7_TOOL','PASS','hc and holochain real binaries executable; Electron not used');
    const generateScript='set -eu; cd "$1"; exec hc sandbox --piped generate '+
-     '--app-id imposter-native-authority --root "$1" --directories conductor-a '+
+     '--app-id imposter-native-authority --num-sandboxes 2 --root "$1" --directories conductor-a,conductor-b '+
      '--in-process-lair "$2" network --bootstrap "$3" --target-arc-factor 1 quic "$4"';
    const gen=spawnSync('nix',['develop','--no-write-lock-file',
      '--command','bash','-c',generateScript,'native-sandbox',
@@ -55,7 +55,7 @@ repl = [
         timeout:180000,maxBuffer:8*1024*1024});
    fs.writeFileSync(path.join(OUT_LOG,'native-sandbox-generate.log'),
       'COMMAND=hc sandbox --piped generate --app-id imposter-native-authority '+
-      '--root <ephemeral> --directories conductor-a --in-process-lair <EXACT_HAPP> '+
+      '--num-sandboxes 2 --root <ephemeral> --directories conductor-a,conductor-b --in-process-lair <EXACT_HAPP> '+
       'network --bootstrap '+bootstrap+' --target-arc-factor 1 quic '+relay+'\n'+
       'EXIT_CODE='+String(gen.status)+' SIGNAL='+String(gen.signal)+'\n'+
       String(gen.stdout||'')+'\n---stderr---\n'+String(gen.stderr||''));
@@ -63,31 +63,34 @@ repl = [
       gen.status+' signal='+gen.signal+' (native-sandbox-generate.log): '+
       String(gen.error?.message||gen.stderr||'').slice(-900));
    must(fs.existsSync(path.join(nativeRoot,'.hc')),'Native 0.7 sandbox did not persist .hc manifest');
-   const config=path.join(nativeRoot,'conductor-a','conductor-config.yaml');
-   must(fs.existsSync(config),'Native 0.7 conductor config not persisted: '+config);
-   const configBody=fs.readFileSync(config,'utf8');
-   must(/target_arc_factor:\s*1(?:\s|$)/m.test(configBody),
-      'Native conductor is NOT configured for nonempty storage arc');
-   must(configBody.includes(bootstrap)&&configBody.includes(relay),
-      'Native bootstrap/relay config does not match authenticated H2HC');
+   for(const dir of ['conductor-a','conductor-b']){
+     const config=path.join(nativeRoot,dir,'conductor-config.yaml');
+     must(fs.existsSync(config),'Native 0.7 conductor config not persisted: '+config);
+     const configBody=fs.readFileSync(config,'utf8');
+     must(/target_arc_factor:\s*1(?:\s|$)/m.test(configBody),
+       'Native conductor '+dir+' target arc is zero/missing');
+     must(configBody.includes(bootstrap)&&configBody.includes(relay),
+       'Native conductor '+dir+' network config does not match authenticated H2HC');
+   }
    // Avoid archiving paths, private keystore or admin credentials.
    evidence.native_authority_config={
      cli:'hc sandbox',holochain_version:'0.7.0',
      bootstrap,relay,target_arc_factor:1,host_bound_dna:m.dna_hash,
-     happ_sha256:m.happ_bundle_sha256,isolated_lair_identity:true};
-   const runScript='set -eu; cd "$1"; exec hc sandbox --piped --force-admin-ports 33555 run --ports 33556';
+     happ_sha256:m.happ_bundle_sha256,isolated_lair_identity:true,native_conductors:2};
+   const runScript='set -eu; cd "$1"; exec hc sandbox --piped --force-admin-ports 33555,33557 run --ports 33556,33558';
    nativeConductor=spawn('nix',['develop','--no-write-lock-file',
      '--command','bash','-c',runScript,'native-sandbox',nativeRoot],{
        cwd:ROOT,env:nativeEnv,stdio:['pipe','pipe','pipe'],detached:true});
-   const stream=fs.createWriteStream(path.join(OUT_LOG,'native-holochain-0.7.log'));
+   const nativeLogPath=path.join(OUT_LOG,'native-holochain-0.7.log');
+   const stream=fs.createWriteStream(nativeLogPath);
    nativeConductor.stdout.pipe(stream,{end:false});
    nativeConductor.stderr.pipe(stream,{end:false});
    nativeConductor.stdin.end(passphrase);
    let exited=null;
    nativeConductor.on('error',e=>{exited='spawn error '+e.message;});
    nativeConductor.on('exit',(code,signal)=>{exited='exit '+code+' signal '+signal;});
-   const connected=()=>new Promise(resolve=>{
-      const socket=net.connect({host:'127.0.0.1',port:33555});
+   const connected=(port)=>new Promise(resolve=>{
+      const socket=net.connect({host:'127.0.0.1',port});
       let settled=false;
       const done=v=>{if(!settled){settled=true;socket.destroy();resolve(v);}};
       socket.once('connect',()=>done(true));
@@ -97,7 +100,7 @@ repl = [
    let ready=false;
    for(let i=0;i<100;i++){
      if(exited)break;
-     if(await connected()){ready=true;break;}
+     if(await connected(33555)&&await connected(33557)){ready=true;break;}
      await new Promise(resolve=>setTimeout(resolve,500));
    }
    if(!ready)throw Error('Native 0.7 admin WebSocket never opened: '+
