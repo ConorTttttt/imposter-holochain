@@ -557,7 +557,7 @@ change(P,'''  let genesisRecords: { action: any; entry?: any }[] = [];
           continue;
         }
         const callback = await callZome({
-          ...request, zome: coordinator.name, fn: 'init', payload: null,
+          ...request, zome: coordinator.name, fn: 'init', payload: new Uint8Array([0xc0]), // ExternIO wrapping () as msgpack nil
           provenance: agentPubKey, isInitCallback: true,
         });
         if (callback.result !== 'Pass') {
@@ -609,7 +609,7 @@ change(P,'''        const { initializeGenesis } = await import('@hwc/core/storag
             cellId: cellIdBytes,
             zome: zome.name,
             fn: 'init',
-            payload: null,
+            payload: new Uint8Array([0xc0]), // ExternIO wrapping () as msgpack nil
             provenance: genesisAgentKey,
             dnaManifest: manifestWithWasm,
             isInitCallback: true,

@@ -218,7 +218,7 @@ describe.sequential('Agent 2 — actual Imposter 0.7 WASMs in patched HWC', () =
   it('denies unauthorized non-host create_lobby under real integrity validator', async () => {
     const other = hashFrom32AndType(new Uint8Array(32).fill(0x35), HoloHashType.Agent);
     const input = { code: 'UNAUTH-AGENT2', player_count: 3, impostor_count: 1, task_target: 5, display_name: 'NonHost' };
-    await expect(call('create_lobby', input, other)).rejects.toThrow();
+    await expect(call('create_lobby', input, other)).rejects.toThrow(/game seed host does not match lobby author/);
     const forbidden = storage.queryActions(fixture.dna, other).filter(a => a.actionType === 'Create' && 'entryType' in a && (a as any).entryType?.entry_index === 0);
     expect(forbidden).toHaveLength(0);
     console.log('REAL_WASM_NONHOST_DENIAL', JSON.stringify({ unauthorizedLobbyActions: forbidden.length }));
