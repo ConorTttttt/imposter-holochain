@@ -20,13 +20,15 @@ const ORIGIN='http://localhost:8765';
 const OUT_LOG=path.join(ROOT,'runtime-evidence');
 fs.mkdirSync(OUT_LOG,{recursive:true});
 const PROFILE=fs.mkdtempSync(path.join(os.tmpdir(),'imposter-hwc-ephemeral-'));
+const GUEST_PROFILE=fs.mkdtempSync(path.join(os.tmpdir(),'imposter-hwc-guest-'));
+const ciSnapshots=[];
 const evidence={
  schema_version:1,mode:'REAL_HWC_EPHEMERAL_BROWSER',deployment_ready:false,
  source_head:process.env.GITHUB_SHA || 'unknown',hwc_base:'0c391226e78769d44ccb4661881ed8998b15f903',
  profile:'EPHEMERAL_DELETED_ON_RUNNER_EXIT',origin:ORIGIN,checks:{},
  prohibited_gameplay:'roles/kills/sabotage/votes not exercised'
 };
-let context,server,artifactDir;
+let context,guestContext,server,artifactDir;
 function record(k,result,details){
  evidence.checks[k]={result, ...(details?{details:String(details).slice(0,2500)}:{})};
  fs.writeFileSync(path.join(OUT_LOG,'runtime-evidence.json'),JSON.stringify(evidence,null,2)+'\n');
@@ -43,6 +45,25 @@ function run(cmd,args,label,timeoutMs){
 }
 function site(req,res){
  const pathname=new URL(req.url,ORIGIN).pathname;
+ if(pathname==='/__ci_source_chain'){
+   const h={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type',
+     'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Private-Network':'true'};
+   if(req.method==='OPTIONS'){res.writeHead(204,h);res.end();return;}
+   if(req.method!=='POST'){res.writeHead(405,h);res.end();return;}
+   let data='';
+   req.on('data',c=>{data+=c;if(data.length>100000)req.destroy();});
+   req.on('end',()=>{
+     try{
+       const obj=JSON.parse(data);
+       if(obj.marker!=='IMPOSTER_CI_PRIVATE_INSPECTOR'||!Array.isArray(obj.actions)||
+         obj.actions.length>200)throw Error('invalid CI metadata');
+       ciSnapshots.push(obj);
+       fs.writeFileSync(path.join(OUT_LOG,'ci-source-chain-metadata.json'),
+         JSON.stringify(ciSnapshots,null,2)+'\n');
+       res.writeHead(204,h);res.end();
+     }catch(_){res.writeHead(400,h);res.end();}
+   });return;
+ }
  if(pathname==='/'||pathname==='/index.html'){
    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
    res.end('<!DOCTYPE html><html><head><title>Imposter P0 real HWC smoke</title></head><body><h1>Imposter HWC P0 smoke</h1><p>No gameplay or keys are exposed here.</p></body></html>');return;
@@ -63,16 +84,39 @@ async function step(name,fn){
  catch(err){record(name,'FAIL',err?.stack||String(err));throw err;}
 }
 function safeRuntimeError(v){return String(v||'').slice(0,500).replace(/(?:[A-Za-z0-9_/-]{90,})/g,'[LONG_TOKEN_REDACTED]');}
+async function snapshotFor(agent,after=0,filter=()=>true){
+ for(let i=0;i<100;i++){
+   const snap=ciSnapshots.slice(after).filter(x=>x.agent===agent&&filter(x)).at(-1);
+   if(snap)return snap;
+   await new Promise(r=>setTimeout(r,100));
+ }
+ throw Error('No production worker CI source-chain metadata available for selected HWC identity');
+}
+function verifyChain(snap){
+ const a=snap.actions;
+ must(snap.storage_class==='DirectSQLiteStorage'&&snap.backend==='OPFS_SAHPOOL',
+      'Production HWC worker not using persistent DirectSQLiteStorage/OPFS');
+ must(snap.chrome_lair_signing&&snap.lair_signatures>0,'No real Lair synchronous signing observed');
+ must(a.slice(0,3).map(x=>x.type).join(',')==='Dna,AgentValidationPkg,Create',
+      'Unexpected first three source-chain actions');
+ must(a[3]?.type==='Create'&&a[3]?.entry_type==='CapGrant','Private CapGrant not at source-chain index 3');
+ must(a[4]?.type==='InitZomesComplete','InitZomesComplete not after CapGrant');
+ must(a.filter(x=>x.type==='InitZomesComplete').length===1,'InitZomesComplete duplicated');
+ must(a.every((x,i)=>x.seq===i&&(i===0?!x.prev:x.prev===a[i-1].hash)&&x.signature_length===64),
+      'Broken source chain sequence, hash linkage or signature lengths');
+ must(snap.capgrant_count===1&&snap.capgrant_stored&&snap.capgrant_wire_hidden,
+      'Private CapGrant missing or exposed in network-facing record conversion');
+}
 async function main(){
  server=http.createServer(site);
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(8765,'127.0.0.1',resolve);});
  const ext=path.join(HWC,'packages/extension/dist-chrome');
  must(fs.existsSync(path.join(ext,'manifest.json')),'patched HWC Chrome dist missing');
- context=await chromium.launchPersistentContext(PROFILE,{
-    headless:false,viewport:{width:1100,height:800},
-    args:['--disable-extensions-except='+ext,'--load-extension='+ext,'--no-first-run','--disable-default-apps','--no-sandbox','--disable-dev-shm-usage']
- });
- const page=context.pages()[0]||await context.newPage();
+ const launchOptions={headless:false,viewport:{width:1100,height:800},
+    args:['--disable-extensions-except='+ext,'--load-extension='+ext,'--no-first-run',
+      '--disable-default-apps','--no-sandbox','--disable-dev-shm-usage']};
+ context=await chromium.launchPersistentContext(PROFILE,launchOptions);
+ let page=context.pages()[0]||await context.newPage();
  page.on('pageerror',err=>{fs.appendFileSync(path.join(OUT_LOG,'page-errors.log'),safeRuntimeError(err)+'\n');});
  await page.goto(ORIGIN,{waitUntil:'domcontentloaded'});
  await page.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),{timeout:45000});
@@ -179,18 +223,89 @@ async function main(){
    evidence.host_create_result_kind=typeof v;
    return v;
  });
- // Authorized host acceptance is the priority. Guest negative creation needs a
- // second browser profile; do not silently infer it from host acceptance.
- record('UNAUTHORIZED_GUEST_REJECTED','NOT RUN','Separate independent guest profile and integrity rejection needed');
- record('H2HC_AUTHENTICATED_CONVERGENCE','NOT RUN','Requires Agent 3 deployment + tested registration, not just cargo security CI');
- record('SEAT_RECONNECT','NOT RUN','Requires guest and host DHT state');
+ const authored=await step('CI_READ_ONLY_CHAIN_GENESIS_AND_PRIVACY',async()=>{
+   const s=await snapshotFor(host,0,x=>x.links>=2);
+   verifyChain(s);
+   must(s.links>=2,'Host lobby call did not author lobby and join link actions');
+   evidence.host_source_chain_actions=s.actions.map(x=>({seq:x.seq,type:x.type,hash:x.hash}));
+   evidence.host_link_count=s.links;
+   return s;
+ });
+ await step('REAL_BROWSER_RESTART_PERSISTENCE',async()=>{
+   const start=ciSnapshots.length;
+   await context.close();
+   context=await chromium.launchPersistentContext(PROFILE,launchOptions);
+   page=context.pages()[0]||await context.newPage();
+   await page.goto(ORIGIN,{waitUntil:'domcontentloaded'});
+   await page.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),{timeout:45000});
+   const again=await page.evaluate(async()=>{
+     await window.holochain.connect();
+     const b=new Uint8Array(window.holochain.myPubKey||[]);
+     return 'u'+btoa(String.fromCharCode(...b))
+        .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+   });
+   must(again===host,'Authentic browser Lair host key changed after full restart');
+   await page.evaluate(async()=>await window.holochain.callZome({
+     zome_name:'game',fn_name:'get_game_state',payload:null
+   }));
+   const s=await snapshotFor(host,start);
+   verifyChain(s);
+   must(s.actions.map(x=>x.hash).join(',')===authored.actions.map(x=>x.hash).join(','),
+     'Source chain mutated or restarted after full Chrome process/profile restart');
+ });
+ await step('UNAUTHORIZED_GUEST_REJECTED',async()=>{
+   guestContext=await chromium.launchPersistentContext(GUEST_PROFILE,launchOptions);
+   const guestPage=guestContext.pages()[0]||await guestContext.newPage();
+   await guestPage.goto(ORIGIN,{waitUntil:'domcontentloaded'});
+   await guestPage.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),{timeout:45000});
+   const guest=await guestPage.evaluate(async(expectedDna)=>{
+     const hc=window.holochain; await hc.connect();
+     const asBytes=v=>v instanceof Uint8Array?v:Array.isArray(v)?new Uint8Array(v):
+       v&&typeof v==='object'?new Uint8Array(Object.keys(v).sort((a,b)=>Number(a)-Number(b)).map(k=>v[k])):new Uint8Array();
+     const enc=v=>'u'+btoa(String.fromCharCode(...asBytes(v)))
+       .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+     const identity=enc(hc.myPubKey);
+     const response=await fetch('/imposter-browser-poc.happ',{cache:'no-store'});
+     if(!response.ok)throw Error('Guest hApp download failed');
+     await hc.installApp({bundle:new Uint8Array(await response.arrayBuffer()),installedAppId:'imposter-browser-poc'});
+     const info=await hc.appInfo('imposter-browser-poc');
+     if(enc(info.cells[0][0])!==expectedDna||enc(info.cells[0][1])!==identity)
+       throw Error('Guest cell identity or installed DNA mismatch');
+     await hc.callZome({zome_name:'game',fn_name:'get_game_state',payload:null});
+     return identity;
+   },m.dna_hash);
+   must(guest!==host,'Separate HWC guest profile shares host identity');
+   evidence.separate_guest_public_key=guest;
+   const prior=await snapshotFor(guest);
+   verifyChain(prior);
+   const start=ciSnapshots.length;
+   const check=await guestPage.evaluate(async()=>{
+     try{
+       await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
+          payload:{code:'UNAUTH-P0',player_count:3,impostor_count:1,task_target:1,display_name:'Guest'}});
+       return {accepted:true};
+     }catch(e){return {accepted:false,error:String(e)};}
+   });
+   must(!check.accepted,'Unauthorized guest created a lobby');
+   must(/game seed host does not match lobby author/.test(check.error),
+     'Unexpected guest failure, not native Rust host validator: '+safeRuntimeError(check.error));
+   const after=await snapshotFor(guest,start,s=>s.fn==='create_lobby');
+   must(after.actions.map(a=>a.hash).join(',')===prior.actions.map(a=>a.hash).join(','),
+     'Unauthorized guest rejection authored source-chain actions');
+   evidence.unauthorized_guest_rejection='native Rust host authorization; no extra author actions';
+ });
+ record('DHT_PUBLICATION','NOT VERIFIED','Signed local lobby/link actions do not establish remote DHT receipt');
+ record('H2HC_AUTHENTICATED_CONVERGENCE','NOT RUN','No authenticated Agent 3 linker or independent authority');
+ record('SEAT_RECONNECT','NOT RUN','Requires independent guest DHT join and reconnect');
 }
 try{await main();}
 catch(e){console.error('FIRST_RUNTIME_FAILURE:',safeRuntimeError(e?.stack||e));process.exitCode=1;}
 finally{
+ if(guestContext)await guestContext.close().catch(()=>{});
  if(context)await context.close().catch(()=>{});
  if(server)await new Promise(res=>server.close(res));
  fs.rmSync(PROFILE,{recursive:true,force:true});
+ fs.rmSync(GUEST_PROFILE,{recursive:true,force:true});
  if(artifactDir&&fs.existsSync(artifactDir)){
    // Do not upload a full hApp with an ephemeral deleted host identity to be
    // mistaken for an operator deployment package; evidence contains hashes.

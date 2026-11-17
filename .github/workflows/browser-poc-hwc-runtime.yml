@@ -6,6 +6,7 @@ on:
       - ".github/workflows/browser-poc-hwc-runtime.yml"
       - "scripts/browser-poc-hwc-smoke.mjs"
       - "scripts/browser-poc-lib.mjs"
+      - "scripts/browser-poc-ci-worker-probe.mjs"
   workflow_dispatch:
 
 permissions:
@@ -66,6 +67,13 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: hwc/package-lock.json
+
+      - name: Instrument ephemeral CI HWC worker for read-only source-chain metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/browser-poc-ci-worker-probe.mjs hwc
+          git -C hwc diff --check
 
       - name: Build patched Chrome extension and verify bundle layout
         shell: bash
@@ -128,7 +136,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: patched-HWC-CHROME-extension-build-BROWSER-INSTALL-NOT-YET-VERIFIED
+          name: CI-ONLY-INSTRUMENTED-HWC-CHROME-extension-NOT-DEPLOYABLE
           retention-days: 14
           if-no-files-found: warn
           path: |
