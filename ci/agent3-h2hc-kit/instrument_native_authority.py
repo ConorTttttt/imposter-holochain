@@ -66,7 +66,7 @@ repl = [
    const config=path.join(nativeRoot,'conductor-a','conductor-config.yaml');
    must(fs.existsSync(config),'Native 0.7 conductor config not persisted: '+config);
    const configBody=fs.readFileSync(config,'utf8');
-   must(/target_arc_factor:\\s*1(?:\\s|$)/m.test(configBody),
+   must(/target_arc_factor:\s*1(?:\s|$)/m.test(configBody),
       'Native conductor is NOT configured for nonempty storage arc');
    must(configBody.includes(bootstrap)&&configBody.includes(relay),
       'Native bootstrap/relay config does not match authenticated H2HC');
