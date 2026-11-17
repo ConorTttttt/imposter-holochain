@@ -24,7 +24,7 @@ concurrency:
 jobs:
   pinned-hwc:
     # Run the full suite on explicit dispatch, or this one audited security
-    # verification push. This includes transaction-binding regression coverage.
+    # verification push. This includes SQLite legacy column-order compatibility.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
