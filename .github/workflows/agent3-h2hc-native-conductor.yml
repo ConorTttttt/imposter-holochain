@@ -174,7 +174,7 @@ jobs:
           export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false
           export H2HC_BASE_URL="http://127.0.0.1:8090"
           export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
-          RUST_LOG="h2hc_linker=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
+          RUST_LOG="h2hc_linker::gateway_kitsune=debug,h2hc_linker::dht_query=debug,h2hc_linker::routes::publish=info,h2hc_linker::routes::websocket=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
           H2HC_PID=$!
           trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
           ok=0
