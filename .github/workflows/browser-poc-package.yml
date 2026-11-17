@@ -1,0 +1,123 @@
+name: "Agent 4 — browser P0 packaging (synthetic identity, non-deployable)"
+on:
+  push:
+    branches:
+      - feature/browser-compatibility-harness
+    paths:
+      - ".github/workflows/browser-poc-package.yml"
+      - "scripts/browser-poc-*"
+      - "workdir/browser-poc.happ.yaml"
+      - "docs/browser-poc-runbook.md"
+  pull_request:
+    paths:
+      - ".github/workflows/browser-poc-package.yml"
+      - "scripts/browser-poc-*"
+      - "workdir/browser-poc.happ.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent4-browser-poc-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  packaging-scripts:
+    name: "Node 22 packaging regression + syntax"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Shell syntax
+        run: |
+          bash -n scripts/browser-poc-build.sh
+          bash -n scripts/browser-poc-seed.sh
+          bash -n scripts/browser-poc-verify.sh
+      - name: JavaScript syntax
+        run: node --check scripts/browser-poc-lib.mjs
+      - name: Packaging regressions (no WASM compilation)
+        run: node --test scripts/browser-poc.test.mjs
+      - name: Pinned UI tests, no gameplay mutation
+        run: |
+          npm ci --prefix ui
+          npm run test:ui
+          (cd ui && npm run typecheck && npm run build)
+
+  build-seeded-dna:
+    name: "Real pinned Nix/WASM/hc package — SYNTHETIC host, NOT deployment ready"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    needs: packaging-scripts
+    steps:
+      - name: Checkout including pinned Git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix without touching flake.lock
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Verify pinned toolchain availability
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 111e6a44795e6572ed01191a98245ed723788c12 HEAD
+          git diff --exit-code -- flake.nix flake.lock Cargo.toml Cargo.lock
+          nix --version
+          nix develop --command bash -c 'set -e; node --version; cargo --version; hc --version'
+      - name: Compile real game/game_integrity and package with synthetic identity
+        env:
+          BROWSER_POC_IDENTITY_SOURCE: SYNTHETIC_CI_FIXTURE
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Synthetic 39-byte HoloHash is only a format fixture. It is not owned
+          # by any browser agent, and its .happ MUST NOT be deployed.
+          SYNTHETIC_HOST="$(node --input-type=module -e "import {randomBytes} from 'node:crypto'; process.stdout.write('u'+Buffer.concat([Buffer.from([0x84,0x20,0x24]),randomBytes(36)]).toString('base64url'))")"
+          SEED="$(sh scripts/browser-poc-seed.sh "$SYNTHETIC_HOST")"
+          printf '%s\n' 'SYNTHETIC FIXTURE: no HWC agent controls this host key; NOT deployment-ready'
+          nix develop --command bash scripts/browser-poc-build.sh "$SEED" | tee browser-poc-build.log
+          OUTPUT_DIR="$(sed -n 's/^Artifact: //p' browser-poc-build.log | tail -1)"
+          test -n "$OUTPUT_DIR" && test -d "$OUTPUT_DIR"
+          nix develop --command bash scripts/browser-poc-verify.sh "$OUTPUT_DIR" | tee browser-poc-verify.log
+          node --input-type=module - "$OUTPUT_DIR/deployment.json" <<'JS'
+          import fs from 'node:fs';
+          const d=JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if(d.host_identity_source!=='SYNTHETIC_CI_FIXTURE' || d.deployment_ready!==false || d.runtime_validation!=='NOT_RUN')
+            throw Error('CI artifact must be explicitly synthetic, non-deployable, and runtime-unverified');
+          console.log('Synthetic fixture metadata and non-deployment gate: PASS');
+          console.log('Packed real DNA hash:', d.dna_hash);
+          console.log('Packed real hApp SHA256:', d.happ_bundle_sha256);
+          JS
+          cat > "$OUTPUT_DIR/NOT_DEPLOYABLE-SYNTHETIC-HOST-IDENTITY.txt" <<'EOF'
+          This bundle contains REAL compiled game WASMs but a SYNTHETIC host
+          AgentPubKey not controlled by an HWC profile. It is a packaging test,
+          NOT a deployment candidate and NOT evidence of HWC compatibility.
+          EOF
+          cp browser-poc-build.log browser-poc-verify.log "$OUTPUT_DIR/"
+          {
+            echo '## P0 package (real WASMs; synthetic host; not deployable)'
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo "Artifact directory: \`$OUTPUT_DIR\`"
+            echo 'HWC installation/genesis/cap grants/DHT/reconnect: NOT RUN'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload real package and logs with non-deployable warning
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: imposter-p0-packaging-fixture-NOT-DEPLOYABLE
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            target/browser-poc/*/app/*.happ
+            target/browser-poc/*/app/*.yaml
+            target/browser-poc/*/dna/*.dna
+            target/browser-poc/*/dna/*.yaml
+            target/browser-poc/*/deployment.json
+            target/browser-poc/*/SHA256SUMS
+            target/browser-poc/*/browser-poc-*.log
+            target/browser-poc/*/NOT_DEPLOYABLE-SYNTHETIC-HOST-IDENTITY.txt
