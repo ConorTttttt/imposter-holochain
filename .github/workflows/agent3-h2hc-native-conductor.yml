@@ -121,6 +121,15 @@ jobs:
           test -s hwc/packages/extension/dist-chrome/manifest.json
           test -s hwc/packages/extension/dist-chrome/background/index.js
 
+      - name: Install pinned native hc-spin 0.700.0 from Imposter package lock
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          npm ci 2>&1 | tee runtime-evidence/hc-spin-npm-ci.log
+          test -x node_modules/.bin/hc-spin
+          node -e "const p=require('./node_modules/@holochain/hc-spin/package.json');if(p.version!=='0.700.0')process.exit(1);console.log('PINNED_NATIVE_CONDUCTOR_CLI',p.version)"
+
       - name: Install Playwright Chromium and Xvfb prerequisites
         shell: bash
         timeout-minutes: 12
