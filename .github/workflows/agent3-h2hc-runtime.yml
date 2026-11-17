@@ -161,12 +161,14 @@ jobs:
           python3 -m json.tool "$RUNNER_TEMP/agent3-runtime-fixtures.json" > /dev/null
           echo "Generated native Holochain 0.7 fixture. Synthetic signing seeds intentionally NOT uploaded."
 
+      # Official Holochain development bootstrap only; synthetic fixture/test identities,
+      # NO deployable host bound DNA and NO sensitive game data.
       - name: Verify production auth fails closed and perform actual HTTP/WebSocket traffic
         working-directory: ${{ runner.temp }}/h2hc
         env:
           H2HC_LINKER_ADDRESS: "127.0.0.1"
           H2HC_LINKER_PORT: "18090"
-          H2HC_LINKER_BOOTSTRAP_URL: "http://127.0.0.1:18081"
+          H2HC_LINKER_BOOTSTRAP_URL: "https://dev-test-bootstrap2.holochain.org/"
           H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK: "false"
           H2HC_LINKER_ALLOW_INSECURE_DEV: "false"
           H2HC_LINKER_KEY_FILE: ${{ runner.temp }}/agent3-linker-ci-identity.key
