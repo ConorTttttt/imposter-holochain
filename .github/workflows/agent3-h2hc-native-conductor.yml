@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/agent3-h2hc-native-conductor.yml'
       - 'ci/agent3-h2hc-kit/instrument_native_authority.py'
+      - 'ci/agent3-h2hc-kit/instrument_native_convergence.py'
   workflow_dispatch:
 
 permissions:
@@ -70,6 +71,9 @@ jobs:
           git -C hwc diff --check
           python3 agent3-kit/ci/agent3-h2hc-kit/instrument_agent4_browser.py scripts/browser-poc-hwc-smoke.mjs
           python3 agent3-kit/ci/agent3-h2hc-kit/instrument_native_authority.py scripts/agent3-h2hc-real-browser-bridge.mjs
+          python3 agent3-kit/ci/agent3-h2hc-kit/instrument_native_convergence.py scripts/agent3-native-authority-browser-bridge.mjs
+          node --check scripts/agent3-native-authority-browser-bridge.mjs
+          python3 -m py_compile agent3-kit/ci/agent3-h2hc-kit/instrument_native_convergence.py
           mkdir -p runtime-evidence
           git -C hwc diff --stat > runtime-evidence/hwc-temporary-diff-stat.txt
           printf '%s\n' "Agent4=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent2=f888dc21110acff3e093ebe20b8ca16f60f1877d" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
