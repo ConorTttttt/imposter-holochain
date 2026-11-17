@@ -60,6 +60,34 @@ jobs:
           git status --porcelain
           git diff cab242d32c988fe5e4e9fd06ebc82ed043541aa2...HEAD --stat
 
+      - name: Apply integration fixes identified by real Rust compiler (E0425, E0382)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+          root = Path(os.environ["RUNNER_TEMP"]) / "h2hc"
+          gateway = root / "src/gateway_kitsune.rs"
+          content = gateway.read_text()
+          old = "let signal_data = signal_to_b64(&ExternIO(signal.zome_call_params.clone()));"
+          new = "let signal_data = base64::engine::general_purpose::STANDARD.encode(&signal.zome_call_params);"
+          assert content.count(old) == 1, "unexpected gateway signal encoder source"
+          assert "use base64::Engine;" not in content, "encoder import unexpectedly present"
+          content = content.replace(old, new, 1)
+          content = content.replace("use bytes::Bytes;", "use base64::Engine;\nuse bytes::Bytes;", 1)
+          gateway.write_text(content)
+
+          websocket = root / "src/routes/websocket.rs"
+          content = websocket.read_text()
+          old = "state.registrations.push(key);"
+          assert content.count(old) == 1, "unexpected registration ownership source"
+          websocket.write_text(content.replace(old, "state.registrations.push(key.clone());", 1))
+          subprocess.run(["git", "-C", str(root), "add", "src/gateway_kitsune.rs", "src/routes/websocket.rs"], check=True)
+          subprocess.run(["git", "-C", str(root), "commit", "-m", "security: fix signal encoder and registration key ownership"], check=True)
+          subprocess.run(["git", "-C", str(root), "diff", "--check"], check=True)
+          PY
+
       - name: Install pinned Rust toolchain with fmt and clippy
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -75,6 +103,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ runner.temp }}/h2hc
+          cache-on-failure: true
 
       - name: Format generated Rust sources
         working-directory: ${{ runner.temp }}/h2hc
