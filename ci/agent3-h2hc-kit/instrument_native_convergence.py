@@ -209,11 +209,5 @@ replace_once(
   if(guestProfile)fs.rmSync(guestProfile,{recursive:true,force:true});
   if(nativeConductor?.pid){"""
 )
-replace_once(
-    "  record('NATIVE_DHT_END_TO_END','BLOCKED',\n    'Remote publish observed but native integrity verdict and independent authenticated retrieval NOT proven');",
-    """  record('NATIVE_DHT_END_TO_END','BLOCKED',
-    'Native publish/fetch activity can be correlated by op IDs, but per-lobby-action validity, '+
-    'independent exact-action GET, and invalid-operation rejection are NOT proven');"""
-)
 p.write_text(s)
 print('Injected independent authenticated guest DHT read and per-op native log probe',p)
