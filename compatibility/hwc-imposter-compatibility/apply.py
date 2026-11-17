@@ -1127,6 +1127,11 @@ change(P,'''    this.wsService.onStateChange((state: ConnectionState) => {
       logNetwork.info(''')
 
 P='packages/extension/src/offscreen/index.ts'
+change(P,'''  authenticated?: boolean;
+  registrations?: Array<{ dna_hash: string; agent_pubkey: string }>;''','''  authenticated?: boolean;
+  hasSession?: boolean;
+  registrations?: Array<{ dna_hash: string; agent_pubkey: string }>;''')
+P='packages/extension/src/offscreen/index.ts'
 change(P,'''  log.debug("handleNetworkRequest:", request.method, request.url, "sessionToken:", sessionToken ? sessionToken.substring(0, 20) + "..." : "NULL");''','''  log.debug("handleNetworkRequest:", request.method, request.url, "hasSession:", !!sessionToken);''')
 change(P,'''    const headers = { ...(request.headers || {}) };
     if (sessionToken) {
