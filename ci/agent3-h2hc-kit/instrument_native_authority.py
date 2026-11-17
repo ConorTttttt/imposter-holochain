@@ -77,7 +77,7 @@ repl = [
      cli:'hc sandbox',holochain_version:'0.7.0',
      bootstrap,relay,target_arc_factor:1,host_bound_dna:m.dna_hash,
      happ_sha256:m.happ_bundle_sha256,isolated_lair_identity:true,native_conductors:2};
-   const runScript='set -eu; cd "$1"; exec hc sandbox --piped --force-admin-ports 33555,33557 run --ports 33556,33558';
+   const runScript='set -eu; cd "$1"; exec hc sandbox --piped --force-admin-ports 33555,33557 run --all --ports 33556,33558';
    nativeConductor=spawn('nix',['develop','--no-write-lock-file',
      '--command','bash','-c',runScript,'native-sandbox',nativeRoot],{
        cwd:ROOT,env:nativeEnv,stdio:['pipe','pipe','pipe'],detached:true});
