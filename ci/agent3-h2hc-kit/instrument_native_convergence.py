@@ -189,10 +189,50 @@ replace_once(
     note:'Per-operation validation status is not derivable from unlabelled workflow aggregates'};
   record('NATIVE_RECEIPT_AND_FETCH',retainedIds.length?'PASS':'BLOCKED',
     'Native HWC-origin publish and fetch op IDs: '+retainedIds.join(', '));
-  record('NATIVE_INTEGRITY_FOR_LOBBY_ACTION','BLOCKED',
-    'Native app validation aggregate exists but exact lobby action and op IDs are not yet paired with Valid DHT integration');
-  record('INDEPENDENT_EXACT_ACTION_GET','BLOCKED',
-    'Guest network lobby view cannot alone prove the returned action hash equals the authored create_lobby hash');
+  // Read-only actual native SQLite DHT integration verdict by action and op.
+  // Unlike workflow aggregate counters, this joins exact ChainOp -> Action.
+  const dbAudit=spawnSync('python3',[
+    'agent3-kit/ci/agent3-h2hc-kit/audit_native_dht.py',nativeRoot,
+    host,lobbyActionHash||'null',...incomingIds],{
+    cwd:ROOT,encoding:'utf8',timeout:20000,maxBuffer:4*1024*1024
+  });
+  if(dbAudit.status!==0){
+    record('NATIVE_DHT_SQL_READONLY_AUDIT','BLOCKED',
+      'Audit exited '+dbAudit.status+'; '+String(dbAudit.stderr||'').slice(-400));
+  }else{
+    evidence.native_dht_sql_audit=JSON.parse(dbAudit.stdout);
+    const nativeRecords=Object.values(evidence.native_dht_sql_audit.conductors)
+      .flatMap(c=>c.matched_ops);
+    const integratedLobby=nativeRecords.filter(x=>
+      x.matched_lobby_action&&x.exact_native_valid_integrated);
+    evidence.native_valid_lobby_ops=integratedLobby;
+    record('NATIVE_DHT_SQL_READONLY_AUDIT',nativeRecords.length?'PASS':'BLOCKED',
+      'Exact hashed native operations matched: '+nativeRecords.length);
+    record('NATIVE_INTEGRITY_FOR_LOBBY_ACTION',
+      integratedLobby.length?'PASS':'BLOCKED',
+      integratedLobby.length?
+        'Exact lobby DhtOp validated locally and integrated by native conductor':
+        'No exact native accepted+locally_validated+integrated lobby ChainOp row');
+  }
+  const getReqs=[...gatewayLog.matchAll(
+    /Preparing GetReq message[^\\n]*msg_id=(\\d+)[^\\n]*hash=(uhCkk[^\\s]+)/g)]
+    .filter(x=>x[2]===lobbyActionHash).map(x=>Number(x[1]));
+  const getResponses=[...gatewayLog.matchAll(
+    /Got GetRes response[^\\n]*msg_id=(\\d+)/g)].map(x=>Number(x[1]));
+  const confirmedGetReqIds=getReqs.filter(x=>getResponses.includes(x));
+  evidence.independent_exact_action_query={
+    action_hash:lobbyActionHash,dna:m.dna_hash,guest_agent:evidence.independent_guest?.agent,
+    native_targeted_get_req_ids:getReqs,native_replied_get_res_ids:confirmedGetReqIds,
+    nonnull_game_lobby_view:Boolean(evidence.independent_guest_lobby_view?.matched)
+  };
+  const gotExact=confirmedGetReqIds.length>0 &&
+    evidence.independent_guest_lobby_view?.matched &&
+    evidence.native_valid_lobby_ops?.length>0;
+  record('INDEPENDENT_EXACT_ACTION_GET',gotExact?'PASS':'BLOCKED',
+    gotExact?
+      'Distinct authenticated HWC guest requested exact host lobby action from native '+
+       'and received GetRes plus matching non-null game::get_game_state':
+      'Missing exact lobby native-valid row, GetRes correlation, or guest non-null lobby view');
   record('UNAUTHORIZED_GUEST_REJECTED','NOT RUN',
     'Do not confuse normal guest read access with an isolated invalid-op rejection proof');
 """
