@@ -40,11 +40,17 @@ run(){
 run npm ci
 # Do not run misleading test commands without dependencies.
 if [[ $FAILED -ne 0 ]]; then echo 'BLOCKED: dependency installation failed' | tee -a "$LOG"; exit 1; fi
+# Build first because existing extension unit tests inspect generated browser bundles.
 run npm run typecheck
-run npm run test:unit
-run npm run test:integration
-run npm run test --workspace @hwc/core -- src/ribosome/wasm-io-types.imposter.test.ts src/hash/system-entry.imposter.test.ts src/storage/private-entry-persistence.imposter.test.ts src/dht/private-entry.imposter.test.ts src/dht/publish-upgrade.imposter.test.ts src/ribosome/host-fn/dna-info-imposter.test.ts
 run npm run build:chrome --workspace @hwc/extension
 run npm run build:firefox --workspace @hwc/extension
+# HWC core/extension are the integration gates; @holo-host/web-conductor-client's
+# pinned baseline has unresolved external @holo-host/joining-service/client imports.
+run npm run test --workspace @hwc/core
+run npm run test --workspace @hwc/extension
+run npm run test:integration
+run npm run test --workspace @hwc/core -- src/ribosome/wasm-io-types.imposter.test.ts src/hash/system-entry.imposter.test.ts src/storage/private-entry-persistence.imposter.test.ts src/dht/private-entry.imposter.test.ts src/dht/publish-upgrade.imposter.test.ts src/ribosome/host-fn/dna-info-imposter.test.ts
+run npm run test --workspace @holo-host/lair
+run npm run test --workspace @hwc/shared
 if [[ $FAILED -ne 0 ]]; then echo 'FAIL: one or more integration steps failed' | tee -a "$LOG"; exit 1; fi
 echo 'PASS: HWC package checks completed. Real Imposter WASM and multi-browser security tests remain separate release gates.' | tee -a "$LOG"

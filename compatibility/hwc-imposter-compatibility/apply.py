@@ -552,7 +552,7 @@ change(P,'''  let genesisRecords: { action: any; entry?: any }[] = [];
           throw new Error(`Coordinator WASM missing during init: ${coordinator.name}`);
         }
         // Init is optional for individual zomes. Check the export before calling.
-        const module = await WebAssembly.compile(coordinator.wasm);
+        const module = await WebAssembly.compile(new Uint8Array(coordinator.wasm));
         if (!WebAssembly.Module.exports(module).some(e => e.kind === 'function' && e.name === 'init')) {
           continue;
         }
@@ -566,14 +566,6 @@ change(P,'''  let genesisRecords: { action: any; entry?: any }[] = [];
         initPublishRecords.push(...(callback.pendingRecords || []));
       }
       genesisRecords.push(await completeGenesisAfterInit(storage as any, dnaHash, agentPubKey));
-    } else if (!isInitCallback) {
-      // Prevent a previous failed/interrupted init from exposing a live cell.
-      const complete = storage.queryActions(dnaHash, agentPubKey, {
-        actionType: 'InitZomesComplete',
-      });
-      if (!complete?.length) {
-        throw new Error('Incomplete DNA initialization; reinstall cell before continuing');
-      }
     }
   });''')
 change(P,'''      pendingRecords,
@@ -748,6 +740,67 @@ change(P,'''  describe("Get cell IDs", () => {''','''  describe("Imposter host-b
 
   describe("Get cell IDs", () => {''')
 
+
+# Genesis completion must be checked AFTER IndexedDB session cache preload.
+# Rollback clears the cache; checking earlier falsely rejects restored cells.
+P='packages/core/src/ribosome/index.ts'
+change(P,'''  if (storage.preloadChainForCell) {
+    await storage.preloadChainForCell(dnaHash, agentPubKey);
+    log.debug(' Chain pre-loaded into session cache');
+  }
+
+  // Begin transaction for atomic chain updates''','''  if (storage.preloadChainForCell) {
+    await storage.preloadChainForCell(dnaHash, agentPubKey);
+    log.debug(' Chain pre-loaded into session cache');
+  }
+  if (!isInitCallback) {
+    // Persisted InitZomesComplete is authoritative; an interrupted init
+    // must fail closed even after restart or an earlier transaction rollback.
+    const completed = storage.queryActions(dnaHash, agentPubKey, {
+      actionType: 'InitZomesComplete',
+    });
+    if (!completed?.length) {
+      throw new Error('Incomplete DNA initialization; reinstall cell before continuing');
+    }
+  }
+
+  // Begin transaction for atomic chain updates''')
+
+# Existing public-entry fixtures predate visibility tracking. Mark test data
+# explicitly Public; do not weaken production fail-closed legacy handling.
+for P, occurrences in [
+    ('packages/core/src/dht/validation-op.test.ts', 4),
+    ('packages/core/src/ribosome/validate.test.ts', 2),
+    ('packages/core/src/ribosome/host-fn/get_details.test.ts', 8),
+    ('packages/core/src/ribosome/host-fn/must_get.test.ts', 18),
+]:
+    change(P, "entryType: { zome_id: 0, entry_index: 0 }",
+           "entryType: { zome_id: 0, entry_index: 0, visibility: 'Public' }",
+           occurrences=occurrences)
+
+# Test helper synthesizes a manifest for isolated integrity-only WASM tests.
+# Production calls still reject missing runtime manifests during genesis.
+P='packages/core/src/ribosome/test-helpers.ts'
+change(P,'''  // STEP 2: Call ribosome with wrapped payload
+  const zomeCallResult: ZomeCallResult = await callZome({
+    ...request,
+    payload: payloadBytes,
+  });''','''  // STEP 2: Supply test-only metadata if this isolated test omitted it.
+  const testManifest = request.dnaManifest ?? {
+    name: 'integration-fixture',
+    network_seed: '',
+    properties: {},
+    integrity_zomes: [{
+      name: request.zome, index: 0,
+      wasm: request.dnaWasm, dependencies: [],
+    }],
+    coordinator_zomes: [],
+  };
+  const zomeCallResult: ZomeCallResult = await callZome({
+    ...request,
+    dnaManifest: testManifest,
+    payload: payloadBytes,
+  });''')
 
 def main():
     p = argparse.ArgumentParser()
