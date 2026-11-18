@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+
+const [decoder, happ, dna, metadata] = process.argv.slice(2);
+const {unpackHappBundle, unpackDnaBundle} = createRequire(import.meta.url)(decoder);
+const manifest = JSON.parse(readFileSync(metadata, 'utf8'));
+const app = unpackHappBundle(readFileSync(happ));
+assert.equal(app.manifest.name, 'imposter-browser-poc');
+assert.equal(app.manifest.roles.length, 1);
+assert.equal(app.resources.size, 1);
+const [role] = app.manifest.roles;
+assert.equal(role.name, 'game');
+assert.equal(role.provisioning.strategy, 'create');
+assert.equal(role.dna.clone_limit, 0);
+assert.equal(role.dna.installed_hash, manifest.dna_hash);
+assert.equal(role.dna.modifiers.network_seed, manifest.network_seed);
+const bundledDna = app.resources.get(role.dna.path);
+assert(bundledDna && readFileSync(dna).equals(bundledDna), 'Embedded DNA differs from native-verified DNA');
+assert.equal(unpackDnaBundle(bundledDna).manifest.integrity.network_seed, manifest.network_seed);
+console.log('Embedded host-bound DNA and provisioned game role verified');

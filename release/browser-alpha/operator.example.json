@@ -1,0 +1,7 @@
+{
+  "static_root": null,
+  "gateway_identity_file": null,
+  "gateway_session_db": null,
+  "admin_secret_file": null,
+  "native_authority_root": null
+}

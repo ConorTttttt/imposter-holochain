@@ -1,0 +1,89 @@
+name: Verify browser alpha packaging
+on:
+  push:
+    branches: [release/browser-alpha-rc1]
+    paths:
+      - '.github/workflows/browser-alpha-package.yml'
+      - 'release/browser-alpha/**'
+      - 'ci/installed-role/browser-demo.patch'
+      - 'compatibility/hwc-imposter-compatibility/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package-verification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 0f7b17592e682a7b7d77e9346528cba69a096cdc
+          path: game
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+      - uses: actions/download-artifact@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          run-id: 44304976936
+          name: agent3-h2hc-p0-security-44304976936
+          github-token: ${{ github.token }}
+          path: gateway-artifact
+      - name: Check accepted gateway provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 | jq -e '.workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7" and (.expired | not)' >/dev/null
+          test "$(cat gateway-artifact/role-gateway/h2hc-applied-source-commit.txt)" = 9f5eb04b5be12e3e9e7fcc304bd905da1449ade9
+      - name: Build stock operator extension and obtain an ephemeral Lair public key
+        run: |
+          set -euo pipefail
+          bash release/browser-alpha/build-extension.sh hwc
+          (cd hwc && npx --no-install playwright install chromium)
+          node release/browser-alpha/ci-host.mjs hwc > "$RUNNER_TEMP/ephemeral-host.pub"
+          (cd hwc && node ../compatibility/hwc-imposter-compatibility/private-role/installed-chromium-boundary.mjs)
+      - name: Exercise the operator build with CI-only identity and verify all checksums
+        env:
+          BROWSER_ALPHA_CI_PROFILE: '1'
+        run: |
+          set -euo pipefail
+          host=$(cat "$RUNNER_TEMP/ephemeral-host.pub")
+          seed=$(sh game/scripts/browser-poc-seed.sh "$host")
+          out="$RUNNER_TEMP/alpha-ephemeral"
+          bash release/browser-alpha/build.sh game hwc "$host" "$seed" gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 "$out"
+          python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" --identity EPHEMERAL_CI_ONLY
+          (cd "$out" && sha256sum --check SHA256SUMS)
+          jq '{release_commit,pins,identity_provenance,external_network_acceptance,extension_version,artifacts,toolchain,game:{dna_hash:.game.dna_hash,happ_bundle_sha256:.game.happ_bundle_sha256}}' "$out/release-manifest.json" > "$RUNNER_TEMP/package-checks.json"
+      - name: Upload packaging evidence only
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-alpha-packaging-verification-${{ github.run_id }}
+          path: ${{ runner.temp }}/package-checks.json
+          if-no-files-found: error
