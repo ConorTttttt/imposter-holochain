@@ -29,6 +29,33 @@ replace_once('    const guestPage=guestContext.pages()[0]||await guestContext.ne
 replace_once('    const invalidPage=invalidContext.pages()[0]||await invalidContext.newPage();',
              '    guestCPage=invalidContext.pages()[0]||await invalidContext.newPage();')
 s=s.replace('invalidPage.', 'guestCPage.')
+replace_once(
+    "    // The *UNCHANGED* game_integrity validator rejects a Lobby whose g1 seed",
+    r"""    // The third isolated Chromium identity first runs a normal successful
+    // get_game_state. This lets unmodified HWC publish its real genesis
+    // operations before we deliberately trigger a *local* invalid-host
+    // precommit rejection. Without the preflight, AgentActivity for Guest C's
+    // later genuine join can remain in native AwaitingDeps even while its
+    // CreateRecord and CreateEntry operations integrate successfully.
+    await step('GUEST_C_REAL_GENESIS_AND_PUBLIC_DHT_PREFLIGHT',async()=>{
+      const result=await guestCPage.evaluate(async()=>
+        window.holochain.callZome({
+          zome_name:'game',fn_name:'get_game_state',payload:null
+        }));
+      must(result?.code===m.network_seed&&result?.player_count===3&&
+        result?.is_host===false,
+        'Third HWC identity failed real network state read/genesis initialization');
+      const key=hash(await guestCPage.evaluate(async()=>
+        Array.from(new Uint8Array(window.holochain.myPubKey||[]))));
+      must(key===agent,'Third HWC identity changed after genesis initialization');
+      evidence.third_browser_genesis_preflight={
+        agent,dna:m.dna_hash,read_only_state:true,player_count:result.players?.length,
+        source:'real game::get_game_state with normal HWC genesis/queue publication'
+      };
+    });
+    // The *UNCHANGED* game_integrity validator rejects a Lobby whose g1 seed"""
+)
+
 # Inspect the real production HWC source chain via a one-way loopback CI
 # read-only metadata collector; never export entry or CapGrant bodies.
 replace_once('const evidence={', 'const ciSnapshots=[];\nconst evidence={')
