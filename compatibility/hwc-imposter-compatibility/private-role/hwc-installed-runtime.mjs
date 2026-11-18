@@ -121,7 +121,7 @@ export function createInstalledHwcRoleRuntime({
       zomeCall:async call=>{
         if(call.zome!=='game' || ![
           'get_authoritative_game_view','host_role_opening',
-          'publish_signed_recipient_key_attestation','lookup_recipient_key'
+          'publish_signed_recipient_key_attestation','lookup_recipient_key','commit_roles_only'
         ].includes(call.fn) || forbidden.includes(call.fn))
           throw Error('unreviewed native coordinator operation refused');
         await sameCell(cell);
@@ -185,7 +185,7 @@ export function createInstalledHwcRoleRuntime({
       const view=await h.native.readCurrentGame(cell);
       if(h.session.leaseId()!==lease)throw Error('bootstrap lease invalidated');
       const host=exactly(view.host,'agent');
-      if(!eq(host,cell.agent)) {
+      if(!eq(host,cell.agent) && !acceptedReceipts.has(key)) {
         const seat=view.seats.find(x=>eq(bytes(x.agent),cell.agent))?.seat;
         if(!Number.isInteger(seat))throw Error('installed agent has no committed seat');
         try { await h.service.requestRole({seat}); }
@@ -276,6 +276,22 @@ export function createInstalledHwcRoleRuntime({
   return Object.freeze({
     pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,
     // Only metadata: no role, Lair secret, X25519 private key or native executor.
-    receiptCount(){return acceptedReceipts.size;}
+    receiptCount(){return acceptedReceipts.size;},
+    // CI may inspect this through its OWN service-worker debugger only.
+    // Never publish a messaging listener for this metadata or any role.
+    async evidenceMetadata(){
+      const out=[];
+      for(const h of services.values()){
+        const lobby=await h.store.getPinnedLobby(h.cell.dna,h.cell.agent);
+        const commit=await h.store.getPinnedRoleCommit(h.cell.dna,h.cell.agent);
+        out.push({contextId:h.cell.contextId,installedDna:hex(h.cell.dna),
+          installedAgent:hex(h.cell.agent),pinnedLobby:lobby?hex(lobby):null,
+          pinnedRoleCommit:commit?hex(commit):null,
+          nativeEnrollmentPublished:enrolled.has(cellKey(h.cell)),
+          sessionBound:!!h.session.leaseId(),
+          decryptedRoleReceipts:acceptedReceipts.has(cellKey(h.cell))?1:0});
+      }
+      return out;
+    }
   });
 }
