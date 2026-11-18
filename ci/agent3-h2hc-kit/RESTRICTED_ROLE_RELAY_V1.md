@@ -353,3 +353,6 @@ Or use the Node test importer directly:
 bytes* of this committed fixture to newly generated native-Holochain/Python
 vectors and verifies both representations. A new fixture implies a new
 contract-review cycle, not an implicit v1 freeze.
+
+
+**Permanent-fixture equality gate PASS:** [run 44304081583](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583), tested source `f40914d7c629b6c01568697e7c174cd4a4b02d57`; regenerated native/Python fixture equals the committed gzip-base64 payload byte-for-byte, and both forms pass independent Node Ed25519 and RFC9180 decryption checks. [CI archive 14426722802](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583/artifacts/14426722802). This is *candidate protocol conformance*, not HWC/Lair receiver acceptance or two-agent freeze.
