@@ -44,5 +44,5 @@ export function requireCurrentRoleState(state,cell){
  // Checked, immutable projection sourced ONLY from the native typed entries.
  return {lobby:{action:lobby.action,author:lobby.author,host:lobby.author},
    commit:{action:commit.action,author:commit.author,lobby:hash(c.lobby,'action'),
-     seats,joins,merkleRoot:asBytes(c.merkle_root)}}};
+     seats,joins,merkleRoot:asBytes(c.merkle_root)}};
 }
