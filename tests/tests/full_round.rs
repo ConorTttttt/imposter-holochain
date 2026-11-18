@@ -2315,3 +2315,118 @@ async fn room_creation_recovers_unindexed_records() {
         .await;
     assert!(format!("{:?}", res.unwrap_err()).contains("base game cell"));
 }
+
+
+
+/// Two independently networked native 0.7 SweetConductors, genuine installed
+/// Lair signing, native DHT validation, host lookup and rollback/impersonation.
+#[tokio::test(flavor = "multi_thread")]
+async fn recipient_key_native_two_conductors_attest_discover_and_rotate() {
+    use game_integrity::RecipientKeyAttestation;
+
+    #[derive(serde::Serialize, Debug)]
+    struct Enroll {
+        key_id: [u8; 16],
+        x25519_public_key: [u8; 32],
+        epoch: u64,
+        not_before_ms: u64,
+        not_after_ms: u64,
+    }
+    #[derive(serde::Serialize, Debug)]
+    struct Lookup {
+        recipient: AgentPubKey,
+        min_epoch: Option<u64>,
+        min_key_id: Option<[u8; 16]>,
+    }
+    #[derive(serde::Deserialize, Debug)]
+    struct View {
+        action: ActionHash,
+        attestation: RecipientKeyAttestation,
+    }
+    #[derive(serde::Deserialize, Debug)]
+    #[serde(tag = "status", rename_all = "snake_case")]
+    enum ResultView {
+        NotFound, Unavailable, Conflict, BelowTrustedFloor,
+        Observed { current_unproven: bool, view: View },
+    }
+    let env = Lobby::setup(2).await;
+    let guest = env.cells[1].agent_pubkey().clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let start = now - 10_000;
+    let end = now + 3_600_000;
+    let signed: View = env.call(1, "enroll_recipient_key", Enroll {
+        key_id: [11; 16], x25519_public_key: [21; 32], epoch: 1,
+        not_before_ms: start, not_after_ms: end,
+    }).await;
+    assert_eq!(signed.attestation.agent, guest);
+    assert_eq!(signed.attestation.epoch, 1);
+    assert_ne!(signed.attestation.signature, Signature([0; 64]));
+    env.sync().await;
+    let found: ResultView = env.call(0, "lookup_recipient_key", Lookup {
+        recipient: guest.clone(), min_epoch: None, min_key_id: None,
+    }).await;
+    match found {
+        ResultView::Observed { current_unproven, view } => {
+            assert!(current_unproven, "DHT must not claim authoritative freshness");
+            assert_eq!(view.action, signed.action);
+            assert_eq!(view.attestation.dna, signed.attestation.dna);
+            assert_eq!(view.attestation.key_id, [11;16]);
+        }
+        other => panic!("independent host failed native lookup: {other:?}"),
+    }
+    let z = env.cells[0].zome(ZOME);
+    let forged: Result<View, _> = env.conductors[0].call_fallible(
+        &z, "publish_signed_recipient_key_attestation", signed.attestation.clone()
+    ).await;
+    assert!(forged.is_err(), "another agent registered guest's Lair signature");
+
+    let rotated: View = env.call(1, "enroll_recipient_key", Enroll {
+        key_id: [12; 16], x25519_public_key: [22; 32], epoch: 2,
+        not_before_ms: start, not_after_ms: end,
+    }).await;
+    assert_eq!(rotated.attestation.epoch, 2);
+    let old: Result<View, _> = env.conductors[1].call_fallible(
+        &env.cells[1].zome(ZOME), "enroll_recipient_key", Enroll {
+            key_id: [11;16], x25519_public_key: [21;32], epoch: 1,
+            not_before_ms: start, not_after_ms: end+10_000,
+        }
+    ).await;
+    assert!(old.is_err(), "stale epoch replaced newer source-chain enrollment");
+    env.sync().await;
+    let current: ResultView = env.call(0, "lookup_recipient_key", Lookup {
+        recipient: guest.clone(), min_epoch: Some(2), min_key_id: Some([12;16]),
+    }).await;
+    match current {
+        ResultView::Observed { current_unproven: true, view } =>
+            assert_eq!(view.action, rotated.action),
+        other => panic!("rotation was not independently discovered: {other:?}"),
+    }
+    // Same X25519 key may renew validity with the same ID/epoch and a new
+    // Lair signature. A host must deterministically select the extension.
+    let renewal: View = env.call(1, "enroll_recipient_key", Enroll {
+        key_id: [12;16], x25519_public_key: [22;32], epoch: 2,
+        not_before_ms: start, not_after_ms: end + 120_000,
+    }).await;
+    assert_ne!(renewal.action, rotated.action);
+    env.sync().await;
+    let renewed: ResultView = env.call(0, "lookup_recipient_key", Lookup {
+        recipient: guest.clone(), min_epoch: Some(2), min_key_id: Some([12;16]),
+    }).await;
+    match renewed {
+        ResultView::Observed { current_unproven: true, view } =>
+            assert_eq!(view.action, renewal.action),
+        other => panic!("same-key validity renewal not discovered: {other:?}"),
+    }
+    let stale: ResultView = env.call(0, "lookup_recipient_key", Lookup {
+        recipient: guest, min_epoch: Some(3), min_key_id: Some([13;16]),
+    }).await;
+    assert!(matches!(stale, ResultView::BelowTrustedFloor));
+    println!("RECIPIENT_ATTESTATION_NATIVE_VALID=PASS");
+    println!("RECIPIENT_ATTESTATION_ACTION={}", signed.action);
+    println!("RECIPIENT_ATTESTATION_ROTATED_ACTION={}", rotated.action);
+    println!("RECIPIENT_ATTESTATION_HOST_LOOKUP=PASS");
+    println!("RECIPIENT_ATTESTATION_IMPERSONATION_DENIED=PASS");
+    println!("RECIPIENT_ATTESTATION_STALE_FLOOR_DENIED=PASS");
+    println!("RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN");
+}

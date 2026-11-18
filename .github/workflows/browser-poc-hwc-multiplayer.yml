@@ -6,10 +6,13 @@ on:
       - '.github/workflows/browser-poc-hwc-multiplayer.yml'
       - 'scripts/agent4-native-three-player-instrument.py'
       - 'dnas/game/zomes/coordinator/game/src/lib.rs'
+      - 'dnas/game/zomes/coordinator/game/src/recipient_keys.rs'
+      - 'dnas/game/zomes/integrity/game_integrity/src/lib.rs'
+      - 'dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs'
+      - 'scripts/browser-poc-build.sh'
       - 'crates/imposter-core/src/lib.rs'
       - 'crates/imposter-core/src/role_auth.rs'
       - 'ui/browser-demo.html'
-      - 'scripts/browser-poc-build.sh'
   workflow_dispatch:
 
 permissions:

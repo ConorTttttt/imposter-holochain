@@ -22,9 +22,34 @@ git -C "$ROOT" merge-base --is-ancestor "$PIN" HEAD || fail 'not based on pinned
 # Allow only the reviewed coordinator role-authorization source to change;
 # preserve pinned native integrity, DNA manifests and build dependencies.
 INPUTS=(Cargo.toml Cargo.lock flake.nix flake.lock dnas/game scripts/in-nix.sh package.json
-  ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs')
+  ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs'
+  ':(exclude)dnas/game/zomes/coordinator/game/src/recipient_keys.rs'
+  ':(exclude)dnas/game/zomes/integrity/game_integrity/src/lib.rs'
+  ':(exclude)dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs')
 git -C "$ROOT" diff --quiet "$PIN" HEAD -- "${INPUTS[@]}" || fail 'pinned DNA/build dependencies changed; review first'
 git -C "$ROOT" diff --quiet "$PIN" -- "${INPUTS[@]}" || fail 'working tree contains DNA/build source changes'
+# Verify the legacy integrity rules are byte-identical to the original pin
+# after removing ONLY the explicitly reviewed attestation glue.
+python3 - "$PIN" "$ROOT" <<'PY'
+from pathlib import Path
+import subprocess, sys
+pin, root = sys.argv[1:]
+path = "dnas/game/zomes/integrity/game_integrity/src/lib.rs"
+current = (Path(root) / path).read_text()
+additions = [
+    "mod recipient_keys;\npub use recipient_keys::*;\n",
+    "    RecipientKeyAttestation(RecipientKeyAttestation),\n",
+    "    RecipientKeyByAgent,\n",
+    "            LinkTypes::RecipientKeyByAgent => validate_recipient_key_link(&action),\n",
+    "        EntryTypes::RecipientKeyAttestation(a) => validate_recipient_key(a, &author, action.timestamp()),\n",
+]
+for fragment in additions:
+    assert current.count(fragment) == 1, "missing or duplicated scoped attestation glue"
+    current = current.replace(fragment, "", 1)
+pinned = subprocess.check_output(["git", "-C", root, "show", f"{pin}:{path}"], text=True)
+assert current == pinned, "legacy native integrity rules changed; refuse unreviewed build"
+print("Native legacy integrity byte-for-byte preservation: PASS")
+PY
 REV=$(git -C "$ROOT" rev-parse HEAD)
 TAG=$(printf %s "$SEED" | sha256sum | cut -c1-16)
 OUT="$ROOT/target/browser-poc/$TAG"

@@ -15,6 +15,7 @@
 
 use hdk::prelude::*;
 mod rooms;
+mod recipient_keys;
 use sha2::{Digest, Sha256};
 
 use imposter_core::crisis::{resolved_at as crisis_resolved_at, Fix as CrisisFix};

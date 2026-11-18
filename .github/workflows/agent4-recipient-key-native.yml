@@ -1,0 +1,72 @@
+name: Agent 4 — native recipient-key attestation acceptance
+on:
+  push:
+    branches: [feature/browser-compatibility-harness]
+    paths:
+      - '.github/workflows/agent4-recipient-key-native.yml'
+      - 'dnas/game/zomes/integrity/game_integrity/src/**'
+      - 'dnas/game/zomes/coordinator/game/src/**'
+      - 'tests/tests/full_round.rs'
+      - 'scripts/browser-poc-build.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent4-native-recipient-key-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-key-attestation:
+    name: Two native 0.7 conductors — signed record, DHT lookup, impersonation, rotation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+      - name: Compile installed-DNA integrity/coordinator WASM and pack real game DNA
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          nix -L develop --no-write-lock-file --command bash -euo pipefail -c '
+            cargo build --locked --release --target wasm32-unknown-unknown -p game_integrity -p game
+            hc dna pack dnas/game/workdir
+            test -s dnas/game/workdir/game.dna
+            cargo test --locked -p game_integrity recipient_keys::tests -- --nocapture
+          ' 2>&1 | tee recipient-key-build.log
+      - name: Two real native Holochain 0.7 conductors and independent host discovery
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix -L develop --no-write-lock-file --command             cargo test --locked -p game_tests --test full_round             recipient_key_native_two_conductors_attest_discover_and_rotate -- --nocapture             2>&1 | tee recipient-key-native.log
+          for gate in RECIPIENT_ATTESTATION_NATIVE_VALID RECIPIENT_ATTESTATION_HOST_LOOKUP RECIPIENT_ATTESTATION_IMPERSONATION_DENIED RECIPIENT_ATTESTATION_STALE_FLOOR_DENIED; do
+            grep -Fq "$gate=PASS" recipient-key-native.log
+          done
+          grep -Fq RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN recipient-key-native.log
+      - name: Publish diagnostic logs (no secret key material)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent4-recipient-key-native-evidence-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            recipient-key-build.log
+            recipient-key-native.log
