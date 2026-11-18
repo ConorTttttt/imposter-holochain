@@ -152,13 +152,16 @@ response for desktop compatibility; do not invoke that API from HWC.
 
 ## Agent 2 `trusted-receiver.mjs` mapping — pending Agent 2 review
 
-The staged Agent 2 receiver at source
-`d9abab04559cb059e0de6c3499ed1915943fe74b`
-currently assumes `lobby.round`, `commit.round`, `state.currentRound`,
-`state.active` and a page-shaped authority model. Replace all those
-checks, **not** by inventing a round, but by a privileged installed-cell
-adapter that calls `get_authoritative_game_view` and validates the
-returned action identities and native phase:
+The predecessor Agent 2 receiver at source
+`d9abab04559cb059e0de6c3499ed1915943fe74b` assumed
+`lobby.round`, `commit.round`, `state.currentRound`, and page-shaped
+`active` flags. **Agent 2 has since staged** `native-state.mjs`,
+`native-authority.mjs`, and a revised `trusted-receiver.mjs` in Draft PR #5
+at `eb29b618880a0c4a4c2d071f92809c2f79c4c51d`. Those files now
+consume these exact v1 fields and host-private opening calls, as documented
+in PR #5's Agent 2 checkpoint. They remain **deny-only / not installed in
+real HWC role delivery**. These are mandatory receiver-integration rules
+and outstanding review conditions:
 
 1. In the extension-owned `native.readCurrentGame(cell)`, assert the
    extension's enabled installed `contextId`, exact `cell.dna` and
@@ -196,6 +199,16 @@ returned action identities and native phase:
    no `call_info().provenance` replacement with a page-provided sender.
    Keep private role memory in the privileged receiver until presentation
    through an explicitly reviewed, recipient-scoped UI API.
+
+**Agent 2 staging follow-up:** The two-step native observation/identical
+commitment requery must be supplemented by an **extension-protected
+RoleCommit action pin across successive requests and browser restarts**;
+otherwise changing an observed but unproven DHT candidate may silently
+change the commitment identity. Normalize `RoleProof.role_salt` and each
+`RoleProof.path` sibling from the native serde representation into
+`Uint8Array(16)` and six `Uint8Array(32)` before calling
+`encodeRoleOpening`; the restricted sender must fail closed on any length,
+root or action mismatch. These review notes were posted to Draft PR #5.
 
 The native endpoint does **not** create a signed quorum certificate, prove
 global latest-commit finality, authenticate HWC's own extension compartment,
