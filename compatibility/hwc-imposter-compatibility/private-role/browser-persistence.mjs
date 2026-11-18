@@ -8,7 +8,7 @@ import {createRequire} from 'node:module';
 const root=resolve('compatibility/hwc-imposter-compatibility/private-role');
 const requireFromHwc=createRequire(resolve('hwc/package.json'));
 const {chromium}=requireFromHwc('playwright');
-const files=new Map([['/browser-store.html','text/html'],['/store.mjs','text/javascript'],['/hpke.mjs','text/javascript']]);
+const files=new Map([['/browser-store.html','text/html'],['/store.mjs','text/javascript'],['/hpke.mjs','text/javascript'],['/wire.mjs','text/javascript']]);
 const server=http.createServer(async(req,res)=>{
  try { const p=new URL(req.url,'http://127.0.0.1').pathname;
   if(!files.has(p)){res.writeHead(404);res.end();return;}
