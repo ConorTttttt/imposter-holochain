@@ -25,20 +25,78 @@ r"""  const lobbyActionHash=publicHoloHash(lobbyHashCandidate);
   const nativeHashModule=await import(
     pathToFileURL(path.join(OUT_LOG,'hwc-op-hash-native.cjs')).href);
   const {hashAction,hashOp,ChainOpType,serializeAction}=nativeHashModule.default||nativeHashModule;
+  // Record JSON transport loses the Uint8Array type for 39-byte HoloHashes.
+  // Only the three schema-known Create fields are binary. Keep all unrelated
+  // arrays, numeric fields and insertion order unchanged.
   const restoreHwcBytes=v=>{
-    if(Array.isArray(v))return v.map(restoreHwcBytes);
     if(v instanceof Uint8Array)return v;
-    if(v&&typeof v==='object'){
-      const ks=Object.keys(v).sort((a,b)=>Number(a)-Number(b));
-      if(ks.length===39&&ks.every((k,i)=>k===String(i) &&
-        Number.isInteger(v[k])&&v[k]>=0&&v[k]<256))return Uint8Array.from(ks.map(k=>v[k]));
-      if(ks.length&&ks.every((k,i)=>k===String(i) &&
-        Number.isInteger(v[k])&&v[k]>=0&&v[k]<256))return Uint8Array.from(ks.map(k=>v[k]));
+    if(Array.isArray(v))return v.map(restoreHwcBytes);
+    if(v&&typeof v==='object')
       return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,restoreHwcBytes(x)]));
-    }
     return v;
   };
-  const lobbyAction=restoreHwcBytes(createdLobby?.signed_action?.hashed?.content);
+  const schemaHoloHash=(v,field)=>{
+    let raw=null;
+    if(v instanceof Uint8Array)raw=Array.from(v);
+    else if(Array.isArray(v))raw=v;
+    else if(v&&typeof v==='object'){
+      const keys=Object.keys(v);
+      if(keys.length===39&&keys.every(k=>/^(0|[1-9][0-9]*)$/.test(k))&&
+         keys.every((k)=>Number(k)<39))
+        raw=Array.from({length:39},(_,i)=>v[i]);
+    }
+    must(Array.isArray(raw)&&raw.length===39&&raw.every(n=>
+      Number.isInteger(n)&&n>=0&&n<=255),
+      field+' must be exactly 39 unsigned bytes');
+    return Uint8Array.from(raw);
+  };
+  const restoreSignedCreateAction=original=>{
+    const action=restoreHwcBytes(original);
+    must(action?.header&&action?.data?.type==='Create',
+      'Signed lobby action must contain a Create header and data');
+    action.header.author=schemaHoloHash(action.header.author,'header.author');
+    action.header.prev_action=schemaHoloHash(action.header.prev_action,'header.prev_action');
+    action.data.entry_hash=schemaHoloHash(action.data.entry_hash,'data.entry_hash');
+    return action;
+  };
+  // Regression is run with the exact pinned HWC hashing code, using only a
+  // public signed Create action captured from CI 44264567018 (no entry body).
+  const fixture=JSON.parse(fs.readFileSync(path.join(ROOT,
+    'agent3-kit/ci/agent3-h2hc-kit/fixtures/public_lobby_create_action_44264567018.json'),'utf8'));
+  const fixtureHashArray=hex=>Array.from(Buffer.from(hex,'hex'));
+  const fixtureOriginal={
+    header:{
+      author:fixtureHashArray(fixture.header_author_hex),
+      timestamp:fixture.timestamp,action_seq:fixture.action_seq,
+      prev_action:fixtureHashArray(fixture.header_prev_action_hex)
+    },
+    data:{
+      type:'Create',entry_type:fixture.entry_type,
+      entry_hash:fixtureHashArray(fixture.data_entry_hash_hex)
+    }
+  };
+  const fixtureIncorrectBytes=serializeAction(fixtureOriginal);
+  must(fixtureIncorrectBytes.length===330&&
+    Buffer.from(fixtureIncorrectBytes).toString('hex')===fixture.invalid_arrays_msgpack_hex&&
+    publicHoloHash(hashAction(fixtureOriginal))===fixture.invalid_arrays_hash,
+    'Captured 330-byte old-array serialization/hash regression drift');
+  const fixtureRestored=restoreSignedCreateAction(fixtureOriginal);
+  const fixtureCorrectBytes=serializeAction(fixtureRestored);
+  const fixtureCorrectHash=hashAction(fixtureRestored);
+  must(fixtureCorrectBytes.length===271&&
+    Buffer.from(fixtureCorrectBytes).toString('hex')===fixture.corrected_binary_msgpack_hex&&
+    Buffer.from(fixtureCorrectHash).subarray(3,35).toString('hex')===
+      fixture.corrected_blake2b_256&&
+    publicHoloHash(fixtureCorrectHash)===fixture.corrected_hash,
+    'Captured 271-byte schema-binary serialization/hash regression drift');
+  must(fixtureRestored.header.timestamp===fixture.timestamp&&
+    fixtureRestored.header.action_seq===fixture.action_seq&&
+    JSON.stringify(fixtureRestored.data.entry_type)===JSON.stringify(fixture.entry_type),
+    'Schema reconstruction unexpectedly changed non-hash action fields');
+  record('PUBLIC_LOBBY_CANONICAL_RECONSTRUCTION_FIXTURE','PASS',
+    '330-byte incorrect hash and 271-byte corrected hash match captured public Create action');
+  const lobbyAction=restoreSignedCreateAction(
+    createdLobby?.signed_action?.hashed?.content);
   must(lobbyAction?.header&&lobbyAction?.data,
     'Actual create_lobby Record lacks signed action content required for exact op proof');
   const derivedActionHash=publicHoloHash(hashAction(lobbyAction));
