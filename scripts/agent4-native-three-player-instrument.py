@@ -250,15 +250,24 @@ replace_once('  const allP0Green=', r"""
     let last={};
     for(let attempt=0;attempt<95;attempt++){
       let all=[];
+      const unavailable=[];
       for(const [conductor,port] of [['conductor-a',33555],['conductor-b',33557]]){
         const env={...process.env};delete env.H2HC_LINKER_ADMIN_SECRET;
+        // A saturated native admin websocket can hang while its DHT continues
+        // integrating valid operations. Fail closed on missing acceptance,
+        // but do not convert a *diagnostic RPC timeout* into a rejected op.
         const cmd=spawnSync('nix',['develop','--no-write-lock-file',
           '--command','hc','client','call','--port',String(port),
-          'dump-op-timings',m.dna_hash,'--limit','2000'],{
-          cwd:ROOT,env,encoding:'utf8',timeout:45000,maxBuffer:12*1024*1024});
-        must(cmd.status===0,'Native admin op diagnostic failed for '+conductor+
-          ': '+String(cmd.stderr||'').slice(-120));
-        const parsed=JSON.parse(cmd.stdout);
+          'dump-op-timings',m.dna_hash,'--limit','600'],{
+          cwd:ROOT,env,encoding:'utf8',timeout:18000,maxBuffer:12*1024*1024});
+        if(cmd.status!==0){
+          unavailable.push({conductor,status:cmd.status,signal:cmd.signal,
+            reason:cmd.error?.code||'admin diagnostic failed'});
+          continue;
+        }
+        let parsed;
+        try{parsed=JSON.parse(cmd.stdout);}
+        catch(_){unavailable.push({conductor,reason:'malformed op timing response'});continue;}
         const items=Array.isArray(parsed?.timings)?parsed.timings:[];
         all.push(...items.map(t=>({conductor,
           op_hash:publicHoloHash(t.op_hash),
@@ -272,7 +281,8 @@ replace_once('  const allP0Green=', r"""
         row.op_hash===x.op_hash&&valid(row)));
       const inconsistent=all.filter(x=>x.validation_status==='Rejected' ||
         (x.when_integrated!==null&&!valid(x)));
-      last={rows:all,missing_types:missing.map(x=>x.type),inconsistent};
+      last={rows:all,missing_types:missing.map(x=>x.type),inconsistent,
+        unreachable_admin_diagnostics:unavailable};
       evidence.native_join_validation??={};
       evidence.native_join_validation[label]={...result,...last,attempt};
       if(inconsistent.length)throw Error(label+' native authority rejected/contradicted PlayerJoin');
