@@ -4,9 +4,9 @@
 normative candidate described by Agent 3 at
 `ci/agent3-h2hc-kit/RESTRICTED_ROLE_RELAY_V1.md` as of
 `8500270ecb3285ff6435bba568d1ef46c0c3ac8e`, **pending the required
-two written approvals**. Earlier green native artifact
-`14424762920` from run `44299128149` is a **revision 1** fixture
-without the key epoch and cannot attest revision-2 compatibility.
+two written approvals**. Revision-2 native Holochain Rust/HPKE CI **passed run 44304051978**, archived artifact **14426467954**, with a byte-for-byte committed fixture SHA-256
+`065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`.
+Earlier run `44299128149` is revision 1 and superseded.
 
 ## Candidate bytes
 
@@ -37,15 +37,16 @@ without the key epoch and cannot attest revision-2 compatibility.
 ## Evidence and boundaries
 
 `wire.mjs` implements both operation discriminators, canonical
-JSON mapping and signed epoch. `native-role-vectors.json`
-contains synthetic revision-2 outputs independently reproduced from
-Agent 3's Python generator using native Holochain 0.7 typed-hash
-inputs. `native-role-vectors.test.mjs` checks exact signatures,
+JSON mapping and signed epoch. `agent3-role-public-vectors-v1-candidate.json.gz.base64` is
+Agent 3's exact published revision-2 signed fixture, verified against
+SHA-256 `065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`
+by `native-fixture.mjs` before use. The independently reproduced
+Python revision-2 results match the native artifact exactly. `native-role-vectors.test.mjs` checks exact signatures,
 signed preimages, AAD and HPKE bytes with fixed ephemeral
 keys, as well as malformed signatures, recipient/DNA substitution,
-AAD, expiry and key epochs. **A new successful Agent 3
-revision-2 native Rust run and its archived artifact must replace
-or independently confirm this provisional fixture before freezing.**
+AAD, expiry and key epochs. **The Agent 3 native revision-2 Rust run is now green and its original
+fixture is pinned; written mutual freeze acceptance and privileged receiver
+validation are still pending.**
 
 `lair-signing-acceptance.mjs` exercises the actual pinned HWC
 `@holo-host/lair` implementation and genuine Ed25519 signing
