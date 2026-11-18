@@ -107,8 +107,16 @@ replace(
       call_error:callError,real_hwc_lair:true,
       authenticated_transport:true,independent_profile:true,
       test_type:'game_integrity Lobby host seed != action author',
-      integrity_wasm:'UNCHANGED'
+      integrity_wasm:'UNCHANGED',
+      precommit_rejection:!actionHash&&Boolean(callError?.includes(
+        'game seed host does not match lobby author')),
+      native_validation_boundary_reached:false
     };
+    record('LOCAL_HWC_INVALID_LOBBY_INTEGRITY_REJECTION',
+      evidence.negative_test.precommit_rejection?'PASS':'UNVERIFIED',
+      evidence.negative_test.precommit_rejection?
+        'Original game_integrity rejected invalid host locally before signing/publishing; this is NOT native authority rejection':
+        'Invalid author call failed without a confirmed local WASM integrity reason');
     record('ISOLATED_INVALID_HWC_AUTHOR',
       actionHash?'PASS':'AT_RISK',
       actionHash?
@@ -163,6 +171,17 @@ replace(
       'Genuine host lobby validated+integrated by native 0.7, distinct HWC agent '+
       'retrieved exact hash and body; third authenticated invalid author natively rejected');
     return;
+  }
+  const positiveNativeGatePassed=
+    evidence.checks.NATIVE_INTEGRITY_FOR_LOBBY_ACTION?.result==='PASS' &&
+    evidence.checks.INDEPENDENT_EXACT_ACTION_GET?.result==='PASS';
+  if(positiveNativeGatePassed){
+    record('NATIVE_DHT_END_TO_END','BLOCKED_NEGATIVE_NATIVE_BOUNDARY',
+      'Exact native Accepted+locally_validated+integrated and independent authenticated exact-action GET PASS. '+ 
+      'Controlled invalid author was rejected by HWC integrity before native publication; '+ 
+      'native invalid-op rejection is not proven.');
+    throw Error('Strict native negative integrity gate: invalid host lobby rejected '+ 
+      'locally by HWC before it could reach native validation');
   }
   const publication=evidence.h2hc_dht_result;"""
 )
