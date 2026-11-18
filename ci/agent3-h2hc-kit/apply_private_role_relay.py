@@ -129,7 +129,7 @@ def apply(root):
 
     // Subscribe BEFORE the first auth message to avoid missing a revoke""")
     replace(ws,
-        "            let Some(msg) = msg else { break; };",
+        "            let json = match serde_json::to_string(&msg) {",
         """            let Some(msg) = msg else { break; };
             // For queued private messages, the lock is held THROUGH the actual
             // socket write, so an administrative remove cannot race between
@@ -149,7 +149,7 @@ def apply(root):
                     Some(guard)
                 }
                 _ => None,
-            };""")
+            };\n            let json = match serde_json::to_string(&msg) {""")
     replace(ws,
         "                    Some(Ok(Message::Text(text))) => {",
         """                    Some(Ok(Message::Text(text))) => {
