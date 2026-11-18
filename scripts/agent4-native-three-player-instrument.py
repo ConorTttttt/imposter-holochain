@@ -87,6 +87,70 @@ replace_once(" const pathname=new URL(req.url,ORIGIN).pathname;", r"""  const pa
       }catch(_){res.writeHead(400,headers);res.end();}
     });return;
   }""")
+# Serve the real operator-provisioned player page from the same trusted
+# origin as the pinned manifest. Never expose the admin allowlist secret.
+replace_once("  if(pathname==='/'||pathname==='/index.html'){", r"""  if(pathname==='/browser-demo.html'){
+    const demoPath=path.join(ROOT,'ui/browser-demo.html');
+    if(!fs.existsSync(demoPath)){res.writeHead(404);res.end('Demo UI missing');return;}
+    res.writeHead(200,{'Content-Type':'text/html; charset=utf-8',
+      'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+    fs.createReadStream(demoPath).pipe(res);return;
+  }
+  if(pathname==='/'||pathname==='/index.html'){""")
+
+# Host must author the first actual Lobby through a visible browser click.
+# The signed Record is returned by the page's public "imposter:action" event,
+# solely for independent native exact-op diagnostics.
+replace_once(" const createdLobby=await step('HOST_LOBBY_CREATION',async()=>{", r""" const demoUIAction=async(pg,kind,label,seed)=>{
+   await pg.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
+   await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
+   await pg.locator('#player-name').fill(label);
+   await pg.locator('#room-code').fill(seed);
+   const receive=pg.evaluate(()=>new Promise((resolve,reject)=>{
+     const timeout=setTimeout(()=>reject(Error('UI did not emit the signed public action')),60000);
+     window.addEventListener('imposter:action',event=>{
+       clearTimeout(timeout);resolve(event.detail);
+     },{once:true});
+   }));
+   await pg.locator(kind==='create'?'#create-lobby':'#join-lobby').click();
+   const outcome=await receive;
+   must(outcome?.kind===kind&&outcome?.record,
+     'Player-facing UI did not execute an authentic '+kind+' zome call');
+   return outcome.record;
+ };
+ const createdLobby=await step('HOST_LOBBY_CREATION',async()=>{""")
+replace_once("""   const v=await page.evaluate(async(seed)=>{
+     return await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
+      payload:{code:seed,player_count:3,impostor_count:1,task_target:1,display_name:'HWC CI Host'}});
+   },m.network_seed);""", """   const v=await demoUIAction(page,'create','HWC CI Host',m.network_seed);""")
+# In the existing verified native integration, the first B and C joins
+# must now each originate from a real UI click rather than page.evaluate.
+replace_once("""    const rec=await pg.evaluate(async(display_name)=>window.holochain.callZome({
+       zome_name:'game',fn_name:'join_lobby',payload:{display_name}}),label);""", """    const rec=await demoUIAction(pg,'join',label,m.network_seed);""")
+# The full-round security tests are independently evidenced, never run by
+# this positive DHT integration. Add a distinct genuine UI assertion.
+replace_once("""   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',""", r"""   await step('PLAYER_FACING_THREE_CHROMIUM_UI',async()=>{
+     const pages={host:page,guest_b:guestPage,guest_c:guestCPage};
+     evidence.player_facing_ui={};
+     for(const [label,pg] of Object.entries(pages)){
+       await pg.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
+       await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
+       await pg.waitForFunction(()=>{
+         const names=[...document.querySelectorAll('#seat-list li span')]
+           .map(el=>el.textContent);
+         return names.includes('HWC CI Host')&&names.includes('Guest B')&&
+           names.includes('Guest C')&&document.querySelector('#seat-count')?.textContent==='3/3';
+       },{timeout:60000});
+       const names=await pg.locator('#seat-list li span').allTextContents();
+       const seats=await pg.locator('#seat-list li small').allTextContents();
+       must(names.length===3&&new Set(names).size===3&&seats.length===3,
+         'UI did not render three unique names and seat labels');
+       evidence.player_facing_ui[label]={status:'ready',names,seats,
+         no_developer_console_required:true};
+     }
+   });
+   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',""")
+
 # The old native test's negative probe is retained and reported, but the
 # gameplay acceptance path deliberately does not require native invalid-op
 # publication; that remains Agent 3's separate unresolved security gate.
