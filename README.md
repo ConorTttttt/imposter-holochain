@@ -1,5 +1,15 @@
 # Imposter — on Holochain + PeerKit
 
+## Browser alpha milestone — 18 November 2026
+
+**First private, operator-hosted three-player browser round completed.** The operator deployed the host-bound browser alpha on an Ubuntu desktop using private Tailscale HTTPS, an authenticated H2HC gateway, Kitsune2 bootstrap/embedded Iroh relay, and two native Holochain 0.7 conductors. The host authenticated and created a lobby, a second player reached **2/3**, and the ensuing round ended with one browser reporting **`Ended · Crew wins`**, **`Task completions: 1/1`**, and its own verified **Impostor** role.
+
+**Development stage: playable *private browser alpha*, not public-release ready.** This is the limited **three-player / one-task** browser experience, distinct from the fuller four-window/desktop-style demo described below. The outcome was observed in an operator session; full three-screen result agreement, clean restart/recovery, separate-computer testing, and production deployment still require acceptance evidence.
+
+➡️ **[Field-test results, verified scope, outstanding work, and next milestones](docs/browser-alpha-field-test-2026-11-18.md)** · [Browser alpha operator runbook](https://github.com/ConorTttttt/imposter-holochain/blob/followup/browser-alpha-operator/docs/installed-hwc-browser-alpha.md)
+
+---
+
 A demo build. The **consensus-critical** parts run as a Holochain hApp:
 
 - **hidden roles** — the host seals a Merkle commitment over the role vector and
