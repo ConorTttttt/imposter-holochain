@@ -84,6 +84,10 @@ async function init(){
  clearInterval(poll);poll=null;busy=true;hc=null;identity=null;
  setStatus('connecting','Connecting…');updateButtons();message('Connecting to the HWC extension…');
  try{
+  // Extension content scripts can arrive after the page's module executes.
+  // Wait for real injection; never substitute a mock or an insecure client.
+  for(let attempt=0;attempt<100&&!window.holochain?.isWebConductor;attempt++)
+   await new Promise(resolve=>setTimeout(resolve,200));
   if(!window.holochain?.isWebConductor)throw Error('Holochain browser extension not detected. Install the verified HWC extension.');
   meta=await fetch('/deployment.json',{cache:'no-store'}).then(r=>{
    if(!r.ok)throw Error('The verified hApp deployment manifest is unavailable.');
@@ -97,8 +101,13 @@ async function init(){
   if(info?.status!=='enabled'||info.cells?.length!==1)throw Error('Install the verified Imposter hApp in this browser profile first.');
   if(holoHash(info.cells[0][0])!==meta.dna_hash||holoHash(info.cells[0][1])!==identity)
    throw Error('This browser has a different DNA or identity. Install the correct host-bound hApp.');
-  const connected=await hc.getConnectionStatus();
-  const session=await hc.getNetworkStatus();
+  let connected,session;
+  for(let attempt=0;attempt<70;attempt++){
+   connected=await hc.getConnectionStatus();
+   session=await hc.getNetworkStatus();
+   if(connected?.authenticated===true&&connected?.wsHealthy===true&&session?.hasSession===true)break;
+   await new Promise(resolve=>setTimeout(resolve,200));
+  }
   if(connected?.authenticated!==true||connected?.wsHealthy!==true||session?.hasSession!==true)
    throw Error('H2HC gateway session missing. Ask the operator to authorize this browser identity.');
   setStatus('ready','Securely connected');
