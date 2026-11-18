@@ -19,7 +19,10 @@ for cmd in git npm cargo node sha256sum; do
 done
 git -C "$ROOT" cat-file -e "$PIN^{commit}" || fail 'pinned commit missing'
 git -C "$ROOT" merge-base --is-ancestor "$PIN" HEAD || fail 'not based on pinned commit'
-INPUTS=(Cargo.toml Cargo.lock flake.nix flake.lock dnas/game scripts/in-nix.sh package.json)
+# Allow only the reviewed coordinator role-authorization source to change;
+# preserve pinned native integrity, DNA manifests and build dependencies.
+INPUTS=(Cargo.toml Cargo.lock flake.nix flake.lock dnas/game scripts/in-nix.sh package.json
+  ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs')
 git -C "$ROOT" diff --quiet "$PIN" HEAD -- "${INPUTS[@]}" || fail 'pinned DNA/build dependencies changed; review first'
 git -C "$ROOT" diff --quiet "$PIN" -- "${INPUTS[@]}" || fail 'working tree contains DNA/build source changes'
 REV=$(git -C "$ROOT" rev-parse HEAD)

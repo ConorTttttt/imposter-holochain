@@ -21,6 +21,7 @@ button.secondary{background:#304461}button:disabled{opacity:.4;cursor:not-allowe
 #notice{min-height:24px;margin-top:12px;color:#bcd2fa}#notice[data-error=true]{color:#ffb3b3}
 #seat-list{display:grid;gap:10px;list-style:none;padding:0}
 #seat-list li{display:flex;justify-content:space-between;gap:10px;border:1px solid #405273;border-radius:8px;padding:10px 14px}
+#my-role{font-weight:600;color:#e3edff}
 small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
 </style>
 </head>
@@ -42,13 +43,19 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
 <p id="lobby-phase">Waiting for verified network state…</p>
 <ol id="seat-list" aria-live="polite"></ol>
 </section>
-<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. This page never imports another player's keys or exposes session credentials. Roles and full-round play are not enabled by this lobby demo.</small></p>
+<section class="panel" aria-label="Game phase and your private role">
+<h2>Round status</h2>
+<p id="round-state" aria-live="polite">Waiting for verified game phase…</p>
+<p id="my-role" aria-live="polite">Not assigned — roles stay private until the host deals.</p>
+</section>
+<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. This page never imports another player's keys or exposes session credentials. Encrypted guest role delivery and full-round play remain disabled until independently accepted.</small></p>
 </main>
 <script type="module">
 const $=id=>document.getElementById(id);
 const me=$('player-name'),code=$('room-code'),notice=$('notice'),badge=$('connection-state');
 const create=$('create-lobby'),join=$('join-lobby'),phase=$('lobby-phase'),list=$('seat-list');
 let hc=null,meta=null,identity=null,busy=false,poll=null;
+let verifiedRole=null,roleScope=null,roleBusy=false,roleAttemptAt=0,connectionEpoch=0;
 const toBytes=v=>{
  if(v instanceof Uint8Array)return v;
  if(Array.isArray(v))return Uint8Array.from(v);
@@ -81,7 +88,10 @@ function updateButtons(){
  join.disabled=!ready||!valid;
 }
 async function init(){
- clearInterval(poll);poll=null;busy=true;hc=null;identity=null;
+ connectionEpoch++;clearInterval(poll);poll=null;busy=true;hc=null;identity=null;
+ verifiedRole=null;roleScope=null;roleBusy=false;roleAttemptAt=0;
+ $('my-role').textContent='Not assigned — roles stay private until the host deals.';
+ $('round-state').textContent='Waiting for verified game phase…';
  setStatus('connecting','Connecting…');updateButtons();message('Connecting to the HWC extension…');
  try{
   // Extension content scripts can arrive after the page's module executes.
@@ -118,6 +128,22 @@ async function init(){
 }
 function renderState(state){
  const players=Array.isArray(state?.players)?state.players:[];
+ const currentPhase=state?.code===meta?.network_seed?state?.phase:'lobby';
+ const labels={lobby:'Lobby',playing:'Playing',meeting:'Meeting',ended:'Ended'};
+ $('round-state').textContent='Phase: '+(labels[currentPhase]||'Waiting for verified state');
+ const scope=JSON.stringify([meta?.dna_hash,identity,state?.code,state?.my_seat,Boolean(state?.roles_dealt)]);
+ if(scope!==roleScope){verifiedRole=null;roleScope=scope;roleAttemptAt=0;}
+ // Public native-validated reveal, or private local game::request_role
+ // after its strict recipient, seat, commitment and Merkle proof checks.
+ if((state?.my_role===0||state?.my_role===1)&&state?.my_seat!=null)
+  verifiedRole=state.my_role;
+ const label=verifiedRole===0?'Crewmate':verifiedRole===1?'Impostor':null;
+ $('my-role').textContent=label?'Your verified role: '+label:
+  state?.roles_dealt&&state?.my_seat!=null
+   ?'Awaiting verified private role delivery; lobby remains available.'
+   :'Not assigned — roles stay private until the host deals.';
+ if(!label&&state?.roles_dealt&&state?.my_seat!=null&&currentPhase!=='lobby')
+  void fetchOwnVerifiedRole(scope);
  $('seat-count').textContent=players.length+'/'+(state?.player_count??3);
  phase.textContent=state?.code===meta.network_seed
   ?'Lobby '+String(state.phase||'lobby')+' · '+(state.my_seat==null?'No seat yet':'Your seat: '+(Number(state.my_seat)+1))
@@ -131,6 +157,23 @@ function renderState(state){
   seat.textContent='Seat '+(i+1)+(p?.is_host?' · Host':'');
   li.append(name,seat);list.append(li);
  }
+}
+async function fetchOwnVerifiedRole(scope){
+ if(roleBusy||Date.now()-roleAttemptAt<12000||!hc)return;
+ const client=hc,epoch=connectionEpoch;
+ roleBusy=true;roleAttemptAt=Date.now();
+ try{
+  // Unverified HWC remote calls remain disabled. Only the coordinator may
+  // return a verified role. Never cache role material in shared browser storage.
+  const role=await client.callZome({zome_name:'game',fn_name:'request_role',payload:null});
+  if(client===hc&&epoch===connectionEpoch&&scope===roleScope&&(role===0||role===1)){
+   verifiedRole=role;
+   $('my-role').textContent='Your verified role: '+(role===0?'Crewmate':'Impostor');
+  }
+ }catch{
+  // Expected when encrypted transport is unavailable: no insecure fallback,
+  // role logging, or lobby interruption.
+ }finally{if(epoch===connectionEpoch)roleBusy=false;}
 }
 async function refresh(){
  if(!hc||busy)return;

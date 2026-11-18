@@ -462,9 +462,14 @@ replace_once('  const allP0Green=', r"""
       },null,{timeout:60000});
       const names=await pg.locator('#seat-list li span').allTextContents();
       const seats=await pg.locator('#seat-list li small').allTextContents();
+      const phase=await pg.locator('#round-state').textContent();
+      const roleStatus=await pg.locator('#my-role').textContent();
       must(names.length===3&&new Set(names).size===3&&seats.length===3,
         'UI did not render three unique names and seat labels');
+      must(phase?.includes('Lobby')&&roleStatus?.includes('Not assigned'),
+        'UI must show lobby phase and withhold private roles before the deal');
       evidence.player_facing_ui[label]={status:'ready',names,seats,
+        phase_status:'lobby',role_status:'not_assigned',
         no_developer_console_required:true};
     }
   });
