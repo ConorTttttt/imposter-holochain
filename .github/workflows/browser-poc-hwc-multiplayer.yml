@@ -99,7 +99,7 @@ jobs:
           else:
               anchor = 'const evidence={'
               assert raw.count(anchor) == 1, 'Missing bridge runtime evidence header'
-              raw = raw.replace(anchor, anchor + '\\n h2hc_secure_artifact_run:44274859411,', 1)
+              raw = raw.replace(anchor, anchor + '\n h2hc_secure_artifact_run:44274859411,', 1)
           bridge.write_text(raw)
           PY
           node --check scripts/agent3-native-authority-browser-bridge.mjs
