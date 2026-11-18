@@ -246,14 +246,15 @@ jobs:
           mkdir -p runtime-evidence
           git -C hwc diff --stat > runtime-evidence/hwc-temporary-diff-stat.txt
           printf '%s\n' "Agent4=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent2=bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
+          printf '%s\n' 'H2HC_RUNTIME_WORKFLOW_SOURCE=03e116ea6f59d88248096ac7dee2f653ded26e60' 'H2HC_REVOCATION_PATCH=ci/agent3-h2hc-kit/apply_revocation_patch.py' >> runtime-evidence/source-pins.txt
           echo "Original Agent4 and HWC source remain untouched in repositories"
 
       - name: Reuse exact successful H2HC executable from prior CI (no rebuild)
         uses: actions/download-artifact@v4
         with:
-          run-id: 44165793922
+          run-id: 44274859411
           repository: ConorTttttt/imposter-holochain
-          name: agent3-h2hc-authenticated-runtime-44165793922
+          name: agent3-h2hc-authenticated-runtime-44274859411
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: h2hc-binary
 
@@ -268,7 +269,7 @@ jobs:
           test "$applied" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
           grep -q cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
           chmod +x h2hc-binary/h2hc-linker-linux-x86_64
-          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_RUN=44165793922\n' "$applied" "$actual" > runtime-evidence/h2hc-provenance.txt
+          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_RUN=44274859411\n' "$applied" "$actual" > runtime-evidence/h2hc-provenance.txt
 
       - name: Set up Node 22 for actual patched HWC
         uses: actions/setup-node@v4
