@@ -26,13 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: c5cf6730b04e09a97d79b7bb2381d8a797158e5a
+          ref: 83709f1cce4e944d3e95db1368aa6b89966cee8b
           path: agent2-kit
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: 38f22687e3da321c65005ac3e9a1c845420f79be
+          ref: 0f7b17592e682a7b7d77e9346528cba69a096cdc
           fetch-depth: 0
           path: agent4-kit
           persist-credentials: false
@@ -50,8 +50,8 @@ jobs:
       - name: Verify independent exact source pins and unchanged HWC remote-signal rejection
         run: |
           set -euo pipefail
-          test "$(git -C agent2-kit rev-parse HEAD)" = c5cf6730b04e09a97d79b7bb2381d8a797158e5a
-          test "$(git -C agent4-kit rev-parse HEAD)" = 38f22687e3da321c65005ac3e9a1c845420f79be
+          test "$(git -C agent2-kit rev-parse HEAD)" = 83709f1cce4e944d3e95db1368aa6b89966cee8b
+          test "$(git -C agent4-kit rev-parse HEAD)" = 0f7b17592e682a7b7d77e9346528cba69a096cdc
           test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
           # Only the new API document changed after Agent 4's accepted
           # native coordinator run 44320254863 (tested d93520f57c2).
@@ -126,7 +126,7 @@ jobs:
         run: |
           mkdir -p acceptance-evidence
           cat > acceptance-evidence/preflight.json <<'JSON'
-          {"scope":"PINNED_GATEWAY_AND_ISOLATED_RECEIVER_CRYPTO_ONLY","agent2_source":"c5cf6730b04e09a97d79b7bb2381d8a797158e5a","agent4_source":"38f22687e3da321c65005ac3e9a1c845420f79be","gateway_artifact_id":14428255589,"gateway_sha256":"8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f","native_fixture_sha256":"065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4","receiver_accepted":false,"role_e2e":"BLOCKED","contains_role_plaintext_or_private_keys":false}
+          {"scope":"PINNED_GATEWAY_AND_ISOLATED_RECEIVER_CRYPTO_ONLY","agent2_source":"83709f1cce4e944d3e95db1368aa6b89966cee8b","agent4_source":"0f7b17592e682a7b7d77e9346528cba69a096cdc","gateway_artifact_id":14428255589,"gateway_sha256":"8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f","native_fixture_sha256":"065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4","receiver_accepted":false,"role_e2e":"BLOCKED","contains_role_plaintext_or_private_keys":false}
           JSON
           echo '## Signed-role integration preflight' >> "$GITHUB_STEP_SUMMARY"
           echo 'Gateway binary, native vectors and Agent 2 genuine Lair fixture signing PASS only at their component boundary.' >> "$GITHUB_STEP_SUMMARY"
@@ -149,13 +149,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: 38f22687e3da321c65005ac3e9a1c845420f79be
+          ref: 0f7b17592e682a7b7d77e9346528cba69a096cdc
           fetch-depth: 0
           persist-credentials: false
       - name: Assert exact native recipient-key source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 38f22687e3da321c65005ac3e9a1c845420f79be
+          test "$(git rev-parse HEAD)" = 0f7b17592e682a7b7d77e9346528cba69a096cdc
           grep -Fq 'current_unproven: true' dnas/game/zomes/coordinator/game/src/recipient_keys.rs
           grep -Fq 'IMPOSTER-H2HC-ROLE-KEY' dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs
       - uses: cachix/install-nix-action@v31
@@ -190,7 +190,7 @@ jobs:
           done
           grep -Fq 'RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN' "$RUNNER_TEMP/native-enrollment.log"
           mkdir -p acceptance-evidence
-          echo '{"scope":"NATIVE_TWO_CONDUCTOR_PUBLIC_ENROLLMENT","source":"38f22687e3da321c65005ac3e9a1c845420f79be","native_validation":"PASS","attested_lookup":"PASS","foreign_agent_denial":"PASS","stale_floor_denial":"PASS","global_latest_key":"UNPROVEN","browser_receipt":"BLOCKED"}' > acceptance-evidence/native.json
+          echo '{"scope":"NATIVE_TWO_CONDUCTOR_PUBLIC_ENROLLMENT","source":"0f7b17592e682a7b7d77e9346528cba69a096cdc","native_validation":"PASS","attested_lookup":"PASS","foreign_agent_denial":"PASS","stale_floor_denial":"PASS","global_latest_key":"UNPROVEN","browser_receipt":"BLOCKED"}' > acceptance-evidence/native.json
           echo 'NATIVE_RECIPIENT_ENROLLMENT=PASS; GLOBAL_FRESHNESS=UNPROVEN'
       - name: Independently validate native RoleCommit and denial cases (not role delivery)
         timeout-minutes: 35
@@ -204,7 +204,7 @@ jobs:
           done
           grep -Eq '^NATIVE_ROLE_COMMIT_ACTION=uhCkk[A-Za-z0-9_-]+' "$RUNNER_TEMP/native-rolecommit.log"
           mkdir -p acceptance-evidence
-          echo '{"scope":"NATIVE_ROLECOMMIT_ONLY","source":"38f22687e3da321c65005ac3e9a1c845420f79be","tested_coordinator":"d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1","valid_lobby_and_joins":true,"independent_commit_read":true,"host_only_and_idempotent":true,"wrong_host_lobby_seat_and_stale_denied":true,"invalid_join_denied":true,"encrypted_role_received":false,"global_commit_finality":"UNPROVEN"}' > acceptance-evidence/rolecommit.json
+          echo '{"scope":"NATIVE_ROLECOMMIT_ONLY","source":"0f7b17592e682a7b7d77e9346528cba69a096cdc","tested_coordinator":"d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1","valid_lobby_and_joins":true,"independent_commit_read":true,"host_only_and_idempotent":true,"wrong_host_lobby_seat_and_stale_denied":true,"invalid_join_denied":true,"encrypted_role_received":false,"global_commit_finality":"UNPROVEN"}' > acceptance-evidence/rolecommit.json
           echo 'NATIVE_ROLECOMMIT_CONTRACT=PASS; INSTALLED_HWC_RECEIPT=NOT_EXECUTED'
       - uses: actions/upload-artifact@v4
         if: always()
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: c5cf6730b04e09a97d79b7bb2381d8a797158e5a
+          ref: 83709f1cce4e944d3e95db1368aa6b89966cee8b
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -240,7 +240,7 @@ jobs:
       - name: Assert immutable HWC security patch and deny-only installed receiver
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = c5cf6730b04e09a97d79b7bb2381d8a797158e5a
+          test "$(git rev-parse HEAD)" = 83709f1cce4e944d3e95db1368aa6b89966cee8b
           test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
           python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
           python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
@@ -267,7 +267,7 @@ jobs:
           test -s hwc/packages/extension/dist-chrome/manifest.json
           test -s hwc/packages/extension/dist-chrome/background/index.js
           mkdir -p acceptance-evidence
-          echo '{"scope":"REAL_HWC_CHROME_BUILD","agent2_source":"c5cf6730b04e09a97d79b7bb2381d8a797158e5a","restricted_role_frames":"PASS_DENY_ONLY","trusted_native_role_bridge":"BLOCKED","generic_remote_calls":"DISABLED"}' > acceptance-evidence/hwc.json
+          echo '{"scope":"REAL_HWC_CHROME_BUILD","agent2_source":"83709f1cce4e944d3e95db1368aa6b89966cee8b","restricted_role_frames":"PASS_DENY_ONLY","trusted_native_role_bridge":"BLOCKED","generic_remote_calls":"DISABLED"}' > acceptance-evidence/hwc.json
           echo 'REAL_HWC_RESTRICTED_ROLE_FRAME_BUILD=PASS_DENY_ONLY; TRUSTED_ROLE_BRIDGE=BLOCKED'
       - uses: actions/upload-artifact@v4
         if: always()
