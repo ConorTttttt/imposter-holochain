@@ -291,83 +291,168 @@ pub struct DealResult {
     pub roles: Vec<u8>,
 }
 
-/// Host only. Seal the role assignment, publish the commitment root + seat
-/// order, and hand each player their own leaf + proof over a remote signal.
+/// Return the single host-private seal for this lobby. In particular, a
+/// failed post-commit transport attempt must never generate fresh secrets.
+fn unique_host_seal(lobby: &ActionHash) -> ExternResult<Option<SealedRoles>> {
+    let records = query(ChainQueryFilter::new()
+        .entry_type(UnitEntryTypes::SealedRoles.try_into()?)
+        .include_entries(true))?;
+    let mut found = None;
+    for record in records {
+        if let Some(sealed) = app_entry::<SealedRoles>(&record) {
+            if &sealed.lobby != lobby {
+                continue;
+            }
+            if found.replace(sealed).is_some() {
+                return Err(wasm_error!(WasmErrorInner::Guest(
+                    "conflicting host-private role seals".into()
+                )));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Host only. Creates or recovers EXACTLY ONE local RoleCommit. A missing
+/// public index is repaired using the original action hash. No network role
+/// delivery is attempted: HWC's generic remote-signal route stays disabled.
 #[hdk_extern]
-pub fn deal_roles(_: ()) -> ExternResult<DealResult> {
-    let records = all_records()?;
-    let (lobby_hash, host, lobby) = find_lobby()?;
+pub fn commit_roles_only(_: ()) -> ExternResult<DealResult> {
+    let indexed = strict_native_game_index()?;
+    let (lobby_hash, host, lobby) = unique_native_lobby(&indexed)?;
     if me()? != host {
         return Err(wasm_error!(WasmErrorInner::Guest(
-            "only the host deals roles".into()
+            "only the lobby host can commit roles".into()
         )));
     }
-    if records.iter().any(|r| app_entry::<RoleCommit>(r).is_some()) {
+    let public_commits: Vec<(ActionHash, RoleCommit)> = indexed.iter().filter_map(|r| {
+        app_entry::<RoleCommit>(r).map(|rc| (r.action_address().clone(), rc))
+    }).collect();
+    if public_commits.len() > 1 || public_commits.iter().any(|(_, rc)| rc.lobby != lobby_hash) {
         return Err(wasm_error!(WasmErrorInner::Guest(
-            "roles have already been dealt".into()
+            "conflicting public role commitments".into()
         )));
     }
-    let seated = seated_joins(&records, &lobby_hash, &host, lobby.player_count as usize);
+
+    let local = query(ChainQueryFilter::new().include_entries(true))?;
+    let mut local_commits = local.iter().filter_map(|r| {
+        app_entry::<RoleCommit>(r)
+            .filter(|rc| rc.lobby == lobby_hash)
+            .map(|rc| (r.action_address().clone(), rc))
+    });
+    let existing = local_commits.next();
+    if local_commits.next().is_some() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "more than one host-authored role commitment".into()
+        )));
+    }
+    let sealed = unique_host_seal(&lobby_hash)?;
+
+    if let Some((action, rc)) = existing {
+        if public_commits.iter().any(|(h, _)| h != &action) {
+            return Err(wasm_error!(WasmErrorInner::Guest(
+                "a different role commitment is already visible".into()
+            )));
+        }
+        let sealed = sealed.ok_or_else(|| wasm_error!(
+            WasmErrorInner::Guest("host commitment is missing its private seal".into())
+        ))?;
+        if rc.player_count != lobby.player_count ||
+            rc.impostor_count != lobby.impostor_count ||
+            sealed.roles.len() != rc.seats.len() ||
+            commitment_root(&sealed.roles, &sealed.salt) != rc.merkle_root {
+            return Err(wasm_error!(WasmErrorInner::Guest(
+                "existing commitment disagrees with its private seal".into()
+            )));
+        }
+        // Recover a successful Create whose index-link write was interrupted.
+        if !public_commits.iter().any(|(h, _)| h == &action) {
+            link_entry(&action)?;
+        }
+        return Ok(DealResult { role_commit: action, seats: rc.seats, roles: sealed.roles });
+    }
+    if !public_commits.is_empty() {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "a role commitment exists without this host's private action".into()
+        )));
+    }
+
+    let seated = seated_joins(&indexed, &lobby_hash, &host, lobby.player_count as usize);
     let seats = seat_keys(&seated);
     if seats.len() != lobby.player_count as usize {
         return Err(wasm_error!(WasmErrorInner::Guest(format!(
-            "need {} players, have {}",
-            lobby.player_count,
-            seats.len()
+            "need {} players, have {}", lobby.player_count, seats.len()
         ))));
     }
+    // Both seats and joins are written in the same canonical sorted-agent order.
+    let mut by_seat = seated;
+    by_seat.sort_by(|a, b| a.0.get_raw_39().cmp(b.0.get_raw_39()));
+    let joins: Vec<ActionHash> = by_seat.iter().map(|(_, h)| h.clone()).collect();
 
-    let host_entropy = {
-        let bytes = random_bytes(32)?;
-        let mut b = [0u8; 32];
-        b.copy_from_slice(bytes.as_ref());
-        b
+    let sealed = match sealed {
+        Some(s) => s, // recover after private seal persisted but RoleCommit failed
+        None => {
+            let bytes = random_bytes(32)?;
+            let mut host_entropy = [0u8; 32];
+            host_entropy.copy_from_slice(bytes.as_ref());
+            let seat_bytes: Vec<Vec<u8>> =
+                seats.iter().map(|k| k.get_raw_39().to_vec()).collect();
+            let salt = mix_seed(&host_entropy, &seat_bytes);
+            let roles = assign(seats.len(), lobby.impostor_count as usize, &salt)
+                .map_err(|e| wasm_error!(WasmErrorInner::Guest(e.into())))?;
+            let s = SealedRoles { lobby: lobby_hash.clone(), roles, salt };
+            create_entry(EntryTypes::SealedRoles(s.clone()))?;
+            s
+        }
     };
-    let seat_key_bytes: Vec<Vec<u8>> = seats.iter().map(|k| k.get_raw_39().to_vec()).collect();
-    let seed = mix_seed(&host_entropy, &seat_key_bytes);
-    let salt = seed;
-
-    let roles = assign(seats.len(), lobby.impostor_count as usize, &seed)
-        .map_err(|e| wasm_error!(WasmErrorInner::Guest(e.into())))?;
-    let layers = build_layers(&roles, &salt);
-    let root = commitment_root(&roles, &salt);
-
-    // The host's one secret — local only.
-    create_entry(EntryTypes::SealedRoles(SealedRoles {
-        lobby: lobby_hash.clone(),
-        roles: roles.clone(),
-        salt,
-    }))?;
-
-    let rc_hash = create_entry(EntryTypes::RoleCommit(RoleCommit {
+    if sealed.roles.len() != seats.len() ||
+       sealed.roles.iter().filter(|r| **r == ROLE_IMPOSTOR).count() != lobby.impostor_count as usize ||
+       sealed.roles.iter().any(|r| *r != ROLE_CREW && *r != ROLE_IMPOSTOR) {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "sealed roles disagree with occupied seats or impostor count".into()
+        )));
+    }
+    let root = commitment_root(&sealed.roles, &sealed.salt);
+    let action = create_entry(EntryTypes::RoleCommit(RoleCommit {
         lobby: lobby_hash,
         merkle_root: root,
         player_count: lobby.player_count,
         impostor_count: lobby.impostor_count,
         seats: seats.clone(),
-        joins: seated.iter().map(|(_, h)| h.clone()).collect(),
+        joins,
     }))?;
-    link_entry(&rc_hash)?;
+    link_entry(&action)?;
+    Ok(DealResult { role_commit: action, seats, roles: sealed.roles })
+}
 
-    for (seat, key) in seats.iter().enumerate() {
-        let proof = role_proof(&layers, &salt, seat as u16);
-        let payload = GameSignal::RoleDealt {
-            role_commit: rc_hash.clone(),
+/// Desktop-compatible legacy delivery: the commitment is now idempotently
+/// created/recovered independently of signal delivery. Failed remote signals
+/// may be retried but can NEVER cause a second local RoleCommit.
+#[hdk_extern]
+pub fn deal_roles(_: ()) -> ExternResult<DealResult> {
+    let dealt = commit_roles_only(())?;
+    let (_, rc) = find_role_commit()?.ok_or_else(|| wasm_error!(
+        WasmErrorInner::Guest("new role commitment not indexed yet".into())
+    ))?;
+    if rc.seats != dealt.seats {
+        return Err(wasm_error!(WasmErrorInner::Guest(
+            "commitment seat mismatch during legacy role delivery".into()
+        )));
+    }
+    let sealed = unique_host_seal(&rc.lobby)?.ok_or_else(|| wasm_error!(
+        WasmErrorInner::Guest("private role seal unavailable".into())
+    ))?;
+    let layers = build_layers(&dealt.roles, &sealed.salt);
+    for (seat, key) in dealt.seats.iter().enumerate() {
+        send_remote_signal(GameSignal::RoleDealt {
+            role_commit: dealt.role_commit.clone(),
             recipient: key.clone(),
             seat: seat as u16,
-            role: roles[seat],
-            proof,
-        };
-        // send_remote_signal is fire-and-forget; a client that misses it can
-        // ask the host to re-deal its own leaf via `resend_role`.
-        send_remote_signal(payload, vec![key.clone()])?;
+            role: dealt.roles[seat],
+            proof: role_proof(&layers, &sealed.salt, seat as u16),
+        }, vec![key.clone()])?;
     }
-
-    Ok(DealResult {
-        role_commit: rc_hash,
-        seats,
-        roles,
-    })
+    Ok(dealt)
 }
 
 /// Host only. Re-send one seat's role leaf (if a remote signal was missed).
@@ -2963,6 +3048,297 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
         crisis,
         crisis_ready_at,
         seat_lost,
+    })
+}
+
+// ---------------------------------------------------- privileged native boundary
+//
+// This endpoint is deliberately narrower than get_game_state. A browser page
+// can request a snapshot, but it CANNOT assert that records are Valid, supply
+// a host provenance, declare the latest commitment, or invent round numbers.
+// The privileged HWC background must call the installed cell itself, compare
+// its own appInfo/cell DNA and pinned trusted identities, and treat DHT
+// visibility as an observation rather than global finality.
+
+fn native_view_error(why: &str) -> WasmError {
+    wasm_error!(WasmErrorInner::Guest(format!("native game view rejected: {why}")))
+}
+
+/// Every referenced game-index record must be a native Valid action. Unlike
+/// all_records, never silently skip an unresolvable index target.
+fn strict_native_game_index() -> ExternResult<Vec<Record>> {
+    let links = get_links(
+        LinkQuery::try_new(anchor()?, LinkTypes::GameToEntry)?,
+        GetStrategy::Network,
+    )?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut records = Vec::new();
+    for link in links {
+        let action = link.target.into_action_hash()
+            .ok_or_else(|| native_view_error("index target is not an action"))?;
+        if !seen.insert(action.clone()) {
+            continue;
+        }
+        let record = must_get_valid_record(action)
+            .map_err(|_| native_view_error("indexed action is not native Valid"))?;
+        if !matches!(&record.action().data, ActionData::Create(_)) {
+            return Err(native_view_error("indexed action is not a created entry"));
+        }
+        records.push(record);
+    }
+    records.sort_by(|a, b| a.action_address().cmp(b.action_address()));
+    Ok(records)
+}
+
+/// A per-game DNA must have exactly one Valid Lobby, and its action author
+/// must be the network seed's host (for host-bound g1 games).
+fn unique_native_lobby(records: &[Record]) -> ExternResult<(ActionHash, AgentPubKey, Lobby)> {
+    let mut found = records.iter().filter_map(|r| {
+        app_entry::<Lobby>(r)
+            .map(|l| (r.action_address().clone(), r.action().author().clone(), l))
+    });
+    let one = found.next().ok_or_else(|| native_view_error("lobby is unavailable"))?;
+    if found.next().is_some() {
+        return Err(native_view_error("conflicting lobby actions"));
+    }
+    let seed = dna_info()?.modifiers.network_seed;
+    match parse_game_seed(&seed) {
+        Ok(SeedOwner::Host(h)) if one.1 != h =>
+            Err(native_view_error("lobby author disagrees with installed DNA seed")),
+        Ok(_) => Ok(one),
+        Err(_) => Err(native_view_error("installed DNA game seed is invalid")),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NativeGameViewQuery {
+    pub expected_lobby: ActionHash,
+    pub expected_role_commit: Option<ActionHash>,
+    pub expected_recipient: Option<AgentPubKey>,
+    pub expected_seat: Option<u16>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NativeSeatEvidence {
+    pub seat: u16,
+    pub agent: AgentPubKey,
+    pub join_action: ActionHash,
+    pub display_name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NativeGameViewV1 {
+    pub schema_version: u8,
+    pub dna: DnaHash,
+    pub network_seed: String,
+    pub host: AgentPubKey,
+    pub lobby_action: ActionHash,
+    pub lobby: Lobby,
+    pub role_commit_action: Option<ActionHash>,
+    pub merkle_root: Option<[u8; 32]>,
+    /// Canonical, sorted by raw 39-byte AgentPubKey. Each join was signed by
+    /// that agent and was native Valid for the exact Lobby.
+    pub seats: Vec<NativeSeatEvidence>,
+    pub phase: Phase,
+    /// Valid observed records are NOT proof of globally latest DHT history.
+    pub observed_only: bool,
+}
+
+/// Fails closed on missing/mismatched Lobby, RoleCommit, PlayerJoin, seat,
+/// expected action identity, or conflicting game actions. No private secrets.
+#[hdk_extern]
+pub fn get_authoritative_game_view(input: NativeGameViewQuery) -> ExternResult<NativeGameViewV1> {
+    if input.expected_recipient.is_some() != input.expected_seat.is_some() {
+        return Err(native_view_error("recipient and seat must be supplied together"));
+    }
+    if input.expected_seat.is_some() && input.expected_role_commit.is_none() {
+        return Err(native_view_error("a recipient seat requires an exact pinned RoleCommit"));
+    }
+    let records = strict_native_game_index()?;
+    let (lobby_action, host, lobby) = unique_native_lobby(&records)?;
+    if lobby_action != input.expected_lobby {
+        return Err(native_view_error("wrong lobby action"));
+    }
+    let commits: Vec<(ActionHash, AgentPubKey, RoleCommit)> = records.iter().filter_map(|r| {
+        app_entry::<RoleCommit>(r).map(|rc| (
+            r.action_address().clone(), r.action().author().clone(), rc
+        ))
+    }).collect();
+    if commits.len() > 1 {
+        return Err(native_view_error("multiple role commitments; current is ambiguous"));
+    }
+    let commit = commits.first();
+    if let Some((_, author, rc)) = commit {
+        if author != &host || rc.lobby != lobby_action ||
+           rc.player_count != lobby.player_count ||
+           rc.impostor_count != lobby.impostor_count {
+            return Err(native_view_error("role commitment does not match host and lobby"));
+        }
+    }
+    if input.expected_role_commit.as_ref() !=
+       commit.map(|(action, _, _)| action).filter(|_| input.expected_role_commit.is_some()) {
+        return Err(native_view_error("stale, missing, or substituted RoleCommit action"));
+    }
+
+    let mut indexed_joins = std::collections::BTreeMap::new();
+    for r in &records {
+        if let Some(j) = app_entry::<PlayerJoin>(r) {
+            if j.lobby != lobby_action || j.player != *r.action().author() {
+                return Err(native_view_error("invalid linked PlayerJoin"));
+            }
+            indexed_joins.insert(r.action_address().clone(), (j, r.action().author().clone()));
+        }
+    }
+    let seats = if let Some((_, _, rc)) = commit {
+        if rc.seats.len() != lobby.player_count as usize ||
+           rc.joins.len() != rc.seats.len() ||
+           !rc.seats.windows(2).all(|w| w[0].get_raw_39() < w[1].get_raw_39()) ||
+           !rc.seats.contains(&host) {
+            return Err(native_view_error("commitment has noncanonical or incomplete seats"));
+        }
+        let mut joins_by_agent = std::collections::BTreeMap::new();
+        for action in &rc.joins {
+            // An indexed action isn't sufficient when a RoleCommit references
+            // something else. Require the exact cited join to be native Valid.
+            let record = must_get_valid_record(action.clone())
+                .map_err(|_| native_view_error("cited join is not native Valid"))?;
+            let join = app_entry::<PlayerJoin>(&record)
+                .ok_or_else(|| native_view_error("cited action is not PlayerJoin"))?;
+            let author = record.action().author().clone();
+            if join.lobby != lobby_action || join.player != author ||
+               !indexed_joins.contains_key(action) ||
+               joins_by_agent.insert(author, (action.clone(), join.display_name)).is_some() {
+                return Err(native_view_error("cited PlayerJoin author/lobby/index mismatch"));
+            }
+        }
+        if joins_by_agent.len() != rc.seats.len() {
+            return Err(native_view_error("not one unique cited join per seat"));
+        }
+        rc.seats.iter().enumerate().map(|(seat, agent)| {
+            let (join_action, display_name) = joins_by_agent.get(agent)
+                .ok_or_else(|| native_view_error("committed seat has no matching join"))?;
+            Ok(NativeSeatEvidence {
+                seat: seat as u16, agent: agent.clone(),
+                join_action: join_action.clone(), display_name: display_name.clone(),
+            })
+        }).collect::<ExternResult<Vec<_>>>()?
+    } else {
+        // Before the deal these are merely observed candidate seats, with
+        // no commitment identity or recipient authorization yet.
+        let mut candidates = seated_joins(&records, &lobby_action, &host, lobby.player_count as usize);
+        candidates.sort_by(|a,b| a.0.get_raw_39().cmp(b.0.get_raw_39()));
+        candidates.iter().enumerate().map(|(seat, (agent, action))| {
+            let (join, _) = indexed_joins.get(action)
+                .ok_or_else(|| native_view_error("unindexed candidate join"))?;
+            Ok(NativeSeatEvidence {
+                seat: seat as u16, agent: agent.clone(), join_action: action.clone(),
+                display_name: join.display_name.clone(),
+            })
+        }).collect::<ExternResult<Vec<_>>>()?
+    };
+    if let (Some(agent), Some(seat)) = (&input.expected_recipient, input.expected_seat) {
+        if seats.get(seat as usize).is_none_or(|s| &s.agent != agent) {
+            return Err(native_view_error("recipient is not the cited canonical seat"));
+        }
+    }
+
+    let results = records.iter().filter(|r| app_entry::<GameResult>(r).is_some()).count();
+    if results > 1 || (results != 0 && commit.is_none()) {
+        return Err(native_view_error("conflicting or uncommitted game result"));
+    }
+    let latest_meeting = records.iter().filter_map(|r| {
+        app_entry::<Meeting>(r)
+            .map(|_| (r.action().timestamp(), r.action_address().clone()))
+    }).max();
+    if latest_meeting.is_some() && commit.is_none() {
+        return Err(native_view_error("meeting without a role commitment"));
+    }
+    let meeting_open = if let Some((_, meeting)) = latest_meeting {
+        let resolutions: Vec<Ejection> = records.iter().filter_map(|r| {
+            app_entry::<Ejection>(r).filter(|e| e.meeting == meeting)
+        }).collect();
+        if resolutions.len() > 1 {
+            return Err(native_view_error("conflicting meeting resolutions"));
+        }
+        resolutions.first().is_none_or(|e| matches!(e.outcome, TallyOutcome::Tie { .. }))
+    } else {
+        false
+    };
+    let phase = if commit.is_none() { Phase::Lobby }
+        else if results != 0 { Phase::Ended }
+        else if meeting_open { Phase::Meeting }
+        else { Phase::Playing };
+    let info = dna_info()?;
+    Ok(NativeGameViewV1 {
+        schema_version: 1,
+        dna: info.hash,
+        network_seed: info.modifiers.network_seed,
+        host,
+        lobby_action,
+        lobby,
+        role_commit_action: commit.map(|(h, _, _)| h.clone()),
+        merkle_root: commit.map(|(_, _, rc)| rc.merkle_root),
+        seats, phase, observed_only: true,
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HostRoleOpeningQuery {
+    pub expected_lobby: ActionHash,
+    pub expected_role_commit: ActionHash,
+    pub expected_recipient: AgentPubKey,
+    pub expected_seat: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HostRoleOpening {
+    pub role_commit: ActionHash,
+    pub recipient: AgentPubKey,
+    pub seat: u16,
+    pub role: u8,
+    pub proof: RoleProof,
+}
+
+/// Host-cell-only private opening for the restricted encrypted HWC transport.
+/// Never bridge this through page events, generic signals or unrestricted HTTP.
+/// The caller must separately authenticate the recipient and replay/epoch
+/// policy before encrypting a single recipient's leaf.
+#[hdk_extern]
+pub fn host_role_opening(input: HostRoleOpeningQuery) -> ExternResult<HostRoleOpening> {
+    let view = get_authoritative_game_view(NativeGameViewQuery {
+        expected_lobby: input.expected_lobby.clone(),
+        expected_role_commit: Some(input.expected_role_commit.clone()),
+        expected_recipient: Some(input.expected_recipient.clone()),
+        expected_seat: Some(input.expected_seat),
+    })?;
+    if me()? != view.host || view.role_commit_action.as_ref() != Some(&input.expected_role_commit) {
+        return Err(native_view_error("only the real host can open the current commitment"));
+    }
+    let seal = unique_host_seal(&input.expected_lobby)?
+        .ok_or_else(|| native_view_error("host private seal is missing"))?;
+    if seal.roles.len() != view.seats.len() ||
+       Some(commitment_root(&seal.roles, &seal.salt)) != view.merkle_root {
+        return Err(native_view_error("private seal does not match exact public commitment"));
+    }
+    let role = *seal.roles.get(input.expected_seat as usize)
+        .ok_or_else(|| native_view_error("recipient seat is outside sealed roles"))?;
+    let proof = role_proof(
+        &build_layers(&seal.roles, &seal.salt),
+        &seal.salt, input.expected_seat,
+    );
+    authorize_role_delivery(
+        view.host.get_raw_39(), view.host.get_raw_39(),
+        input.expected_recipient.get_raw_39(), input.expected_recipient.get_raw_39(),
+        view.seats.get(input.expected_seat as usize).map(|s| &s.agent.get_raw_39()[..]),
+        input.expected_role_commit.get_raw_39(),
+        view.role_commit_action.as_ref().unwrap().get_raw_39(),
+        &view.merkle_root.unwrap(), input.expected_seat, role, &proof,
+    ).map_err(role_delivery_error)?;
+    Ok(HostRoleOpening {
+        role_commit: input.expected_role_commit,
+        recipient: input.expected_recipient,
+        seat: input.expected_seat,
+        role, proof,
     })
 }
 
