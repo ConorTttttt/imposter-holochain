@@ -74,7 +74,7 @@ fn hex16(s: &str) -> Result<[u8; 16], &'static str> {
     b.try_into().map_err(|_| "invalid_identifier")
 }
 fn b64(s: &str, min: usize, max: usize) -> Result<Vec<u8>, &'static str> {
-    if s.len() > ((max + 2) / 3) * 4 + 4 {
+    if s.len() > max.div_ceil(3) * 4 + 4 {
         return Err("payload_size");
     }
     let decoded = base64::engine::general_purpose::STANDARD.decode(s).map_err(|_| "base64")?;
