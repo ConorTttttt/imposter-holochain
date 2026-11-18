@@ -16,6 +16,7 @@ import {verifyKeyAttestation,makeRoleRequest,makeRoleDelivery,receiveRoleDeliver
   parseRoleFrame,toRoleFrame,internalsForTests,HPKE_INFO} from './wire.mjs';
 import {openForCell} from './hpke.mjs';
 import {encodeAttestationBody,decodeAttestationBody} from './request-attestation.mjs';
+import {validateObservedEnrollment} from './native-enrollment.mjs';
 import {verifyRoleOpening,encodeRoleOpening} from './merkle.mjs';
 const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
 const full=(a,p)=>a instanceof Uint8Array&&a.length===39&&p.every((v,i)=>v===a[i]);
@@ -79,13 +80,10 @@ export function createRestrictedRoleService(s){
  };
  /** Native entry discovery only; no unsigned key lookup/Boolean shortcut. */
  async function discover(cell,recipient,lease){
-   const enrolled=await s.native.readKeyEnrollment(cell,recipient);
-   if(!eq(enrolled?.dna,cell.dna)||!eq(enrolled?.author,recipient)||
-      !eq(enrolled?.attestation?.agent,recipient))
-     throw Error('recipient attestation was not native-enrolled');
-   await verifyKeyAttestation(enrolled.attestation,{dna:cell.dna,agent:recipient});
+   const observed=await validateObservedEnrollment(
+     await s.native.readKeyEnrollment(cell,recipient),{dna:cell.dna,recipient});
    unchanged(s.session,cell,lease);
-   await s.store.pinTrustedRecipient(cell.dna,recipient,enrolled.attestation);
+   await s.store.pinTrustedRecipient(cell.dna,recipient,observed.attestation);
    return s.store.getTrustedRecipient(cell.dna,recipient);
  }
  return Object.freeze({
@@ -176,10 +174,11 @@ export function createRestrictedRoleService(s){
        const body=await openForCell(held,packet.enc,packet.ciphertext,
          internalsForTests.aadBytes(packet),HPKE_INFO);
        const att=await decodeAttestationBody(body,{dna:cell.dna,agent:packet.sender});
-       const seen=await s.native.readKeyEnrollment(cell,packet.sender);
-       if(!eq(seen?.dna,cell.dna)||!eq(seen?.author,packet.sender)||
-          !eq(seen?.attestation?.keyId,att.keyId)||
-          !eq(seen?.attestation?.publicKey,att.publicKey)||
+       const seen=await validateObservedEnrollment(
+         await s.native.readKeyEnrollment(cell,packet.sender),
+         {dna:cell.dna,recipient:packet.sender});
+       if(!eq(seen.attestation.keyId,att.keyId)||
+          !eq(seen.attestation.publicKey,att.publicKey)||
           seen.attestation.epoch!==att.epoch)
          throw Error('native enrollment differs from signed recipient request');
        await s.store.pinTrustedRecipient(cell.dna,packet.sender,att);
