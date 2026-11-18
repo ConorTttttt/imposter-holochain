@@ -21,6 +21,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Check release asset and deployment invariants
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -v -s release/browser-alpha -p '*_test.py'
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain

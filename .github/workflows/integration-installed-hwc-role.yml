@@ -6,6 +6,7 @@ on:
       - '.github/workflows/integration-installed-hwc-role.yml'
       - 'ci/installed-role/**'
       - 'compatibility/hwc-imposter-compatibility/**'
+      - 'release/browser-alpha/**'
   workflow_dispatch:
 
 permissions:
