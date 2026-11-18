@@ -64,8 +64,13 @@ async function fixture(){
    lobby:{action:hash(1),author:host.agent,host:host.agent,round:3},
    commit:{action:hash(2),author:host.agent,lobby:hash(1),round:3,
      seats:[host.agent,b.agent,c.agent],merkleRoot:proof.root}};
- const enrollment={dna:d,author:b.agent,attestation:att};
- const hostEnrollment={dna:d,author:host.agent,attestation:hostAtt};
+ const observed=(a)=>({status:'observed',current_unproven:true,
+   view:{action:hash(11),attestation:{
+     dna:a.dna,agent:a.agent,key_id:a.keyId,x25519_public_key:a.publicKey,
+     epoch:a.epoch,not_before_ms:a.notBefore,not_after_ms:a.notAfter,signature:a.signature
+   }}});
+ const enrollment=observed(att);
+ const hostEnrollment=observed(hostAtt);
  const native={readCurrentGame:async()=>game,readKeyEnrollment:async(_,recipient)=>
    Buffer.compare(recipient,host.agent)===0?hostEnrollment:enrollment};
  const a=agent=>({dna:d,agent,contextId:'installed-happ'});
@@ -134,9 +139,9 @@ test('signed message has no forged browser bool or generic remote API; absent na
  assert.throws(()=>createRestrictedRoleService({...f,native:null}),/native HWC authority/);
 });
 test('host fails closed on missing native recipient enrollment and unregistered session',async()=>{
- const f=await fixture();f.enrollment.author=f.c.agent;
+ const f=await fixture();f.enrollment.view.attestation.agent=f.c.agent;
  await f.guestSvc.requestRole({seat:1});
- await assert.rejects(f.hostSvc.receiveFromSocket(f.bSession.sent[0]),/native enrollment/);
- f.enrollment.author=f.b.agent;f.hostSession.revoke();
+ await assert.rejects(f.hostSvc.receiveFromSocket(f.bSession.sent[0]),/native recipient DNA or author/);
+ f.enrollment.view.attestation.agent=f.b.agent;f.hostSession.revoke();
  await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/live registered/);
 });
