@@ -33,11 +33,21 @@ jobs:
           for f in compatibility/hwc-imposter-compatibility/private-role/*.mjs; do
             node --check "$f"
           done
-      - name: Cryptographic and fail-closed protocol unit tests
+      - name: Install isolated IndexedDB test emulation (NOT Chromium)
         shell: bash
         run: |
           set -euo pipefail
-          node --test compatibility/hwc-imposter-compatibility/private-role/private-role.test.mjs
+          mkdir -p "$RUNNER_TEMP/agent2-idb"
+          cd "$RUNNER_TEMP/agent2-idb"
+          printf '{"name":"agent2-idb-only","private":true}\n' > package.json
+          npm install --no-save --ignore-scripts --package-lock=false --no-audit --no-fund fake-indexeddb@6.2.5
+          test -s node_modules/fake-indexeddb/auto/index.mjs
+          echo "AGENT2_IDB_SHIM=$RUNNER_TEMP/agent2-idb/node_modules/fake-indexeddb/auto/index.mjs" >> "$GITHUB_ENV"
+      - name: Crypto, transcript, and simulated persistent IndexedDB tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import "$AGENT2_IDB_SHIM" --test compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
       - name: Confirm remote HWC handler remains disabled (source-level invariant)
         shell: bash
         run: |
