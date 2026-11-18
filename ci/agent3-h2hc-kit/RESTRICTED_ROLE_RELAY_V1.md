@@ -321,3 +321,12 @@ The previous confirmed-green baseline is security run **44299128149**,
 artifact **14424762920**, on pre-epoch commit `204cd95a`;
 those *older vectors are incompatible with candidate revision 2*.
 Use only a later full-green run with signed epoch for this candidate.
+
+
+### Candidate revision 2 — independently verified public fixture
+
+- **PASS** [Rust/native + Node 22 vector CI 44303144321](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44303144321), tested SHA `8500270ecb3285ff6435bba568d1ef46c0c3ac8e`. This checks all Rust library security tests, native Holochain 0.7 typed-hash signature preimages, two recipient-key attestations, deterministic RFC9180 HPKE and independent Node signature/decryption/negative cases.
+- **Public test artifact** [14426267353](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44303144321/artifacts/14426267353), file `role-public-vectors.json`, **SHA256 `065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`** of JSON bytes. The artifact retention window is 14 days; archive/reimport this verified JSON into HWC tests before expiry. Includes 2 signed/encrypted cases, 2 signed attestations, 9 declarative negative mutations. Deterministic **synthetic** signer seeds are kept only in source, never in the published JSON.
+- **No receiver acceptance claimed.** Node independent decryption used deterministic fixture X25519 keys, *not* the live HWC extension or Lair signer; no native coordinator role leaf/proof test, durable browser replay, or real guest denial has run against this revision.
+
+Agent 2 can extract with GitHub Actions artifact download (no auth credentials in fixture), then import the JSON as a test fixture in its `private-role` suite. Any change to signed bytes or normative fields requires a newly regenerated artifact and fresh written approval by both agents.
