@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8"><body>LOADING</body><script type="module">
+import {openRoleStore} from './store.mjs';
+import {seal,openForCell} from './hpke.mjs';
+const dna=new Uint8Array([0x84,0x2d,0x24,...new Array(36).fill(1)]);
+const agent=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(2)]);
+const sender=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(3)]);
+const commit=new Uint8Array([0x84,0x29,0x24,...new Array(36).fill(4)]);
+const messageId=new Uint8Array(16).fill(5);
+try{
+ const store=await openRoleStore('real-chromium-role-test-v1');
+ const phase=new URLSearchParams(location.search).get('phase');
+ if(phase==='register'){
+  const cell=await store.rotateCell(dna,agent,1);
+  await store.reserve({dna,recipient:agent,sender,commit,messageId});
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:cell.epoch,nonextractable:!cell.privateKey.extractable});
+ }else{
+  const cell=await store.getCell(dna,agent);
+  if(!cell||cell.epoch!==1||cell.privateKey.extractable)throw Error('persisted key not found');
+  const txt=new TextEncoder().encode('secret');const aad=new Uint8Array([1,2]);
+  const sealed=await seal(cell.publicKey,txt,aad);
+  const opened=await openForCell(cell,sealed.enc,sealed.ciphertext,aad);
+  if(new TextDecoder().decode(opened)!=='secret')throw Error('failed decryption after restart');
+  let replayDenied=false;
+  try{await store.reserve({dna,recipient:agent,sender,commit,messageId});}catch{replayDenied=true;}
+  if(!replayDenied)throw Error('replay succeeded');
+  let rotationDenied=false;
+  try{await store.rotateCell(dna,agent,1);}catch{rotationDenied=true;}
+  if(!rotationDenied)throw Error('same-epoch rotation succeeded');
+  const newCell=await store.rotateCell(dna,agent,2);
+  if(newCell.epoch!==2||newCell.privateKey.extractable)throw Error('rotation key insecure');
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:newCell.epoch,replayDenied,rotationDenied,nonextractable:!newCell.privateKey.extractable});
+ }
+ store.close();
+}catch(e){document.body.textContent=JSON.stringify({status:'FAIL',phase:location.search,error:String(e)});}
+</script>
