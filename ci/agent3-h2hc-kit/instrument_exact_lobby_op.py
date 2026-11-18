@@ -24,7 +24,7 @@ r"""  const lobbyActionHash=publicHoloHash(lobbyHashCandidate);
   const {pathToFileURL}=await import('node:url');
   const nativeHashModule=await import(
     pathToFileURL(path.join(OUT_LOG,'hwc-op-hash-native.cjs')).href);
-  const {hashAction,hashOp,ChainOpType}=nativeHashModule.default||nativeHashModule;
+  const {hashAction,hashOp,ChainOpType,serializeAction}=nativeHashModule.default||nativeHashModule;
   const restoreHwcBytes=v=>{
     if(Array.isArray(v))return v.map(restoreHwcBytes);
     if(v instanceof Uint8Array)return v;
@@ -42,6 +42,45 @@ r"""  const lobbyActionHash=publicHoloHash(lobbyHashCandidate);
   must(lobbyAction?.header&&lobbyAction?.data,
     'Actual create_lobby Record lacks signed action content required for exact op proof');
   const derivedActionHash=publicHoloHash(hashAction(lobbyAction));
+  // Capture the public Create action's canonical bytes BEFORE enforcing the
+  // exact-hash assertion. This distinguishes Record reconstruction, canonical
+  // serialization and hashing without exposing any entry/CapGrant content.
+  const canonicalBytes=serializeAction(lobbyAction);
+  const signedContent=createdLobby?.signed_action?.hashed?.content;
+  const bytesShape=v=>v instanceof Uint8Array?'Uint8Array('+v.length+')':
+    Array.isArray(v)?'Array('+v.length+')':
+    v&&typeof v==='object'?'Object('+Object.keys(v).length+')':
+    typeof v;
+  const actionFields={
+    header:Object.fromEntries(Object.entries(lobbyAction.header).map(([k,v])=>
+      [k,k==='timestamp'||k==='action_seq'?v:bytesShape(v)])),
+    data:Object.fromEntries(Object.entries(lobbyAction.data).map(([k,v])=>
+      [k,k==='type'?v:bytesShape(v)])),
+  };
+  evidence.exact_hash_diagnostic={
+    source:'returned signed_action.hashed.content (public Create action only)',
+    expected_action_hash:lobbyActionHash,
+    reconstructed_action_hash:derivedActionHash,
+    equal:derivedActionHash===lobbyActionHash,
+    canonical_msgpack_hex:Buffer.from(canonicalBytes).toString('hex'),
+    canonical_msgpack_length:canonicalBytes.length,
+    original_action_fields:{
+      header:Object.fromEntries(Object.entries(signedContent?.header||{}).map(([k,v])=>[k,bytesShape(v)])),
+      data:Object.fromEntries(Object.entries(signedContent?.data||{}).map(([k,v])=>[k,bytesShape(v)])),
+    },
+    reconstructed_fields:actionFields,
+    signed_action_hash_shape:bytesShape(lobbyHashCandidate),
+    signed_action_content_shape:bytesShape(signedContent),
+    // Signature, entry bytes and any CapGrant body are intentionally omitted.
+  };
+  record('REAL_LOBBY_CANONICAL_HASH_DIAGNOSTIC',
+    derivedActionHash===lobbyActionHash?'PASS':'MISMATCH',
+    JSON.stringify({
+      expected:lobbyActionHash,derived:derivedActionHash,
+      msgpack_hex:evidence.exact_hash_diagnostic.canonical_msgpack_hex,
+      fields:actionFields,
+      original_fields:evidence.exact_hash_diagnostic.original_action_fields,
+    }));
   must(derivedActionHash===lobbyActionHash,
     'HWC pinned action hasher disagrees with signed real lobby Record hash');
   const opTypes=[ChainOpType.CreateRecord,ChainOpType.CreateEntry,ChainOpType.AgentActivity];
