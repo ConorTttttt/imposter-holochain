@@ -37,7 +37,13 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   private restrictedRoleRegistrations = new Set<string>();''',
 '''  private restrictedRoleLease: string | null = null;
   private restrictedRoleRegistrations = new Set<string>();
-  private restrictedRoleSessionChanged: (() => void) | null = null;''')
+  private restrictedRoleSessionChanged: (() => void) | null = null;
+  // Ack bookkeeping is private to the live signed WebSocket. It is never
+  // treated as role decryption, and is wiped on reconnect/revocation.
+  private restrictedPendingRoleIds = new Map<string, {
+    operation: "role_request_v1" | "role_delivery_v1"; lease:string
+  }>();
+  private restrictedRoleAcks = {requests:0,deliveries:0};''')
     edit(core, '''  getRestrictedRoleLease(): string | null {
     return this.isConnected() ? this.restrictedRoleLease : null;
   }''',
@@ -58,6 +64,7 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
       }),
       authenticated: this.isAuthenticated(),
       isConnected: this.isConnected(),
+      queuedAcks:{...this.restrictedRoleAcks},
     };
   }
 
@@ -79,6 +86,23 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
 '''          this.restrictedRoleRegistrations.delete(message.dna_hash + ':' + message.agent_pubkey);
           this.restrictedRoleSessionChanged?.();
           break;''')
+    edit(core, '''      log.debug("Received:", message.type);''',
+'''      log.debug("Received:", message.type);
+      // Authenticate the gateway enqueue acknowledgement against the exact
+      // message ID we sent on THIS authenticated socket incarnation. A queue
+      // acknowledgement is never treated as delivery or recipient receipt.
+      if ((message as any).type === "role_queued_v1") {
+        const id=(message as any).message_id;
+        if (typeof id === "string" && /^[0-9a-f]{32}$/.test(id)) {
+          const pending=this.restrictedPendingRoleIds.get(id);
+          if (pending && pending.lease===this.getRestrictedRoleLease()) {
+            if (pending.operation==="role_request_v1") this.restrictedRoleAcks.requests++;
+            else this.restrictedRoleAcks.deliveries++;
+            this.restrictedPendingRoleIds.delete(id);
+          }
+        }
+        return;
+      }''')
     edit(core, '''  private handleAuthOk(message: Extract<ServerMessage, { type: "auth_ok" }>): void {
     log.debug("Authenticated");''',
 '''  private handleAuthOk(message: Extract<ServerMessage, { type: "auth_ok" }>): void {
@@ -88,12 +112,26 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
       return;
     }
     log.debug("Authenticated");''')
+    edit(core, '''    this.send(frame);
+  }''', '''    const id=(frame.envelope as any).message_id;
+    if (typeof id!=="string" || !/^[0-9a-f]{32}$/.test(id) ||
+        this.restrictedPendingRoleIds.size>=128)
+      throw new Error("restricted role message ID/pending limit invalid");
+    this.restrictedPendingRoleIds.set(id,{
+      operation:frame.type,lease:this.restrictedRoleLease!
+    });
+    this.send(frame);
+  }''')
     edit(core, '''    this.restrictedRoleLease = crypto.randomUUID();''',
 '''    this.restrictedRoleLease = crypto.randomUUID();
+    this.restrictedPendingRoleIds.clear();
+    this.restrictedRoleAcks = {requests:0,deliveries:0};
     this.restrictedRoleSessionChanged?.();''')
     edit(core, '''    this.restrictedRoleRegistrations.clear();
     this.failedAuthAgents.clear();''',
 '''    this.restrictedRoleRegistrations.clear();
+    this.restrictedPendingRoleIds.clear();
+    this.restrictedRoleAcks = {requests:0,deliveries:0};
     this.restrictedRoleSessionChanged?.();
     this.failedAuthAgents.clear();''')
     edit(core, '''    if (this.isConnected()) {
@@ -134,7 +172,7 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   // Private socket state returned ONLY to the extension background.
   roleSession?: {lease: string | null; authenticatedAgent: string | null;
     registrations: Array<{dna_hash:string;agent_pubkey:string}>;
-    authenticated:boolean; isConnected:boolean};
+    authenticated:boolean; isConnected:boolean; queuedAcks?:{requests:number;deliveries:number}};
   queuedOnly?: boolean;
 }''')
     edit(offscreen, '''    if (message.type === "CONFIGURE_NETWORK") {''',
