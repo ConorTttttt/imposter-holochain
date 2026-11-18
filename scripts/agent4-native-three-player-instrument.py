@@ -89,14 +89,14 @@ replace_once(" const pathname=new URL(req.url,ORIGIN).pathname;", r"""  const pa
   }""")
 # Serve the real operator-provisioned player page from the same trusted
 # origin as the pinned manifest. Never expose the admin allowlist secret.
-replace_once("  if(pathname==='/'||pathname==='/index.html'){", r"""  if(pathname==='/browser-demo.html'){
+replace_once(" if(pathname==='/'||pathname==='/index.html'){", r"""  if(pathname==='/browser-demo.html'){
     const demoPath=path.join(ROOT,'ui/browser-demo.html');
     if(!fs.existsSync(demoPath)){res.writeHead(404);res.end('Demo UI missing');return;}
     res.writeHead(200,{'Content-Type':'text/html; charset=utf-8',
       'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
     fs.createReadStream(demoPath).pipe(res);return;
   }
-  if(pathname==='/'||pathname==='/index.html'){""")
+ if(pathname==='/'||pathname==='/index.html'){""")
 
 # Host must author the first actual Lobby through a visible browser click.
 # The signed Record is returned by the page's public "imposter:action" event,
