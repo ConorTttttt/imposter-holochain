@@ -26,13 +26,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: d9abab04559cb059e0de6c3499ed1915943fe74b
+          ref: c5cf6730b04e09a97d79b7bb2381d8a797158e5a
           path: agent2-kit
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: 64983e13f849b342aff391add08911970de0c32a
+          ref: 38f22687e3da321c65005ac3e9a1c845420f79be
+          fetch-depth: 0
           path: agent4-kit
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -49,14 +50,25 @@ jobs:
       - name: Verify independent exact source pins and unchanged HWC remote-signal rejection
         run: |
           set -euo pipefail
-          test "$(git -C agent2-kit rev-parse HEAD)" = d9abab04559cb059e0de6c3499ed1915943fe74b
-          test "$(git -C agent4-kit rev-parse HEAD)" = 64983e13f849b342aff391add08911970de0c32a
+          test "$(git -C agent2-kit rev-parse HEAD)" = c5cf6730b04e09a97d79b7bb2381d8a797158e5a
+          test "$(git -C agent4-kit rev-parse HEAD)" = 38f22687e3da321c65005ac3e9a1c845420f79be
           test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          # Only the new API document changed after Agent 4's accepted
+          # native coordinator run 44320254863 (tested d93520f57c2).
+          git -C agent4-kit diff --exit-code d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1 HEAD -- dnas/game/zomes/coordinator/game/src/lib.rs dnas/game/zomes/integrity/game_integrity/src tests/tests/full_round.rs
           test -s agent4-kit/crates/imposter-core/src/role_auth.rs
           test -s agent4-kit/dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs
           test -s agent4-kit/dnas/game/zomes/coordinator/game/src/recipient_keys.rs
           grep -Fq 'IMPOSTER-H2HC-ROLE-KEY' agent4-kit/dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs
           grep -Fq 'current_unproven: true' agent4-kit/dnas/game/zomes/coordinator/game/src/recipient_keys.rs
+          for symbol in get_authoritative_game_view commit_roles_only host_role_opening; do
+            grep -Fq "pub fn $symbol" agent4-kit/dnas/game/zomes/coordinator/game/src/lib.rs
+          done
+          for name in native-state.mjs native-authority.mjs native-authority.test.mjs; do
+            test -s "agent2-kit/compatibility/hwc-imposter-compatibility/private-role/$name"
+          done
+          grep -Fq 'get_authoritative_game_view' agent2-kit/compatibility/hwc-imposter-compatibility/private-role/native-authority.mjs
+          grep -Fq 'host_role_opening' agent2-kit/compatibility/hwc-imposter-compatibility/private-role/native-authority.mjs
           for name in installed-cell.mjs installed-native-enrollment.mjs native-enrollment.mjs trusted-receiver.mjs store.mjs request-attestation.mjs merkle.mjs apply_restricted_hwc_handler.py; do
             test -s "agent2-kit/compatibility/hwc-imposter-compatibility/private-role/$name"
           done
@@ -114,7 +126,7 @@ jobs:
         run: |
           mkdir -p acceptance-evidence
           cat > acceptance-evidence/preflight.json <<'JSON'
-          {"scope":"PINNED_GATEWAY_AND_ISOLATED_RECEIVER_CRYPTO_ONLY","agent2_source":"d9abab04559cb059e0de6c3499ed1915943fe74b","agent4_source":"64983e13f849b342aff391add08911970de0c32a","gateway_artifact_id":14428255589,"gateway_sha256":"8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f","native_fixture_sha256":"065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4","receiver_accepted":false,"role_e2e":"BLOCKED","contains_role_plaintext_or_private_keys":false}
+          {"scope":"PINNED_GATEWAY_AND_ISOLATED_RECEIVER_CRYPTO_ONLY","agent2_source":"c5cf6730b04e09a97d79b7bb2381d8a797158e5a","agent4_source":"38f22687e3da321c65005ac3e9a1c845420f79be","gateway_artifact_id":14428255589,"gateway_sha256":"8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f","native_fixture_sha256":"065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4","receiver_accepted":false,"role_e2e":"BLOCKED","contains_role_plaintext_or_private_keys":false}
           JSON
           echo '## Signed-role integration preflight' >> "$GITHUB_STEP_SUMMARY"
           echo 'Gateway binary, native vectors and Agent 2 genuine Lair fixture signing PASS only at their component boundary.' >> "$GITHUB_STEP_SUMMARY"
@@ -128,7 +140,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
   native-recipient-attestation:
-    name: Two native 0.7 conductors - signed key enrollment and DHT attestation
+    name: Native 0.7 recipient-key attestation and exact RoleCommit boundary
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -137,13 +149,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: 64983e13f849b342aff391add08911970de0c32a
+          ref: 38f22687e3da321c65005ac3e9a1c845420f79be
           fetch-depth: 0
           persist-credentials: false
       - name: Assert exact native recipient-key source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 64983e13f849b342aff391add08911970de0c32a
+          test "$(git rev-parse HEAD)" = 38f22687e3da321c65005ac3e9a1c845420f79be
           grep -Fq 'current_unproven: true' dnas/game/zomes/coordinator/game/src/recipient_keys.rs
           grep -Fq 'IMPOSTER-H2HC-ROLE-KEY' dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs
       - uses: cachix/install-nix-action@v31
@@ -155,14 +167,14 @@ jobs:
             trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
             max-jobs = 2
             cores = 2
-      - name: Compile real game WASM and original key-attestation transcript
+      - name: Compile production and forge-negative native game DNA
         timeout-minutes: 45
         run: |
           set -euo pipefail
           nix -L develop --no-write-lock-file --command bash -euo pipefail -c '
-            cargo build --locked --release --target wasm32-unknown-unknown -p game_integrity -p game
-            hc dna pack dnas/game/workdir
+            bash scripts/build-forge-dna.sh
             test -s dnas/game/workdir/game.dna
+            test -s tests/forge/game.dna
             cargo test --locked -p game_integrity recipient_keys::tests -- --nocapture
           '
       - name: Independent native signing, lookup, rotation and rejected foreign author
@@ -178,13 +190,29 @@ jobs:
           done
           grep -Fq 'RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN' "$RUNNER_TEMP/native-enrollment.log"
           mkdir -p acceptance-evidence
-          echo '{"scope":"NATIVE_TWO_CONDUCTOR_PUBLIC_ENROLLMENT","source":"64983e13f849b342aff391add08911970de0c32a","native_validation":"PASS","attested_lookup":"PASS","foreign_agent_denial":"PASS","stale_floor_denial":"PASS","global_latest_key":"UNPROVEN","browser_receipt":"BLOCKED"}' > acceptance-evidence/native.json
+          echo '{"scope":"NATIVE_TWO_CONDUCTOR_PUBLIC_ENROLLMENT","source":"38f22687e3da321c65005ac3e9a1c845420f79be","native_validation":"PASS","attested_lookup":"PASS","foreign_agent_denial":"PASS","stale_floor_denial":"PASS","global_latest_key":"UNPROVEN","browser_receipt":"BLOCKED"}' > acceptance-evidence/native.json
           echo 'NATIVE_RECIPIENT_ENROLLMENT=PASS; GLOBAL_FRESHNESS=UNPROVEN'
+      - name: Independently validate native RoleCommit and denial cases (not role delivery)
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          nix -L develop --no-write-lock-file --command cargo test --locked -p game_tests --test full_round native_game_role_commit_boundary -- --nocapture > "$RUNNER_TEMP/native-rolecommit.log" 2>&1 || {
+            echo "::error::Native RoleCommit acceptance failed (see local runner log)"; exit 1
+          }
+          for gate in NATIVE_GAME_VALID_LOBBY_AND_JOINS NATIVE_GAME_EXACT_COMMIT_INDEPENDENT_READ NATIVE_GAME_NO_SIGNAL_COMMIT_AND_IDEMPOTENT_RETRY NATIVE_GAME_WRONG_HOST_DENIED NATIVE_GAME_WRONG_LOBBY_DENIED NATIVE_GAME_WRONG_RECIPIENT_SEAT_DENIED NATIVE_GAME_STALE_COMMIT_DENIED NATIVE_GAME_MISMATCHED_JOIN_NATIVE_INVALID NATIVE_GAME_INVALID_RECORD_FAIL_CLOSED; do
+            grep -Fq "$gate=PASS" "$RUNNER_TEMP/native-rolecommit.log"
+          done
+          grep -Eq '^NATIVE_ROLE_COMMIT_ACTION=uhCkk[A-Za-z0-9_-]+' "$RUNNER_TEMP/native-rolecommit.log"
+          mkdir -p acceptance-evidence
+          echo '{"scope":"NATIVE_ROLECOMMIT_ONLY","source":"38f22687e3da321c65005ac3e9a1c845420f79be","tested_coordinator":"d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1","valid_lobby_and_joins":true,"independent_commit_read":true,"host_only_and_idempotent":true,"wrong_host_lobby_seat_and_stale_denied":true,"invalid_join_denied":true,"encrypted_role_received":false,"global_commit_finality":"UNPROVEN"}' > acceptance-evidence/rolecommit.json
+          echo 'NATIVE_ROLECOMMIT_CONTRACT=PASS; INSTALLED_HWC_RECEIPT=NOT_EXECUTED'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: agent3-role-native-attestation-${{ github.run_id }}
-          path: acceptance-evidence/native.json
+          path: |
+            acceptance-evidence/native.json
+            acceptance-evidence/rolecommit.json
           retention-days: 14
           if-no-files-found: ignore
 
@@ -196,7 +224,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: d9abab04559cb059e0de6c3499ed1915943fe74b
+          ref: c5cf6730b04e09a97d79b7bb2381d8a797158e5a
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -212,7 +240,7 @@ jobs:
       - name: Assert immutable HWC security patch and deny-only installed receiver
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = d9abab04559cb059e0de6c3499ed1915943fe74b
+          test "$(git rev-parse HEAD)" = c5cf6730b04e09a97d79b7bb2381d8a797158e5a
           test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
           python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
           python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
@@ -239,7 +267,7 @@ jobs:
           test -s hwc/packages/extension/dist-chrome/manifest.json
           test -s hwc/packages/extension/dist-chrome/background/index.js
           mkdir -p acceptance-evidence
-          echo '{"scope":"REAL_HWC_CHROME_BUILD","agent2_source":"d9abab04559cb059e0de6c3499ed1915943fe74b","restricted_role_frames":"PASS_DENY_ONLY","trusted_native_role_bridge":"BLOCKED","generic_remote_calls":"DISABLED"}' > acceptance-evidence/hwc.json
+          echo '{"scope":"REAL_HWC_CHROME_BUILD","agent2_source":"c5cf6730b04e09a97d79b7bb2381d8a797158e5a","restricted_role_frames":"PASS_DENY_ONLY","trusted_native_role_bridge":"BLOCKED","generic_remote_calls":"DISABLED"}' > acceptance-evidence/hwc.json
           echo 'REAL_HWC_RESTRICTED_ROLE_FRAME_BUILD=PASS_DENY_ONLY; TRUSTED_ROLE_BRIDGE=BLOCKED'
       - uses: actions/upload-artifact@v4
         if: always()
@@ -264,9 +292,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p acceptance-evidence
-          echo '{"scope":"THREE_INSTALLED_HWC_ROLE_ACCEPTANCE","status":"BLOCKED","gateway_queued_is_receipt":false,"guest_b_accepted":false,"guest_c_denial_executed":false,"durable_replay_executed":false,"fresh_key_confirmed":false,"native_round_authority_installed":false,"private_material_archived":false}' > acceptance-evidence/strict.json
+          echo '{"scope":"THREE_INSTALLED_HWC_ROLE_ACCEPTANCE","status":"BLOCKED","native_valid_game_state":"COMPONENT_ONLY","recipient_key_attestation":"COMPONENT_ONLY","fresh_recipient_key_confirmation":false,"gateway_delivery_enqueue":"NOT_EXECUTED","guest_b_signature_verification":"NOT_EXECUTED","guest_b_hpke_decryption":"NOT_EXECUTED","guest_b_seat_merkle_verification":"NOT_EXECUTED","guest_b_extension_local_acceptance":false,"guest_c_denial_executed":false,"wrong_host_dna_seat_commit_denied_in_browser":false,"key_epoch_rollback_denied_in_browser":false,"request_reply_correlation_in_browser":false,"durable_replay_executed":false,"revocation_pending_delivery_executed":false,"unrelated_agent_isolation_in_role_delivery":false,"gateway_queued_is_receipt":false,"private_material_archived":false}' > acceptance-evidence/strict.json
           echo "COMPONENT_STATUS: gateway=$GATEWAY_CRYPTO; native=$NATIVE_ENROLLMENT; hwc=$HWC_STAGING"
-          echo "::error::E2E_BLOCKED: Agent 2 HWC adapter intentionally returns NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE. Agent 4 DHT view is current_unproven:true. No installed-cell role receipt or native current-round bridge exists at the pinned source revisions."
+          echo "::error::E2E_BLOCKED: latest Agent 2 HWC patch still returns NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE. Agent 4 native game view exists and is observed_only, but no privileged installed receiver has decrypted a role, and no live installed recipient-key freshness confirmation was executed."
           echo 'role_queued_v1 is NOT a guest result; refusing synthetic PASS.'
           exit 1
       - uses: actions/upload-artifact@v4

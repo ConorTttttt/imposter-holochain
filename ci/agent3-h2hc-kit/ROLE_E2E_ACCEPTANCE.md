@@ -2,6 +2,31 @@
 
 **18 November 2026. Gateway-only and new integration components are being independently exercised; end-to-end browser role delivery BLOCKED.** Draft PR #6 remains Draft. No formal revision-2 protocol freeze or runtime activation is authorized. The accepted signed transcripts, key-epoch binding and HPKE bytes have not been modified.
 
+## 18 November — Agent 3 latest cross-branch integration checkpoint
+
+**Pending CI at this commit; NO E2E acceptance claimed.** The integration workflows now pin Agent 2 `c5cf6730b04e09a97d79b7bb2381d8a797158e5a` and Agent 4 `38f22687e3da321c65005ac3e9a1c845420f79be`, and preserve Agent 3's original tested three-browser instrumentation, pinned HWC upstream `0c391226e78769d44ccb4661881ed8998b15f903`, revision-2 public fixture and gateway artifact **14428255589**, executable SHA-256 **8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f**. Agent 4's earlier successful native run **44320254863** tested commit `d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1`; a GitHub commit comparison shows that the newer pin changes only `docs/agent4-native-rolecommit-game-view.md`. Preflight also tests this native-source identity with `git diff --exit-code`.
+
+The updated native job compiles both normal and forge-negative game DNA, exercises Agent 4's exact real native RoleCommit test and original signed-recipient-key enrollment test, and requires every accepted and negative native marker before publishing only safe JSON verdicts. The Agent 2 preflight imports the newer native-state/native-authority/receiver test suite in isolation, while the built HWC patch is still explicitly **DENY ONLY**. Workflow component results, if green, are **not** evidence that real installed Guest B received a role. These updated jobs have not yet produced a successful run at this new pin.
+
+### Independent encrypted-role acceptance dimensions
+
+| Stage | Latest cross-branch state | What would satisfy it |
+| --- | --- | --- |
+| Native-valid lobby/joins and RoleCommit | Previously independently PASS as separate native or three-browser tests; updated combined CI **PENDING** | Native Valid exact action and sorted signed joins retrieved independently in the running browser game |
+| Valid B key attestation | Native two-conductor test PASS at prior pin; installed B **NOT EXECUTED** | Real installed B Lair author signs, publishes and host independently validates native key action |
+| Fresh B key confirmation | **NOT EXECUTED IN BROWSER** | B fresh signed `role_request_v1`, host authenticated reply binding and durable key epoch floor |
+| Gateway enqueue | Role gateway isolated route PASS previously; **NO CURRENT ROLE DELIVERY** | Authenticated signed `role_delivery_v1` enqueued for that B session and exact correlation |
+| Guest B signature verification | **NOT EXECUTED IN INSTALLED EXTENSION** | Real HWC validates host Lair signature and typed revision-2 transcript |
+| Guest B HPKE decryption | **NOT EXECUTED IN INSTALLED EXTENSION** | Non-extractable installed B X25519 key decrypts host ciphertext |
+| Guest B seat and Merkle proof | **NOT EXECUTED IN INSTALLED EXTENSION** | Native-pinned RoleCommit, canonical signed seat, 16-byte salt, 6×32-byte siblings verified |
+| Guest B extension-local acceptance | **BLOCKED / false** | Receiver returns protected accepted result, never browser page or coordinator false provenance |
+
+**Negative E2E gates:** Guest C denial; wrong host/DNA/seat/RoleCommit; stale or rolled-back key epoch; request/reply matching; replay after a full Chromium restart; revocation during in-flight delivery; unaffected unrelated agent; sanitized logs/evidence are **NOT EXECUTED IN THE INSTALLED ROLE FLOW**. Native and isolated unit negative results must not be relabeled as these E2E results.
+
+**Identified integration blocker, not a native bug:** Agent 2's checked-in `apply_restricted_hwc_handler.py` routes ciphertext-only frames on verified WS lease but returns `NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE` in the installed background, and does not instantiate `createInstalledNativeAuthority` / `createRestrictedRoleService` with privileged installed Lair, native zome executor, sender and durable replay state. Agent 4's `get_authoritative_game_view` is available but `observed_only:true` does not prove global latest commit; native recipient key lookup remains `current_unproven:true` and needs a fresh signed request. The host-only `host_role_opening` and `commit_roles_only` exist, but no installed-host encryption or installed-guest decryption runs. **Strict CI must remain failure** until those runtime connections and all listed negative tests are actually executed. PR #6 remains **Draft**.
+
+---
+
 ## Exact source/artifact pins
 
 | Component | Immutable reference |
