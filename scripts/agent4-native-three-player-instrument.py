@@ -22,8 +22,8 @@ replace_once(
     'let context,server,artifactDir,nativeConductor,nativeRoot,guestContext,guestProfile,invalidContext,invalidProfile;',
     'let context,server,artifactDir,nativeConductor,nativeRoot,guestContext,guestProfile,invalidContext,invalidProfile,guestPage,guestCPage;'
 )
-replace_once('  const page=context.pages()[0]||await context.newPage();',
-             '  let page=context.pages()[0]||await context.newPage();')
+replace_once(' const page=context.pages()[0]||await context.newPage();',
+             ' let page=context.pages()[0]||await context.newPage();')
 replace_once('    const guestPage=guestContext.pages()[0]||await guestContext.newPage();',
              '    guestPage=guestContext.pages()[0]||await guestContext.newPage();')
 replace_once('    const invalidPage=invalidContext.pages()[0]||await invalidContext.newPage();',
