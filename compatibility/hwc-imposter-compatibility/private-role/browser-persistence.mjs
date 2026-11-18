@@ -33,10 +33,12 @@ try{
       if(phase==='restart'){
         assert.equal(result.replayDenied,true);
         assert.equal(result.rotationDenied,true);
+        assert.equal(result.revokedKeyDenied,true);
         assert.equal(result.epoch,2);
       }
     } finally {await ctx.close();}
   }
   console.log('CHROMIUM_ROLE_KEYSTORE_TWO_PROCESS_RESTART_PASS');
   console.log('CHROMIUM_NON_EXTRACTABLE_KEY_REPLAY_ROTATION_PASS');
+  console.log('CHROMIUM_PERSISTED_SIGNED_RECIPIENT_EPOCH_REVOCATION_PASS');
 } finally {await new Promise(ok=>server.close(ok));await rm(profile,{recursive:true,force:true});}
