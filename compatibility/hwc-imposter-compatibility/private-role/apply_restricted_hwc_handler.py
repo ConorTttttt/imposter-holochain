@@ -127,7 +127,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("root", type=Path)
     group = ap.add_mutually_exclusive_group()
-    group.add_argument("--write", action="store_true")
+    group.add_argument("--check", action="store_true")\n    group.add_argument("--write", action="store_true")
     group.add_argument("--patch", type=Path)
     args = ap.parse_args()
     root = args.root.resolve()
