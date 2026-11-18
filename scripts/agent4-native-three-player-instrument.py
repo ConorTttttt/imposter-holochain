@@ -274,6 +274,13 @@ replace_once('  const allP0Green=', r"""
           validation_status:t.validation_status??null,
           locally_validated:t.locally_validated??null,
           when_integrated:t.when_integrated??null})).filter(x=>wanted.has(x.op_hash)));
+        // One genuine native 0.7 validating authority with Accepted,
+        // locally_validated and integrated rows for *every exact op* suffices.
+        // Avoid an unnecessary blocking second-admin call when already proven.
+        const accepted=x=>x.validation_status==='Accepted'&&
+          x.locally_validated===true&&x.when_integrated!==null;
+        if(result.ops.every(op=>all.some(row=>
+          row.op_hash===op.op_hash&&accepted(row))))break;
       }
       const valid=x=>x.validation_status==='Accepted'&&
         x.locally_validated===true&&x.when_integrated!==null;
