@@ -1,0 +1,65 @@
+name: Preserve the accepted browser alpha gateway
+on:
+  push:
+    branches: [followup/browser-alpha-final-acceptance]
+    paths:
+      - '.github/workflows/archive-accepted-alpha-gateway.yml'
+
+concurrency:
+  group: archive-browser-alpha-gateway-14428255589
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  archive:
+    if: github.repository == 'ConorTttttt/imposter-holochain'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the original Actions artifact and green build recipe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo=ConorTttttt/imposter-holochain
+          gh api "repos/$repo/actions/artifacts/14428255589" | jq -e '
+            .id == 14428255589 and .name == "agent3-h2hc-p0-security-44304976936"
+            and .expired == false
+            and .digest == "sha256:18a28177df7017d170360845ac24e48e491194a839e6764bb331481256ec856a"
+            and .workflow_run.id == 44304976936
+            and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+          gh api "repos/$repo/actions/runs/44304976936" | jq -e '
+            .conclusion == "success" and .head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 44304976936
+          repository: ConorTttttt/imposter-holochain
+          name: agent3-h2hc-p0-security-44304976936
+          github-token: ${{ github.token }}
+          path: original
+      - name: Retain an exact, independently verified copy in an archive-only Git ref
+        run: |
+          set -euo pipefail
+          ref=refs/heads/archive/browser-alpha-gateway-14428255589
+          archive="$RUNNER_TEMP/gateway-archive"
+          tool=release/browser-alpha/gateway_archive.py
+          python3 "$tool" preserve original/role-gateway "$archive"
+          python3 "$tool" restore "$archive" "$RUNNER_TEMP/round-trip-gateway"
+          cmp original/role-gateway/h2hc-linker-linux-x86_64 "$RUNNER_TEMP/round-trip-gateway"
+          if git ls-remote --exit-code origin "$ref"; then
+            echo 'The archive ref already exists. It will never be overwritten by this job.' >&2
+            exit 1
+          else
+            test "$?" = 2
+          fi
+          binary=$(git hash-object -w "$archive/h2hc-linker-linux-x86_64.gz")
+          provenance=$(git hash-object -w "$archive/provenance.json")
+          tree=$(printf '100644 blob %s\th2hc-linker-linux-x86_64.gz\n100644 blob %s\tprovenance.json\n' "$binary" "$provenance" | git mktree)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          commit=$(git commit-tree "$tree" -m 'Archive accepted gateway from Actions artifact 14428255589')
+          git push origin "$commit:$ref"
+          echo "Durable gateway archive commit $commit"
