@@ -1,0 +1,715 @@
+diff --git a/packages/core/src/network/websocket-service.ts b/packages/core/src/network/websocket-service.ts
+--- a/packages/core/src/network/websocket-service.ts
++++ b/packages/core/src/network/websocket-service.ts
+@@ -164,6 +164,8 @@
+   // Generated ONLY after successful signed WS auth, invalidated on any close.
+   // A registration becomes trusted only after an actual server 'registered' ACK.
+   private restrictedRoleLease: string | null = null;
++  private restrictedSignedAuthSocket: WebSocket | null = null;
++  private authAttempt = 0;
+   private restrictedRoleRegistrations = new Set<string>();
+   private restrictedRoleSessionChanged: (() => void) | null = null;
+   // Ack bookkeeping is private to the live signed WebSocket. It is never
+@@ -263,11 +265,12 @@
+   }
+
+   getRestrictedRoleLease(): string | null {
+-    return this.isConnected() ? this.restrictedRoleLease : null;
++    return this.isConnected() && this.ws?.readyState === WebSocket.OPEN
++      ? this.restrictedRoleLease : null;
+   }
+
+   hasRestrictedRoleRegistration(dna: string, agent: string): boolean {
+-    return this.isConnected() &&
++    return this.getRestrictedRoleLease() !== null &&
+       this.restrictedRoleRegistrations.has(dna + ':' + agent);
+   }
+
+@@ -430,8 +433,7 @@
+       (r) => !(r.dna_hash === dna_hash && r.agent_pubkey === agent_pubkey)
+     );
+
+-    this.restrictedRoleRegistrations.delete(dna_hash + ':' + agent_pubkey);
+-    this.restrictedRoleSessionChanged?.();
++    this.removeRestrictedRoleRegistration(dna_hash, agent_pubkey);
+     if (this.isConnected()) {
+       this.send({ type: "unregister", dna_hash, agent_pubkey });
+     }
+@@ -555,15 +557,17 @@
+               r.dna_hash === message.dna_hash &&
+               r.agent_pubkey === message.agent_pubkey) &&
+               this.authenticatedAgent === message.agent_pubkey) {
+-            this.restrictedRoleRegistrations.add(message.dna_hash + ':' + message.agent_pubkey);
+-            this.restrictedRoleSessionChanged?.();
++            const key = message.dna_hash + ':' + message.agent_pubkey;
++            if (this.getRestrictedRoleLease() && !this.restrictedRoleRegistrations.has(key)) {
++              this.restrictedRoleRegistrations.add(key);
++              this.restrictedRoleSessionChanged?.();
++            }
+           }
+           break;
+
+         case "unregistered":
+           log.debug(`Agent unregistered: ${message.agent_pubkey} for ${message.dna_hash}`);
+-          this.restrictedRoleRegistrations.delete(message.dna_hash + ':' + message.agent_pubkey);
+-          this.restrictedRoleSessionChanged?.();
++          this.removeRestrictedRoleRegistration(message.dna_hash, message.agent_pubkey);
+           break;
+
+         case "signal":
+@@ -630,6 +634,8 @@
+   private authenticate(agentPubkey: string): void {
+     log.debug(`Authenticating with agent: ${agentPubkey.substring(0, 20)}...`);
+     this.pendingAuthAgent = agentPubkey;
++    this.restrictedSignedAuthSocket = null;
++    this.authAttempt++;
+     this.setState("authenticating");
+     this.send({ type: "auth", agent_pubkey: agentPubkey });
+   }
+@@ -645,7 +651,12 @@
+     this.authenticatedAgent = this.pendingAuthAgent;
+     this.pendingAuthAgent = null;
+     this.restrictedRoleRegistrations.clear();
+-    this.restrictedRoleLease = crypto.randomUUID();
++    // A restricted lease requires a Lair challenge response on this exact
++    // socket and a bearer from the authenticated gateway.
++    this.restrictedRoleLease = this.ws && this.ws === this.restrictedSignedAuthSocket &&
++      typeof message.session_token === "string" && message.session_token.length > 0
++      ? crypto.randomUUID() : null;
++    this.restrictedSignedAuthSocket = null;
+     this.restrictedPendingRoleIds.clear();
+     this.restrictedRoleAcks = {requests:0,deliveries:0};
+     this.restrictedRoleSessionChanged?.();
+@@ -673,6 +684,11 @@
+     this.authenticated = false;
+     this.authenticatedAgent = null;
+     this.options.sessionToken = "";
++    this.restrictedSignedAuthSocket = null;
++    this.restrictedRoleLease = null;
++    this.restrictedRoleRegistrations.clear();
++    this.restrictedPendingRoleIds.clear();
++    this.restrictedRoleSessionChanged?.();
+
+     // Track the failed agent and try the next one
+     if (this.pendingAuthAgent) {
+@@ -698,12 +714,20 @@
+       return;
+     }
+
++    const socket = this.ws;
++    const attempt = this.authAttempt;
++    const isCurrent = () => socket === this.ws && attempt === this.authAttempt &&
++      this.pendingAuthAgent !== null;
+     try {
+       // Decode agent pubkey from HoloHash base64 to raw bytes
+       const agentBytes = decodeHashFromBase64(this.pendingAuthAgent);
+
+       // Decode hex-encoded challenge nonce to bytes
+       const challengeHex = message.challenge;
++      if (typeof challengeHex !== "string" ||
++          !/^[0-9a-fA-F]{64}$/.test(challengeHex)) {
++        throw new Error("Invalid auth challenge");
++      }
+       const challengeBytes = new Uint8Array(
+         challengeHex.match(/.{1,2}/g)!.map((byte) => parseInt(byte, 16))
+       );
+@@ -713,11 +737,16 @@
+         agent_pubkey: agentBytes,
+         message: challengeBytes,
+       });
++      if (!isCurrent()) return;
++      if (signature.length !== 64) throw new Error("Invalid auth signature length");
+
+       // Send base64-encoded signature back
+       const signatureB64 = btoa(String.fromCharCode(...signature));
++      this.restrictedSignedAuthSocket = socket;
+       this.send({ type: "auth_challenge_response", signature: signatureB64 });
+     } catch (error) {
++      if (!isCurrent()) return;
++      this.restrictedSignedAuthSocket = null;
+       log.error("Failed to sign auth challenge:", error);
+       this.send({ type: "auth_challenge_response", signature: "" });
+     }
+@@ -1015,6 +1044,8 @@
+
+     this.authenticated = false;
+     this.authenticatedAgent = null;
++    this.pendingAuthAgent = null;
++    this.restrictedSignedAuthSocket = null;
+     this.options.sessionToken = "";
+     this.restrictedRoleLease = null;
+     this.restrictedRoleRegistrations.clear();
+@@ -1024,6 +1055,14 @@
+     this.failedAuthAgents.clear();
+     this.lastPeerCount = undefined;
+   }
++
++  private removeRestrictedRoleRegistration(dna: string, agent: string): void {
++    if (!this.restrictedRoleRegistrations.delete(dna + ':' + agent)) return;
++    this.restrictedRoleLease = this.getRestrictedRoleLease() ? crypto.randomUUID() : null;
++    this.restrictedPendingRoleIds.clear();
++    this.restrictedRoleAcks = {requests:0,deliveries:0};
++    this.restrictedRoleSessionChanged?.();
++  }
+ }
+
+ // Singleton instance for the extension
+diff --git a/packages/extension/manifest.firefox.json b/packages/extension/manifest.firefox.json
+--- a/packages/extension/manifest.firefox.json
++++ b/packages/extension/manifest.firefox.json
+@@ -47,7 +47,7 @@
+   "browser_specific_settings": {
+     "gecko": {
+       "id": "holochain@holo.host",
+-      "strict_min_version": "128.0"
++      "strict_min_version": "130.0"
+     }
+   }
+ }
+diff --git a/packages/extension/src/background/base-executor.ts b/packages/extension/src/background/base-executor.ts
+--- a/packages/extension/src/background/base-executor.ts
++++ b/packages/extension/src/background/base-executor.ts
+@@ -241,8 +241,10 @@
+     this.wsService.onStateChange((state: ConnectionState) => {
+       // A bearer belongs to the current authenticated WebSocket lifecycle.
+       if (state !== "connected" || !this.wsService?.isAuthenticated()) {
++        const hadSession = this.sessionToken !== null;
+         this.sessionToken = null;
+         this.publishService?.setSessionToken("");
++        if (hadSession) this.onLinkerSessionToken(null);
+       }
+       logNetwork.info(`WebSocket state: ${state}`);
+       if (this.wsStateChangeCallback) {
+@@ -276,12 +278,16 @@
+     this.wsService.onSessionToken((token) => {
+       logNetwork.info("Received session token from linker auth");
+       this.sessionToken = token;
++      this.publishService?.setSessionToken(token);
+       this.onLinkerSessionToken(token);
+       this.sessionTokenChangeCallback?.(token);
+     });
+
++    this.onWebSocketCreated(this.wsService);
+     this.wsService.connect();
+   }
++
++  protected onWebSocketCreated(_service: WebSocketNetworkService): void {}
+
+   // ============================================================================
+   // Protected: publishing
+@@ -332,10 +338,10 @@
+   // ============================================================================
+
+   /**
+-   * Called when the linker WebSocket auth provides a new session token.
++   * Called when the linker WebSocket gains or loses a session token.
+    * Override to propagate token to workers or other execution contexts.
+    */
+-  protected onLinkerSessionToken(_token: string): void {
++  protected onLinkerSessionToken(_token: string | null): void {
+     // Default: no-op. Firefox overrides to forward to worker.
+   }
+
+diff --git a/packages/extension/src/background/firefox-direct-executor.ts b/packages/extension/src/background/firefox-direct-executor.ts
+--- a/packages/extension/src/background/firefox-direct-executor.ts
++++ b/packages/extension/src/background/firefox-direct-executor.ts
+@@ -21,6 +21,7 @@
+   WsStateInfo,
+ } from "../lib/zome-executor";
+ import type { ZomeCallRequest } from "@hwc/core/ribosome";
++import type { WebSocketNetworkService } from "@hwc/core/network";
+ import { BaseExecutor } from "./base-executor";
+ import { encode, decode } from "@msgpack/msgpack";
+ import { getHappContextStorage } from "../lib/happ-context-storage";
+@@ -36,6 +37,65 @@
+ const logZome = createLogger("ZomeCall");
+
+ export class FirefoxDirectExecutor extends BaseExecutor {
++  private roleHandlers?: {
++    receive(frame: string, lease: string): void;
++    invalidate(): void;
++    pulse(): void;
++  };
++  private rolePulseTimer?: ReturnType<typeof setInterval>;
++
++  setRestrictedRoleHandlers(handlers: NonNullable<FirefoxDirectExecutor["roleHandlers"]>): void {
++    this.roleHandlers = handlers;
++  }
++
++  getRestrictedRoleState() {
++    return this.wsService?.getRestrictedRoleState();
++  }
++
++  async getWebSocketState(): Promise<WsStateInfo> {
++    const state = await super.getWebSocketState();
++    return { ...state, hasSession: state.hasSession && !!this.wsService?.getRestrictedRoleLease() };
++  }
++
++  sendRestrictedRole(
++    frame: Parameters<WebSocketNetworkService["sendRestrictedRole"]>[0],
++    lease: string,
++  ): { success: true } {
++    const socket = this.wsService;
++    if (!socket || socket.getRestrictedRoleLease() !== lease ||
++        !["role_request_v1", "role_delivery_v1"].includes(frame?.type)) {
++      throw new Error("Private role session revoked or operation denied");
++    }
++    socket.sendRestrictedRole(frame);
++    return { success: true };
++  }
++
++  unregisterAgent(dna: string, agent: string): void {
++    this.wsService?.unregisterAgent(dna, agent);
++  }
++
++  protected onWebSocketCreated(socket: WebSocketNetworkService): void {
++    socket.onRestrictedRole((frame, lease) => {
++      if (this.wsService === socket && socket.getRestrictedRoleLease() === lease) {
++        this.roleHandlers?.receive(frame, lease);
++      }
++    });
++    socket.onRestrictedRoleSessionChanged(() => {
++      if (this.wsService !== socket) return;
++      this.roleHandlers?.invalidate();
++      if (this.rolePulseTimer !== undefined) clearInterval(this.rolePulseTimer);
++      this.rolePulseTimer = undefined;
++      if (socket.getRestrictedRoleState().registrations.length && socket.getRestrictedRoleLease()) {
++        this.roleHandlers?.pulse();
++        this.rolePulseTimer = setInterval(() => {
++          if (this.wsService === socket && socket.getRestrictedRoleLease()) {
++            this.roleHandlers?.pulse();
++          }
++        }, 4500);
++      }
++    });
++  }
++
+   // --- Worker state ---
+   private worker: Worker | null = null;
+   private workerReady = false;
+@@ -99,11 +159,11 @@
+   // Hook: linker session token propagation to worker
+   // ============================================================================
+
+-  protected onLinkerSessionToken(token: string): void {
++  protected onLinkerSessionToken(token: string | null): void {
+     if (this.workerReady) {
+       this.sendToWorker("CONFIGURE_NETWORK", {
+         linkerUrl: this.linkerUrl,
+-        sessionToken: this.sessionToken,
++        sessionToken: token,
+       }).catch((err: unknown) => logNetwork.error("Worker token update failed:", err));
+     }
+   }
+diff --git a/packages/extension/src/background/index.ts b/packages/extension/src/background/index.ts
+--- a/packages/extension/src/background/index.ts
++++ b/packages/extension/src/background/index.ts
+@@ -53,7 +53,7 @@
+   buildRecords,
+ } from "@hwc/core";
+ import { encodeHashToBase64, hashFrom32AndType, HoloHashType, type AgentPubKey, type CellId } from "@holochain/client";
+-// Bundled only into the Chrome background IIFE. These JS modules are never
++// Bundled only into the extension background IIFE. These JS modules are never
+ // included in content scripts, page inject, a public API or chrome.storage.
+ // @ts-ignore - pinned private-role JS module has no declaration file
+ import { createInstalledHwcRoleRuntime } from "../private-role/hwc-installed-runtime.mjs";
+@@ -102,25 +102,39 @@
+ }
+
+ const executor: ZomeExecutor = createExecutor();
++const firefoxRoleExecutor = executor instanceof FirefoxDirectExecutor ? executor : null;
+
+ // Lazy because the browser can be locked or lack a real installed game cell.
+ // The privileged service is never an exported page or runtime RPC handler.
+ let installedRoleRuntime: any = null;
+ function getInstalledRoleRuntime(): any {
+-  if (typeof __BROWSER__ === "undefined" || __BROWSER__ !== "chrome")
+-    throw new Error("restricted private role requires Chromium offscreen");
++  if (!firefoxRoleExecutor && (typeof __BROWSER__ === "undefined" || __BROWSER__ !== "chrome"))
++    throw new Error("restricted private role executor unavailable");
+   if (installedRoleRuntime) return installedRoleRuntime;
+   const identical = (a: Uint8Array, b: Uint8Array) =>
+     a.length===b.length && a.every((v,i)=>v===b[i]);
++  const getRoleContext = async (id: string) => {
++    const context = await happContextManager.getContext(id);
++    if (firefoxRoleExecutor && context &&
++        !(await permissionManager.checkPermission(context.domain))?.granted) return null;
++    return context;
++  };
+   installedRoleRuntime = createInstalledHwcRoleRuntime({
+-    contextManager: happContextManager,
+-    getLair: getLairClient,
++    contextManager: {
++      getContext: getRoleContext,
++      listContexts: () => happContextManager.listContexts(),
++    },
++    getLair: firefoxRoleExecutor ? async () => {
++      await ensureUnlocked();
++      return getLairClient();
++    } : getLairClient,
+     encodeHash: encodeHashToBase64,
+     canonicalHash: (b: Uint8Array,kind: string) =>
+       new Uint8Array(hashFrom32AndType(b.slice(3,35),
+         kind==="dna" ? HoloHashType.Dna :
+         kind==="agent" ? HoloHashType.Agent : HoloHashType.Action)),
+     probeSocket: async () => {
++      if (firefoxRoleExecutor) return firefoxRoleExecutor.getRestrictedRoleState();
+       await executor.initialize();
+       const response = await chrome.runtime.sendMessage({
+         target:"offscreen",type:"PRIVATE_ROLE_SESSION_PROBE"
+@@ -129,6 +143,7 @@
+       return response.roleSession;
+     },
+     sendSocket: async ({frame,lease}: any) => {
++      if (firefoxRoleExecutor) return firefoxRoleExecutor.sendRestrictedRole(frame, lease);
+       await executor.initialize();
+       return chrome.runtime.sendMessage({
+         target:"offscreen",type:"PRIVATE_ROLE_SEND_FRAME",frame,lease
+@@ -139,7 +154,7 @@
+         "get_authoritative_game_view","host_role_opening",
+         "publish_signed_recipient_key_attestation","lookup_recipient_key","commit_roles_only"
+       ].includes(fn)) throw new Error("private native function not allowlisted");
+-      const ctx = await happContextManager.getContext(contextId);
++      const ctx = await getRoleContext(contextId);
+       const a=toUint8Array(ctx?.agentPubKey || []),d=toUint8Array(ctx?.dnas?.[0]?.hash || []);
+       const requestedDna=toUint8Array(cellId[0]);
+       const requestedAgent=toUint8Array(cellId[1]);
+@@ -154,11 +169,10 @@
+         payload:new Uint8Array(encode(normalizeUint8Arrays(payload))),
+         provenance:a,dnaManifest:undefined,
+       };
+-      // The private host_role_opening return crosses only extension-owned
+-      // offscreen -> background IPC and is NEVER serialized to a content tab.
++      // The private opening stays in the extension-owned executor and background.
+       const output=await executor.executeZomeCall(contextId,request);
+       if (output.signals?.length) throw new Error("role-only native emitted signals");
+-      const fresh=await happContextManager.getContext(contextId);
++      const fresh=await getRoleContext(contextId);
+       if(!fresh?.enabled || !identical(a,toUint8Array(fresh.agentPubKey)))
+         throw new Error("installed native identity revoked during execution");
+       return normalizeUint8Arrays(output.result);
+@@ -173,6 +187,18 @@
+   });
+   return installedRoleRuntime;
+ }
++
++// The Firefox socket and receiver share the extension background. Only
++// callbacks from the current socket enter the shared role runtime.
++firefoxRoleExecutor?.setRestrictedRoleHandlers({
++  receive: (frame, lease) => {
++    void getInstalledRoleRuntime().receiveSocketFrame(frame, lease).catch(() => {});
++  },
++  invalidate: () => installedRoleRuntime?.invalidate(),
++  pulse: () => {
++    void getInstalledRoleRuntime().pulse().catch(() => {});
++  },
++});
+
+ // Linker configuration - tracked in background for status reporting and health checks.
+ // Executor gets its own copy via configureNetwork().
+@@ -235,6 +261,11 @@
+       // Re-initialize executor and forward config to worker
+       await executor.initialize();
+       await executor.configureNetwork({ linkerUrl: saved.linkerUrl });
++      if (firefoxRoleExecutor) {
++        for (const context of await happContextManager.listContexts()) {
++          if (context.enabled) await registerContextAgentsWithLinker(context);
++        }
++      }
+
+       // Sync WS state and push to any connected ports. configureNetwork starts
+       // the WS connection but it may not have completed yet -- that's OK because
+@@ -259,6 +290,8 @@
+  * Register all agents from a hApp context with the linker via the executor
+  */
+ async function registerContextAgentsWithLinker(context: HappContext): Promise<void> {
++  if (firefoxRoleExecutor &&
++      !(await permissionManager.checkPermission(context.domain))?.granted) return;
+   const agentPubKey = toUint8Array(context.agentPubKey);
+   const agentPubKeyB64 = encodeHashToBase64(agentPubKey);
+
+@@ -267,6 +300,15 @@
+     const dnaHashB64 = encodeHashToBase64(dnaHash);
+     await executor.registerAgent(dnaHashB64, agentPubKeyB64);
+   }
++}
++
++function unregisterFirefoxRoleContext(context: HappContext | undefined | null): void {
++  if (!firefoxRoleExecutor || !context) return;
++  const agent = encodeHashToBase64(toUint8Array(context.agentPubKey));
++  for (const dna of context.dnas) {
++    firefoxRoleExecutor.unregisterAgent(encodeHashToBase64(toUint8Array(dna.hash)), agent);
++  }
++  installedRoleRuntime?.invalidate();
+ }
+
+ // Wire executor event callbacks
+@@ -759,6 +801,10 @@
+       return createErrorResponse(message.id, "hApp is disabled");
+     }
+
++    if (firefoxRoleExecutor && context.domain !== origin) {
++      return createErrorResponse(message.id, "HAPP_ORIGIN_MISMATCH");
++    }
++
+     // Extract zome call parameters (support both old and new format)
+     const zome_name = requestPayload.zome || requestPayload.zome_name;
+     const fn_name = requestPayload.function || requestPayload.fn_name;
+@@ -782,6 +828,8 @@
+         return createErrorResponse(message.id, "PRIVATE_ROLE_ORIGIN_OR_PAYLOAD_DENIED");
+       try {
+         const role = await getInstalledRoleRuntime().readOwnRole(context.id);
++        if (firefoxRoleExecutor && !(await permissionManager.checkPermission(origin))?.granted)
++          return createErrorResponse(message.id, "PRIVATE_ROLE_UNAVAILABLE");
+         return createSuccessResponse(message.id, role);
+       } catch {
+         return createErrorResponse(message.id, "PRIVATE_ROLE_UNAVAILABLE");
+@@ -1101,7 +1149,9 @@
+       return createErrorResponse(message.id, "contextId is required");
+     }
+
++    const context = firefoxRoleExecutor ? await happContextManager.getContext(contextId) : null;
+     await happContextManager.uninstallHapp(contextId);
++    unregisterFirefoxRoleContext(context);
+     logHapp.info(`Uninstalled hApp ${contextId}`);
+
+     return createSuccessResponse(message.id, { uninstalled: true });
+@@ -1163,6 +1213,10 @@
+     }
+
+     await happContextManager.setContextEnabled(contextId, true);
++    if (firefoxRoleExecutor) {
++      const context = await happContextManager.getContext(contextId);
++      if (context?.enabled) await registerContextAgentsWithLinker(context);
++    }
+     logHapp.info(`Enabled context ${contextId}`);
+
+     return createSuccessResponse(message.id, { enabled: true });
+@@ -1187,7 +1241,9 @@
+       return createErrorResponse(message.id, "contextId is required");
+     }
+
++    const context = firefoxRoleExecutor ? await happContextManager.getContext(contextId) : null;
+     await happContextManager.setContextEnabled(contextId, false);
++    unregisterFirefoxRoleContext(context);
+     logHapp.info(`Disabled context ${contextId}`);
+
+     return createSuccessResponse(message.id, { disabled: true });
+@@ -1372,6 +1428,7 @@
+         }
+       }
+
++      if (firefoxRoleExecutor && linkerConfig) firefoxRoleExecutor.triggerReauth();
+       return createSuccessResponse(message.id, { unlocked: true });
+     } else {
+       return createErrorResponse(message.id, "Incorrect passphrase");
+@@ -1395,6 +1452,10 @@
+   if (blocked) return blocked;
+   try {
+     await lairLock.lock();
++    if (firefoxRoleExecutor) {
++      installedRoleRuntime?.invalidate();
++      await executor.disconnectLinker();
++    }
+
+     // Wipe master key from encrypted storage
+     if (encryptedStorage) {
+@@ -1789,6 +1850,10 @@
+       return createErrorResponse(message.id, "Authorization request not found or expired");
+     }
+
++    if (firefoxRoleExecutor) {
++      const context = await happContextManager.getContextForDomain(origin);
++      if (context?.enabled) await registerContextAgentsWithLinker(context);
++    }
+     return createSuccessResponse(message.id, { granted: true });
+   } catch (error) {
+     return createErrorResponse(
+@@ -1874,6 +1939,9 @@
+     }
+
+     await permissionManager.revokePermission(origin);
++    if (firefoxRoleExecutor) {
++      unregisterFirefoxRoleContext(await happContextManager.getContextForDomain(origin));
++    }
+     logAuth.info(`Site ${origin} disconnected from Holo Web Conductor`);
+
+     return createSuccessResponse(message.id, { revoked: true });
+@@ -2644,6 +2712,7 @@
+
+     // Forward messages targeted to offscreen (e.g., from popup)
+     if (rawMessage.target === "offscreen") {
++      if (firefoxRoleExecutor) return false;
+       // Never forward privileged role-probe/send or unrestricted native executor IPC.
+       if (["PRIVATE_ROLE_SESSION_PROBE","PRIVATE_ROLE_SEND_FRAME","EXECUTE_ZOME_CALL"].includes(rawMessage.type))
+         return false;
+diff --git a/packages/extension/src/offscreen/ribosome-worker.ts b/packages/extension/src/offscreen/ribosome-worker.ts
+--- a/packages/extension/src/offscreen/ribosome-worker.ts
++++ b/packages/extension/src/offscreen/ribosome-worker.ts
+@@ -184,6 +184,7 @@
+
+   // Fallback to in-memory if OPFS failed
+   if (!usingOpfs) {
++    if (firefoxMode) throw new Error("Firefox HWC requires persistent OPFS SQLite");
+     log.warn('OPFS not available, using in-memory database (data will not persist)');
+     db = new sqlite3.oo1.DB(':memory:');
+   }
+@@ -1592,12 +1593,12 @@
+     switch (type) {
+       case 'INIT':
+         // Initialize SQLite
++        firefoxMode = payload.firefoxMode === true;
+         await initSQLite();
+
+-        if (payload.firefoxMode) {
++        if (firefoxMode) {
+           // Firefox mode: no SharedArrayBuffer, worker does sync XHR directly
+           // and signing uses a worker-local LairClient (reads keys from shared IndexedDB)
+-          firefoxMode = true;
+           log.info('Firefox mode enabled - direct sync XHR + local LairClient');
+
+           // Create worker-local LairClient backed by the same IndexedDB as background,
+diff --git a/packages/extension/src/background/firefox-restricted-role.test.ts b/packages/extension/src/background/firefox-restricted-role.test.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/extension/src/background/firefox-restricted-role.test.ts
+@@ -0,0 +1,139 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { encodeHashToBase64, hashFrom32AndType, HoloHashType } from "@holochain/client";
++import { FirefoxDirectExecutor } from "./firefox-direct-executor";
++
++const dna = encodeHashToBase64(hashFrom32AndType(new Uint8Array(32).fill(4), HoloHashType.Dna));
++const agent = encodeHashToBase64(hashFrom32AndType(new Uint8Array(32).fill(5), HoloHashType.Agent));
++const other = encodeHashToBase64(hashFrom32AndType(new Uint8Array(32).fill(6), HoloHashType.Agent));
++const sockets: TestSocket[] = [];
++const registration = { dna_hash: dna, agent_pubkey: agent };
++const frame = {
++  type: "role_request_v1" as const,
++  envelope: {
++    dna_hash: dna, sender_agent: agent, recipient_agent: agent,
++    message_id: "ab".repeat(16),
++  },
++  signature: "test-adapter-fixture",
++};
++
++class TestSocket {
++  static CONNECTING = 0;
++  static OPEN = 1;
++  readyState = TestSocket.CONNECTING;
++  sent: Array<{ type: string; signature?: string }> = [];
++  onopen: (() => void) | null = null;
++  onmessage: ((event: { data: string }) => void) | null = null;
++  constructor() { sockets.push(this); }
++
++  open() {
++    this.readyState = TestSocket.OPEN;
++    this.onopen?.();
++  }
++
++  message(payload: object) {
++    this.onmessage?.({ data: JSON.stringify(payload) });
++  }
++
++  send(raw: string) { this.sent.push(JSON.parse(raw)); }
++  close() { this.readyState = 3; }
++}
++
++let executor: FirefoxDirectExecutor;
++const receive = vi.fn();
++const invalidate = vi.fn();
++const pulse = vi.fn();
++
++async function connect() {
++  await executor.configureNetwork({ linkerUrl: "https://gateway.example" });
++  await executor.registerAgent(dna, agent);
++  const socket = sockets.at(-1)!;
++  socket.open();
++  return socket;
++}
++
++async function authenticate(socket: TestSocket) {
++  socket.message({ type: "auth_challenge", challenge: "ab".repeat(32) });
++  await vi.waitFor(() => expect(socket.sent).toContainEqual({
++    type: "auth_challenge_response",
++    signature: btoa(String.fromCharCode(...new Uint8Array(64).fill(1))),
++  }));
++  socket.message({ type: "auth_ok", session_token: "test-session" });
++}
++
++describe("Firefox background role transport", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++    vi.stubGlobal("WebSocket", TestSocket);
++    vi.stubGlobal("chrome", { storage: { local: {} } });
++    executor = new FirefoxDirectExecutor();
++    executor.onSignRequest(async () => ({ success: true, signature: Array(64).fill(1) }));
++    executor.setRestrictedRoleHandlers({ receive, invalidate, pulse });
++  });
++
++  afterEach(async () => {
++    await executor.disconnectLinker();
++    sockets.length = 0;
++    vi.unstubAllGlobals();
++  });
++
++  it("requires a challenge response before granting any restricted role lease", async () => {
++    const socket = await connect();
++    socket.message({ type: "auth_ok", session_token: "test-session" });
++    socket.message({ type: "registered", ...registration });
++    socket.message(frame);
++    expect(executor.getRestrictedRoleState()?.lease).toBeNull();
++    expect((await executor.getWebSocketState()).hasSession).toBe(false);
++    expect(receive).not.toHaveBeenCalled();
++    expect(pulse).not.toHaveBeenCalled();
++  });
++
++  it("binds role callbacks and sends to the acknowledged authenticated cell", async () => {
++    const socket = await connect();
++    await authenticate(socket);
++    const lease = executor.getRestrictedRoleState()?.lease;
++    expect(lease).toBeTruthy();
++    socket.message(frame);
++    socket.message({ type: "registered", ...registration, agent_pubkey: other });
++    expect(receive).not.toHaveBeenCalled();
++    expect(() => executor.sendRestrictedRole(frame, lease!)).toThrow();
++
++    socket.message({ type: "registered", ...registration });
++    socket.message({ ...frame, envelope: { ...frame.envelope, recipient_agent: other } });
++    expect(receive).not.toHaveBeenCalled();
++    socket.message(frame);
++    expect(receive).toHaveBeenCalledOnce();
++    expect(receive).toHaveBeenCalledWith(JSON.stringify(frame), lease);
++    expect(executor.sendRestrictedRole(frame, lease!)).toEqual({ success: true });
++
++    socket.readyState = 2;
++    expect(executor.getRestrictedRoleState()?.lease).toBeNull();
++    expect(() => executor.sendRestrictedRole(frame, lease!)).toThrow();
++  });
++
++  it("invalidates revoked registrations and accepts only a new lease after reauthentication", async () => {
++    const before = await connect();
++    await authenticate(before);
++    before.message({ type: "registered", ...registration });
++    const oldLease = executor.getRestrictedRoleState()!.lease!;
++    invalidate.mockClear();
++    executor.unregisterAgent(dna, agent);
++    expect(invalidate).toHaveBeenCalledOnce();
++    expect(() => executor.sendRestrictedRole(frame, oldLease)).toThrow();
++    before.message(frame);
++    expect(receive).not.toHaveBeenCalled();
++
++    await executor.registerAgent(dna, agent);
++    executor.triggerReauth();
++    const after = sockets.at(-1)!;
++    expect(after).not.toBe(before);
++    after.open();
++    await authenticate(after);
++    after.message({ type: "registered", ...registration });
++    const newLease = executor.getRestrictedRoleState()!.lease!;
++    expect(newLease).toBeTruthy();
++    expect(newLease).not.toBe(oldLease);
++    expect(() => executor.sendRestrictedRole(frame, oldLease)).toThrow();
++    after.message(frame);
++    expect(receive).toHaveBeenCalledWith(JSON.stringify(frame), newLease);
++  });
++});

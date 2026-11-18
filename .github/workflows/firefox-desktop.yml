@@ -1,0 +1,69 @@
+name: Firefox Desktop HWC development build
+
+on:
+  pull_request:
+    branches: [followup/browser-alpha-operator]
+    paths:
+      - '.github/workflows/firefox-desktop.yml'
+      - 'ci/alpha-operator/firefox-desktop.mjs'
+      - 'compatibility/hwc-imposter-compatibility/**'
+      - 'release/browser-alpha/**'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Build and reproduce the unsigned Firefox desktop package
+        run: |
+          bash release/browser-alpha/build-firefox-extension.sh hwc "$RUNNER_TEMP/firefox-desktop"
+          npm --prefix hwc run build:firefox --workspace @hwc/extension
+          PYTHONDONTWRITEBYTECODE=1 python3 release/browser-alpha/package-firefox.py build \
+            hwc/packages/extension/dist-firefox "$RUNNER_TEMP/firefox-rebuild"
+          cmp "$RUNNER_TEMP/firefox-desktop/SHA256SUMS" "$RUNNER_TEMP/firefox-rebuild/SHA256SUMS"
+          cmp "$RUNNER_TEMP/firefox-desktop/firefox-desktop-hwc.zip" "$RUNNER_TEMP/firefox-rebuild/firefox-desktop-hwc.zip"
+      - name: Test Firefox socket isolation and shared private role validation
+        run: |
+          npm --prefix hwc run test --workspace @hwc/extension -- \
+            src/background/firefox-direct-executor.test.ts src/background/firefox-restricted-role.test.ts \
+            --minWorkers=1 --maxWorkers=2
+          node --import "$PWD/hwc/node_modules/fake-indexeddb/auto/index.mjs" --test \
+            compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
+      - name: Save unsigned Firefox Desktop development build
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-desktop-hwc-development
+          path: ${{ runner.temp }}/firefox-desktop/
+          if-no-files-found: error
+      - uses: browser-actions/setup-firefox@v1
+        id: firefox
+      - name: Load the stock add-on and exercise it in Firefox Desktop
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.36.0 -R mozilla/geckodriver \
+            -p geckodriver-v0.36.0-linux64.tar.gz -D "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/geckodriver-v0.36.0-linux64.tar.gz" -C "$RUNNER_TEMP" geckodriver
+          "$RUNNER_TEMP/geckodriver" --host 127.0.0.1 --port 4444 &
+          driver=$!
+          trap 'kill "$driver"' EXIT
+          curl --retry 6 --retry-connrefused --retry-delay 1 --fail --silent http://127.0.0.1:4444/status
+          node ci/alpha-operator/firefox-desktop.mjs hwc
