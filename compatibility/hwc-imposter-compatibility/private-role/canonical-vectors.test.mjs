@@ -9,7 +9,7 @@ test('native Holochain 0.7 fixed request and delivery transcripts, including opt
  for(const c of fixture.cases){
   const packet=fromRoleFrame({type:c.operation,envelope:{
    version:1,domain:WIRE_DOMAIN,dna_hash:fixture.dna,sender_agent:fixture[c.sender],recipient_agent:fixture[c.recipient],
-   role_commit:fixture.commit,seat:1,recipient_key_id:'11'.repeat(16),message_id:c.message_id,
+   role_commit:fixture.commit,seat:1,recipient_key_id:c.key_id,recipient_key_epoch:c.epoch,message_id:c.message_id,
    created_at_ms:1700000000000,expires_at_ms:1700000030000,in_reply_to:c.in_reply_to,hpke_enc:c.enc,ciphertext:c.ciphertext
   },signature:c.signature});
   assert.equal(hex(internalsForTests.deliveryTranscript(packet)),c.signed_bytes_hex);
