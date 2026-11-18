@@ -123,34 +123,6 @@ replace_once("""   const v=await page.evaluate(async(seed)=>{
      return await window.holochain.callZome({zome_name:'game',fn_name:'create_lobby',
       payload:{code:seed,player_count:3,impostor_count:1,task_target:1,display_name:'HWC CI Host'}});
    },m.network_seed);""", """   const v=await demoUIAction(page,'create','HWC CI Host',m.network_seed);""")
-# In the existing verified native integration, the first B and C joins
-# must now each originate from a real UI click rather than page.evaluate.
-replace_once("""    const rec=await pg.evaluate(async(display_name)=>window.holochain.callZome({
-       zome_name:'game',fn_name:'join_lobby',payload:{display_name}}),label);""", """    const rec=await demoUIAction(pg,'join',label,m.network_seed);""")
-# The full-round security tests are independently evidenced, never run by
-# this positive DHT integration. Add a distinct genuine UI assertion.
-replace_once("""   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',""", r"""   await step('PLAYER_FACING_THREE_CHROMIUM_UI',async()=>{
-     const pages={host:page,guest_b:guestPage,guest_c:guestCPage};
-     evidence.player_facing_ui={};
-     for(const [label,pg] of Object.entries(pages)){
-       await pg.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
-       await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
-       await pg.waitForFunction(()=>{
-         const names=[...document.querySelectorAll('#seat-list li span')]
-           .map(el=>el.textContent);
-         return names.includes('HWC CI Host')&&names.includes('Guest B')&&
-           names.includes('Guest C')&&document.querySelector('#seat-count')?.textContent==='3/3';
-       },{timeout:60000});
-       const names=await pg.locator('#seat-list li span').allTextContents();
-       const seats=await pg.locator('#seat-list li small').allTextContents();
-       must(names.length===3&&new Set(names).size===3&&seats.length===3,
-         'UI did not render three unique names and seat labels');
-       evidence.player_facing_ui[label]={status:'ready',names,seats,
-         no_developer_console_required:true};
-     }
-   });
-   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',""")
-
 # The old native test's negative probe is retained and reported, but the
 # gameplay acceptance path deliberately does not require native invalid-op
 # publication; that remains Agent 3's separate unresolved security gate.
@@ -252,8 +224,7 @@ replace_once('  const allP0Green=', r"""
   const recordHash=rec=>publicHoloHash(rec?.signed_action?.hashed?.hash ??
     rec?.signedAction?.hashed?.hash ?? rec?.signed_action?.hash ?? rec?.actionHash);
   const join=async(pg,label)=>{
-    const rec=await pg.evaluate(async(display_name)=>window.holochain.callZome({
-      zome_name:'game',fn_name:'join_lobby',payload:{display_name}}),label);
+    const rec=await demoUIAction(pg,'join',label,m.network_seed);
     const action=restoreSignedCreateAction(rec?.signed_action?.hashed?.content);
     const actionHash=recordHash(rec);
     must(actionHash&&publicHoloHash(hashAction(action))===actionHash,
@@ -449,6 +420,26 @@ replace_once('  const allP0Green=', r"""
     evidence.networked_players.host_restart={agent:host,
       shared_lobby_action:lobbyActionHash,restored_browser_profile:true,
       same_networked_seat:true,view:after};
+  });
+  await step('PLAYER_FACING_THREE_CHROMIUM_UI',async()=>{
+    const pages={host:page,guest_b:guestPage,guest_c:guestCPage};
+    evidence.player_facing_ui={};
+    for(const [label,pg] of Object.entries(pages)){
+      await pg.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
+      await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
+      await pg.waitForFunction(()=>{
+        const names=[...document.querySelectorAll('#seat-list li span')]
+          .map(el=>el.textContent);
+        return names.includes('HWC CI Host')&&names.includes('Guest B')&&
+          names.includes('Guest C')&&document.querySelector('#seat-count')?.textContent==='3/3';
+      },null,{timeout:60000});
+      const names=await pg.locator('#seat-list li span').allTextContents();
+      const seats=await pg.locator('#seat-list li small').allTextContents();
+      must(names.length===3&&new Set(names).size===3&&seats.length===3,
+        'UI did not render three unique names and seat labels');
+      evidence.player_facing_ui[label]={status:'ready',names,seats,
+        no_developer_console_required:true};
+    }
   });
   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',
     'Two separate real join_lobby PlayerJoin Create actions, exact native Valid DhtOps, '+
