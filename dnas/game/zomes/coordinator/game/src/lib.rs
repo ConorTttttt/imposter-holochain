@@ -393,7 +393,7 @@ pub fn resend_role(seat: u16) -> ExternResult<()> {
     let proof = role_proof(&layers, &sealed.salt, seat);
     authorize_role_delivery(
         host.get_raw_39(), host.get_raw_39(), key.get_raw_39(), key.get_raw_39(),
-        rc.1.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.1.seats.get(seat as usize).map(|k| &k.get_raw_39()[..]),
         rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
         seat, role, &proof,
     ).map_err(role_delivery_error)?;
@@ -449,7 +449,7 @@ pub fn provide_role(_: ()) -> ExternResult<Option<RoleLeafResp>> {
     // Lair-authenticated caller. HWC currently rejects inbound remote calls.
     authorize_role_delivery(
         host.get_raw_39(), host.get_raw_39(), caller.get_raw_39(), caller.get_raw_39(),
-        rc.1.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.1.seats.get(seat as usize).map(|k| &k.get_raw_39()[..]),
         rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
         seat, role, &proof,
     ).map_err(role_delivery_error)?;
@@ -486,7 +486,7 @@ pub fn request_role(_: ()) -> ExternResult<Option<u8>> {
         let proof = role_proof(&build_layers(&sealed.roles, &sealed.salt), &sealed.salt, seat as u16);
         authorize_role_delivery(
             host.get_raw_39(), host.get_raw_39(), my_key.get_raw_39(), my_key.get_raw_39(),
-            rc.1.seats.get(seat).map(|k| k.get_raw_39().as_slice()),
+            rc.1.seats.get(seat).map(|k| &k.get_raw_39()[..]),
             rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
             seat as u16, role, &proof,
         ).map_err(role_delivery_error)?;
@@ -519,7 +519,7 @@ pub fn request_role(_: ()) -> ExternResult<Option<u8>> {
     // for a different seat or previous commitment is never sufficient.
     authorize_role_delivery(
         host.get_raw_39(), host.get_raw_39(), my_key.get_raw_39(), my_key.get_raw_39(),
-        rc.1.seats.get(leaf.seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.1.seats.get(leaf.seat as usize).map(|k| &k.get_raw_39()[..]),
         leaf.role_commit.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
         leaf.seat, leaf.role, &leaf.proof,
     ).map_err(role_delivery_error)?;
@@ -1294,7 +1294,7 @@ pub fn recv_remote_signal(sig: GameSignal) -> ExternResult<()> {
             authorize_role_delivery(
                 sender.get_raw_39(), host.get_raw_39(),
                 recipient.get_raw_39(), local_agent.get_raw_39(),
-                rc.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+                rc.seats.get(seat as usize).map(|k| &k.get_raw_39()[..]),
                 role_commit.get_raw_39(), accepted_hash.get_raw_39(), &rc.merkle_root,
                 seat, role, &proof,
             ).map_err(role_delivery_error)?;
@@ -1407,7 +1407,7 @@ fn my_role_leaf() -> ExternResult<RoleLeafResp> {
     let local_agent = me()?;
     authorize_role_delivery(
         host.get_raw_39(), host.get_raw_39(), local_agent.get_raw_39(), local_agent.get_raw_39(),
-        rc.seats.get(leaf.seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.seats.get(leaf.seat as usize).map(|k| &k.get_raw_39()[..]),
         leaf.role_commit.get_raw_39(), accepted_hash.get_raw_39(), &rc.merkle_root,
         leaf.seat, leaf.role, &leaf.proof,
     ).map_err(role_delivery_error)?;
