@@ -34,6 +34,18 @@ Object.defineProperty(globalThis, "__agent2RolePrivateCI", {
 background.write_text(source,encoding="utf-8")
 
 src=bridge.read_text(encoding="utf-8")
+# The pinned gateway deliberately REQUIRES separate operator-granted role
+# capabilities. Native conductors retain their old non-role allowlist.
+# Give only the genuine HWC host delivery and Guest B request privileges.
+host_caps="""capabilities:['dht_read','dht_write','k2'],
+       label:'ephemeral-real-HWC-host'"""
+guest_caps="""capabilities:['dht_read','dht_write','k2'],label:'ephemeral-isolated-HWC-guest'"""
+assert src.count(host_caps)==1, "real host allowlist grant anchor drift"
+assert src.count(guest_caps)==1, "real Guest B allowlist grant anchor drift"
+src=src.replace(host_caps, """capabilities:['dht_read','dht_write','k2','game_role_deliver'],
+       label:'ephemeral-real-HWC-host'""", 1)
+src=src.replace(guest_caps, """capabilities:['dht_read','dht_write','k2','game_role_request'],
+        label:'ephemeral-isolated-HWC-guest'""", 1)
 anchor="  const chromeOptions={headless:false,viewport:{width:1100,height:800},"
 assert src.count(anchor)==1, f"agent4 native bridge role receipt insertion anchor: {src.count(anchor)}"
 insertion=r"""
