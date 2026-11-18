@@ -91,7 +91,7 @@ async function connectHwc() {
 
 async function readFixture() {
   const things = await window.holochain.callZome({
-    zome: 'ziptest', function: 'get_things', payload: null,
+    zome: 'ziptest', function: 'get_things', payload: 'firefox-desktop-smoke',
   });
   return Array.isArray(things) && things.length === 0;
 }
