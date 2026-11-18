@@ -21,6 +21,8 @@
 use hdi::prelude::*;
 mod rooms;
 pub use rooms::*;
+mod recipient_keys;
+pub use recipient_keys::*;
 
 use imposter_core::{
     impostor_count, outcome as win_outcome, reveal_matches_root, tally, tally_tie_breaker,
@@ -430,6 +432,7 @@ pub enum EntryTypes {
     #[entry_type(visibility = "private")]
     SealedRoles(SealedRoles),
     RoomPointer(RoomPointer),
+    RecipientKeyAttestation(RecipientKeyAttestation),
 }
 
 #[hdk_link_types]
@@ -438,6 +441,7 @@ pub enum LinkTypes {
     /// enumerate the whole game.
     GameToEntry,
     RoomToPointer,
+    RecipientKeyByAgent,
 }
 
 // ---------------------------------------------------------------- validate
@@ -459,6 +463,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
         | FlatOp::CreateRecord(OpRecord::CreateLink { action, link_type }) => match link_type {
             LinkTypes::GameToEntry => validate_create_link(&action),
             LinkTypes::RoomToPointer => validate_pointer_link(&action),
+            LinkTypes::RecipientKeyByAgent => validate_recipient_key_link(&action),
         },
         FlatOp::Link(OpLink::DeleteLink { .. }) | FlatOp::CreateRecord(OpRecord::DeleteLink { .. }) => {
             invalid("links are append-only")
@@ -566,6 +571,7 @@ fn validate_entry(
     let author = action.author().clone();
     match entry {
         EntryTypes::RoomPointer(p) => validate_pointer(p, &author),
+        EntryTypes::RecipientKeyAttestation(a) => validate_recipient_key(a, &author, action.timestamp()),
         EntryTypes::Lobby(l) => {
             if l.code.is_empty() {
                 return invalid("lobby code is empty");

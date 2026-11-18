@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Imposter — Browser lobby</title>
+<style>
+:root{color-scheme:dark;font:16px/1.5 system-ui,-apple-system,sans-serif;background:#0b1120;color:#eef4ff}
+*{box-sizing:border-box}body{margin:0;padding:24px}main{max-width:780px;margin:auto}
+h1{margin:.2em 0;font-size:2rem;letter-spacing:.06em}p{color:#adbed8}
+header{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap}
+.badge{border:1px solid #546e99;padding:6px 12px;border-radius:50px;font-size:.87rem}
+.badge[data-status=ready]{color:#7be4ad;border-color:#348458}
+.badge[data-status=error]{color:#ffb3b3;border-color:#b64848}
+.panel{border:1px solid #344563;border-radius:16px;background:#152037;padding:22px;margin:20px 0}
+label{display:block;margin:0 0 15px;color:#d6e2f8;font-weight:600}
+input{width:100%;padding:12px 14px;margin-top:6px;border-radius:8px;border:1px solid #587095;background:#0b1426;color:#fff;font:inherit}
+input:focus-visible,button:focus-visible{outline:3px solid #8bbcff}
+.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
+button{padding:12px 20px;background:#3378e9;border:0;border-radius:8px;color:white;font:700 1rem system-ui;cursor:pointer}
+button.secondary{background:#304461}button:disabled{opacity:.4;cursor:not-allowed}
+#notice{min-height:24px;margin-top:12px;color:#bcd2fa}#notice[data-error=true]{color:#ffb3b3}
+#seat-list{display:grid;gap:10px;list-style:none;padding:0}
+#seat-list li{display:flex;justify-content:space-between;gap:10px;border:1px solid #405273;border-radius:8px;padding:10px 14px}
+#my-role{font-weight:600;color:#e3edff}
+small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
+</style>
+</head>
+<body><main>
+<header><div><h1>IMPOSTER</h1><p>Secure HWC browser lobby · pre-provisioned demo</p></div>
+<span id="connection-state" class="badge" data-status="connecting" role="status">Connecting…</span></header>
+<section class="panel" aria-label="Join or host lobby">
+<label for="player-name">Your display name<input id="player-name" maxlength="24" autocomplete="nickname" placeholder="Player name"></label>
+<label for="room-code">Lobby code<input id="room-code" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Paste the host's lobby code"></label>
+<div class="actions">
+<button id="create-lobby" disabled>Create lobby</button>
+<button id="join-lobby" disabled>Join lobby</button>
+<button id="retry-connection" class="secondary" type="button">Retry connection</button>
+</div>
+<p id="notice" aria-live="polite">Checking the Holochain browser extension…</p>
+</section>
+<section class="panel" aria-label="Lobby players">
+<h2>Lobby <span id="seat-count">0/3</span></h2>
+<p id="lobby-phase">Waiting for verified network state…</p>
+<ol id="seat-list" aria-live="polite"></ol>
+</section>
+<section class="panel" aria-label="Game phase and your private role">
+<h2>Round status</h2>
+<p id="round-state" aria-live="polite">Waiting for verified game phase…</p>
+<p id="my-role" aria-live="polite">Not assigned — roles stay private until the host deals.</p>
+</section>
+<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. This page never imports another player's keys or exposes session credentials. Encrypted guest role delivery and full-round play remain disabled until independently accepted.</small></p>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id);
+const me=$('player-name'),code=$('room-code'),notice=$('notice'),badge=$('connection-state');
+const create=$('create-lobby'),join=$('join-lobby'),phase=$('lobby-phase'),list=$('seat-list');
+let hc=null,meta=null,identity=null,busy=false,poll=null;
+let verifiedRole=null,roleScope=null,roleBusy=false,roleAttemptAt=0,connectionEpoch=0;
+const toBytes=v=>{
+ if(v instanceof Uint8Array)return v;
+ if(Array.isArray(v))return Uint8Array.from(v);
+ if(v&&Array.isArray(v.data))return Uint8Array.from(v.data);
+ if(v&&typeof v==='object'){
+  const keys=Object.keys(v).sort((a,b)=>Number(a)-Number(b));
+  if(keys.length===39&&keys.every((k,i)=>k===String(i)))return Uint8Array.from(keys.map(k=>v[k]));
+ }
+ throw Error('The Holochain extension returned an invalid identity.');
+};
+const holoHash=v=>{
+ const b=toBytes(v);if(b.length!==39)throw Error('The Holochain identity is incomplete.');
+ return 'u'+btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+};
+function setStatus(status,text){badge.dataset.status=status;badge.textContent=text;}
+function message(text,error=false){notice.dataset.error=String(error);notice.textContent=text;}
+const errorText=e=>{
+ const text=String(e?.message||e||'Unknown error');
+ if(/no lobby|not found/i.test(text))return 'Lobby not found yet. Check the code or ask the host to create it.';
+ if(/game full/i.test(text))return 'This lobby is full.';
+ if(/already started/i.test(text))return 'This game has already started.';
+ if(/network|socket|connect|time.?out|auth|session|fetch/i.test(text))
+   return 'Connection unavailable. Check gateway access and try Retry connection.';
+ return text.slice(0,220);
+};
+function updateButtons(){
+ const ready=Boolean(hc&&meta&&identity&&!busy);
+ const valid=code.value.trim()===meta?.network_seed;
+ create.disabled=!ready||!valid||identity!==meta.host_agent_pub_key;
+ join.disabled=!ready||!valid;
+}
+async function init(){
+ connectionEpoch++;clearInterval(poll);poll=null;busy=true;hc=null;identity=null;
+ verifiedRole=null;roleScope=null;roleBusy=false;roleAttemptAt=0;
+ $('my-role').textContent='Not assigned — roles stay private until the host deals.';
+ $('round-state').textContent='Waiting for verified game phase…';
+ setStatus('connecting','Connecting…');updateButtons();message('Connecting to the HWC extension…');
+ try{
+  // Extension content scripts can arrive after the page's module executes.
+  // Wait for real injection; never substitute a mock or an insecure client.
+  for(let attempt=0;attempt<100&&!window.holochain?.isWebConductor;attempt++)
+   await new Promise(resolve=>setTimeout(resolve,200));
+  if(!window.holochain?.isWebConductor)throw Error('Holochain browser extension not detected. Install the verified HWC extension.');
+  meta=await fetch('/deployment.json',{cache:'no-store'}).then(r=>{
+   if(!r.ok)throw Error('The verified hApp deployment manifest is unavailable.');
+   return r.json();
+  });
+  if(!meta?.network_seed||!meta?.dna_hash||!meta?.host_agent_pub_key)throw Error('Invalid deployment manifest.');
+  if(!code.value)code.value=meta.network_seed;
+  hc=window.holochain;await hc.connect();
+  identity=holoHash(hc.myPubKey);
+  const info=await hc.appInfo('imposter-browser-poc');
+  if(info?.status!=='enabled'||info.cells?.length!==1)throw Error('Install the verified Imposter hApp in this browser profile first.');
+  if(holoHash(info.cells[0][0])!==meta.dna_hash||holoHash(info.cells[0][1])!==identity)
+   throw Error('This browser has a different DNA or identity. Install the correct host-bound hApp.');
+  let connected,session;
+  for(let attempt=0;attempt<70;attempt++){
+   connected=await hc.getConnectionStatus();
+   session=await hc.getNetworkStatus();
+   if(connected?.authenticated===true&&connected?.wsHealthy===true&&session?.hasSession===true)break;
+   await new Promise(resolve=>setTimeout(resolve,200));
+  }
+  if(connected?.authenticated!==true||connected?.wsHealthy!==true||session?.hasSession!==true)
+   throw Error('H2HC gateway session missing. Ask the operator to authorize this browser identity.');
+  setStatus('ready','Securely connected');
+  message(identity===meta.host_agent_pub_key?'Host identity verified. Create or recover your lobby.':'Guest identity verified. Enter the code and join.');
+  busy=false;updateButtons();await refresh();
+  poll=setInterval(()=>void refresh(),1200);
+ }catch(e){busy=false;hc=null;setStatus('error','Connection unavailable');message(errorText(e),true);updateButtons();}
+}
+function renderState(state){
+ const players=Array.isArray(state?.players)?state.players:[];
+ const currentPhase=state?.code===meta?.network_seed?state?.phase:'lobby';
+ const labels={lobby:'Lobby',playing:'Playing',meeting:'Meeting',ended:'Ended'};
+ $('round-state').textContent='Phase: '+(labels[currentPhase]||'Waiting for verified state');
+ const scope=JSON.stringify([meta?.dna_hash,identity,state?.code,state?.my_seat,Boolean(state?.roles_dealt)]);
+ if(scope!==roleScope){verifiedRole=null;roleScope=scope;roleAttemptAt=0;}
+ // Public native-validated reveal, or private local game::request_role
+ // after its strict recipient, seat, commitment and Merkle proof checks.
+ if((state?.my_role===0||state?.my_role===1)&&state?.my_seat!=null)
+  verifiedRole=state.my_role;
+ const label=verifiedRole===0?'Crewmate':verifiedRole===1?'Impostor':null;
+ $('my-role').textContent=label?'Your verified role: '+label:
+  state?.roles_dealt&&state?.my_seat!=null
+   ?'Awaiting verified private role delivery; lobby remains available.'
+   :'Not assigned — roles stay private until the host deals.';
+ if(!label&&state?.roles_dealt&&state?.my_seat!=null&&currentPhase!=='lobby')
+  void fetchOwnVerifiedRole(scope);
+ $('seat-count').textContent=players.length+'/'+(state?.player_count??3);
+ phase.textContent=state?.code===meta.network_seed
+  ?'Lobby '+String(state.phase||'lobby')+' · '+(state.my_seat==null?'No seat yet':'Your seat: '+(Number(state.my_seat)+1))
+  :'Host has not created this lobby yet.';
+ list.replaceChildren();
+ const count=state?.player_count??3;
+ for(let i=0;i<count;i++){
+  const p=players.find(p=>p.seat===i)||players[i];
+  const li=document.createElement('li'),name=document.createElement('span'),seat=document.createElement('small');
+  name.textContent=p?.name||'Open seat';
+  seat.textContent='Seat '+(i+1)+(p?.is_host?' · Host':'');
+  li.append(name,seat);list.append(li);
+ }
+}
+async function fetchOwnVerifiedRole(scope){
+ if(roleBusy||Date.now()-roleAttemptAt<12000||!hc)return;
+ const client=hc,epoch=connectionEpoch;
+ roleBusy=true;roleAttemptAt=Date.now();
+ try{
+  // Unverified HWC remote calls remain disabled. Only the coordinator may
+  // return a verified role. Never cache role material in shared browser storage.
+  const role=await client.callZome({zome_name:'game',fn_name:'request_role',payload:null});
+  if(client===hc&&epoch===connectionEpoch&&scope===roleScope&&(role===0||role===1)){
+   verifiedRole=role;
+   $('my-role').textContent='Your verified role: '+(role===0?'Crewmate':'Impostor');
+  }
+ }catch{
+  // Expected when encrypted transport is unavailable: no insecure fallback,
+  // role logging, or lobby interruption.
+ }finally{if(epoch===connectionEpoch)roleBusy=false;}
+}
+async function refresh(){
+ if(!hc||busy)return;
+ try{
+  const state=await hc.callZome({zome_name:'game',fn_name:'get_game_state',payload:null});
+  renderState(state);
+ }catch(e){message(errorText(e),true);}
+}
+async function act(kind){
+ if(!hc||busy||!meta)return;
+ if(code.value.trim()!==meta.network_seed){message('This browser is installed for a different lobby code. Ask the host for the exact code.',true);return;}
+ if(kind==='create'&&identity!==meta.host_agent_pub_key){message('Only the host can create this lobby.',true);return;}
+ const name=me.value.trim().slice(0,24)||'Player';
+ me.value=name;busy=true;updateButtons();message(kind==='create'?'Creating lobby…':'Joining lobby…');
+ try{
+  const record=await hc.callZome({zome_name:'game',fn_name:kind==='create'?'create_lobby':'join_lobby',
+   payload:kind==='create'
+    ?{code:meta.network_seed,player_count:3,impostor_count:1,task_target:1,display_name:name}
+    :{display_name:name}});
+  window.dispatchEvent(new CustomEvent('imposter:action',{detail:{kind,record}}));
+  message(kind==='create'?'Lobby ready. Share the room code with your guests.':'Joined. Your seat is persisted by your Lair identity.');
+ }catch(e){message(errorText(e),true);}
+ finally{busy=false;updateButtons();await refresh();}
+}
+create.addEventListener('click',()=>void act('create'));
+join.addEventListener('click',()=>void act('join'));
+$('retry-connection').addEventListener('click',()=>void init());
+code.addEventListener('input',updateButtons);
+void init();
+</script>
+</body></html>

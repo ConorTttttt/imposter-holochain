@@ -1,0 +1,136 @@
+name: "Agent 4 — real pinned Holochain WASM/hApp packaging (non-deployable)"
+on:
+  push:
+    branches:
+      - feature/browser-compatibility-harness
+    paths:
+      - ".github/workflows/browser-poc-real-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-poc-real-build-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Pinned Nix 0.7 / Rust WASM / hc dna + app pack"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BROWSER_POC_IDENTITY_SOURCE: SYNTHETIC_CI_FIXTURE
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Fetch complete pinned history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix with pinned Holonix binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+      - name: Record exact pins, machine, Nix settings, and cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git merge-base --is-ancestor 111e6a44795e6572ed01191a98245ed723788c12 HEAD
+          git diff --exit-code -- flake.nix flake.lock Cargo.toml Cargo.lock
+          cat /etc/os-release
+          df -h .
+          free -h
+          nix --version
+          nix config show | grep -E 'substituters|trusted-public-keys|max-jobs|cores' || true
+          sha256sum Cargo.lock flake.lock
+      - name: Resolve pinned Nix toolchain with detailed build/download logs
+        shell: bash
+        timeout-minutes: 36
+        run: |
+          set -euo pipefail
+          echo "::group::Pinned Nix dev-shell toolchain resolution"
+          timeout --signal=TERM --kill-after=60s 2100s \
+            nix -L develop --no-write-lock-file --command bash -c \
+              'set -e; node --version; cargo --version; rustc --version; hc --version; hc dna hash --help; command -v wasm-opt' \
+            2>&1 | tee nix-preflight.log
+          echo "::endgroup::"
+      - name: Compile real Rust WASMs; pack DNA and provisioned hApp
+        shell: bash
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          # This is a synthetic HoloHash-shaped public key. NO HWC agent controls
+          # it; output MUST NEVER be described as install-ready for actual gameplay.
+          SYNTHETIC_HOST="$(node --input-type=module -e "import{randomBytes}from'node:crypto';process.stdout.write('u'+Buffer.concat([Buffer.from([0x84,0x20,0x24]),randomBytes(36)]).toString('base64url'))")"
+          SEED="$(sh scripts/browser-poc-seed.sh "$SYNTHETIC_HOST")"
+          echo 'SYNTHETIC HOST — NO HWC KEY OWNERSHIP — NOT DEPLOYABLE'
+          echo "build source commit: $GITHUB_SHA"
+          timeout --signal=TERM --kill-after=60s 2520s \
+            nix -L develop --no-write-lock-file --command bash scripts/browser-poc-build.sh "$SEED" \
+            2>&1 | tee browser-poc-build.log
+          OUT="$(sed -n 's/^Artifact: //p' browser-poc-build.log | tail -1)"
+          [[ -n "$OUT" && -d "$OUT" ]] || { echo 'NO OUTPUT DIRECTORY RETURNED' >&2; exit 1; }
+          timeout --signal=TERM --kill-after=60s 120s \
+            nix -L develop --no-write-lock-file --command bash scripts/browser-poc-verify.sh "$OUT" \
+            2>&1 | tee browser-poc-verify.log
+          node --input-type=module - "$OUT/deployment.json" <<'JS'
+          import fs from 'node:fs';
+          const m=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+          if(m.host_identity_source!=='SYNTHETIC_CI_FIXTURE' || m.deployment_ready!==false ||
+             m.runtime_validation!=='NOT_RUN' || m.signature_status!=='UNSIGNED')
+            throw Error('artifact is improperly marked deployment-ready');
+          console.log('Real DNA hash:',m.dna_hash);
+          console.log('Real hApp SHA-256:',m.happ_bundle_sha256);
+          console.log('Real WASM SHA-256:',JSON.stringify(m.wasm_sha256));
+          console.log('P0 synthetic package PASS; NO HWC INSTALLATION TEST RUN');
+          JS
+          cat > "$OUT/NOT_DEPLOYABLE-SYNTHETIC-HOST-IDENTITY.txt" <<'EOF'
+          Actual Imposter Rust WASMs and Holochain bundles, but SYNTHETIC host AgentPubKey
+          with no matching HWC keypair. This is a packaging fixture, NOT a deployable
+          demo or evidence of successful HWC installation, genesis, or networking.
+          EOF
+          cp nix-preflight.log browser-poc-build.log browser-poc-verify.log "$OUT/"
+          {
+            echo "### Real Holochain 0.7.0 P0 packaging (SYNTHETIC host, NOT DEPLOYABLE)"
+            echo "Source commit: $GITHUB_SHA"
+            echo "Artifact directory: $OUT"
+            echo 'HWC install/genesis/cap grants: NOT RUN'
+            echo 'Extract full DNA/hApp/WASM hashes from deployment.json in the artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Nix/compile logs even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-poc-nix-build-logs
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            nix-preflight.log
+            browser-poc-build.log
+            browser-poc-verify.log
+      - name: Upload actual DNA and provisioned hApp — SYNTHETIC NON-DEPLOYABLE
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-poc-real-WASM-and-hApp-NOT-DEPLOYABLE
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            target/browser-poc/*/app/*.happ
+            target/browser-poc/*/app/*.dna
+            target/browser-poc/*/app/*.yaml
+            target/browser-poc/*/dna/*.dna
+            target/browser-poc/*/dna/*.wasm
+            target/browser-poc/*/dna/*.yaml
+            target/browser-poc/*/deployment.json
+            target/browser-poc/*/SHA256SUMS
+            target/browser-poc/*/browser-poc-*.log
+            target/browser-poc/*/nix-preflight.log
+            target/browser-poc/*/NOT_DEPLOYABLE-SYNTHETIC-HOST-IDENTITY.txt

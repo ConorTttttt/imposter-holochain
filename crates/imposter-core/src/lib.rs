@@ -10,6 +10,7 @@
 
 pub mod crisis;
 pub mod merkle;
+pub mod role_auth;
 pub mod roles;
 pub mod tally;
 pub mod vote;
