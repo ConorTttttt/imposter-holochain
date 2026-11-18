@@ -124,3 +124,18 @@ three stages: (1) independent cryptographic and protected-store tests;
 **Release decision:** current isolated crypto/keystore and native enrollment
 building blocks are NOT a completed encrypted three-player game or
 browser↔desktop role interoperability. Keep PRs #4/#5/#6 Draft.
+
+## 18 Nov — tightened actual-entry contract (Agent 2 only)
+
+`native-state.mjs` now checks an extension-only native reader response
+`{dna,phase,roles_dealt,lobby:{action,author,entry},roleCommit:{action,author,entry}}`.
+Here `entry` fields are **actual** Lobby (`code,player_count,impostor_count,task_target`)
+and RoleCommit (`lobby,merkle_root,player_count,impostor_count,seats,joins`)
+fields. No `Lobby.round`, `RoleCommit.round`, invented `active`, or
+page-supplied `nativeValidated` is used. The **native** reader must select
+current action hashes and establish native Valid status for both typed Create
+records and canonical PlayerJoin records, conflict absence, and consistent
+`get_game_state.phase/roles_dealt`; a JS contract validator alone is not a
+native Valid result. Agent 4 has not yet supplied this reader, so the HWC
+handler remains deny-only. Signed published enrollment action hash and
+lookup action hash must now agree byte-for-byte before success.

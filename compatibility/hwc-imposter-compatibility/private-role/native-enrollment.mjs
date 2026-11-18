@@ -10,8 +10,11 @@ const bytes=x=>x instanceof Uint8Array?x:Array.isArray(x)?Uint8Array.from(x):nul
 const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((v,i)=>v===b[i]);
 export async function validateObservedEnrollment(nativeResult,{dna,recipient,now=Date.now()}){
  if(nativeResult?.status!=='observed'||nativeResult.current_unproven!==true||
-    !nativeResult.view||nativeResult.view.action===undefined)
+    !nativeResult.view)
    throw Error('native recipient enrollment missing or globally unproven');
+ const action=bytes(nativeResult.view.action);
+ if(!action||action.length!==39||action[0]!==0x84||action[1]!==0x29||action[2]!==0x24)
+   throw Error('native recipient enrollment action hash missing or invalid');
  const a=nativeResult.view.attestation;
  if(!a||!eq(bytes(a.dna),dna)||!eq(bytes(a.agent),recipient))
    throw Error('native recipient DNA or author mismatch');
@@ -21,5 +24,5 @@ export async function validateObservedEnrollment(nativeResult,{dna,recipient,now
    notBefore:a.not_before_ms,notAfter:a.not_after_ms,signature:bytes(a.signature)
  };
  await verifyKeyAttestation(attestation,{dna,agent:recipient,now});
- return {attestation,action:nativeResult.view.action,currentUnproven:true};
+ return {attestation,action,currentUnproven:true};
 }

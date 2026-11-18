@@ -18,6 +18,7 @@ import {openForCell} from './hpke.mjs';
 import {encodeAttestationBody,decodeAttestationBody} from './request-attestation.mjs';
 import {validateObservedEnrollment} from './native-enrollment.mjs';
 import {verifyRoleOpening,encodeRoleOpening} from './merkle.mjs';
+import {requireCurrentRoleState} from './native-state.mjs';
 const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
 const full=(a,p)=>a instanceof Uint8Array&&a.length===39&&p.every((v,i)=>v===a[i]);
 const D=[0x84,0x2d,0x24],A=[0x84,0x20,0x24],H=[0x84,0x29,0x24];
@@ -38,21 +39,9 @@ function unchanged(session,cell,lease){
  if(sessionLease(session,cell)!==lease)throw Error('role transport revoked or reauthenticated');
 }
 function currentGame(state,cell){
- const lobby=state?.lobby,commit=state?.commit;
- // The source of state, not a "nativeValidated" field, MUST be the privileged
- // native-validated authority adapter. These assertions additionally protect
- // against the wrong room, substituted host, unseated recipients, and old round.
- if(!full(lobby?.action,H)||!full(lobby?.author,A)||!full(lobby?.host,A)||
-    !full(commit?.action,H)||!full(commit?.author,A)||!full(commit?.lobby,H)||
-    !eq(lobby.host,lobby.author)||!eq(commit.author,lobby.host)||
-    !eq(commit.lobby,lobby.action)||!Array.isArray(commit.seats)||
-    !commit.seats.every(a=>full(a,A))||commit.seats.length<1||
-    commit.seats.length>64||!(commit.merkleRoot instanceof Uint8Array)||
-    commit.merkleRoot.length!==32||!Number.isSafeInteger(lobby.round)||
-    lobby.round<1||commit.round!==lobby.round||state.currentRound!==lobby.round||
-    state.active!==true||!eq(state.dna,cell.dna))
-   throw Error('missing current host-authored native game state');
- return {lobby,commit};
+ // The response is selected by the extension's installed-cell-only native
+ // reader. Agent 4's existing get_game_state cannot supply this proof.
+ return requireCurrentRoleState(state,cell);
 }
 function currentSeat(game,agent,seat){
  if(!Number.isInteger(seat)||seat<0||seat>=game.commit.seats.length||
@@ -106,10 +95,15 @@ export function createRestrictedRoleService(s){
        sign:(pub,b)=>s.lair.signByPubKey(pub,b)});
      unchanged(s.session,cell,lease);
      if(typeof s.session?.sendRoleFrame!=='function')throw Error('restricted H2HC relay unavailable');
-     await s.session.sendRoleFrame(toRoleFrame(request));
-     unchanged(s.session,cell,lease);
-     outboundRequests.set(key(cell.agent,game.commit.action,seat),{
-       id:request.messageId,lease,expiresAt:request.expiresAt});
+     const pendingKey=key(cell.agent,game.commit.action,seat);
+     if(outboundRequests.has(pendingKey))throw Error('outstanding signed recipient request exists');
+     // Install correlation before socket send so a fast reply cannot beat
+     // registration. On failure, tear it down; do not report receipt for ACK.
+     outboundRequests.set(pendingKey,{id:request.messageId,lease,expiresAt:request.expiresAt});
+     try {
+       await s.session.sendRoleFrame(toRoleFrame(request));
+       unchanged(s.session,cell,lease);
+     } catch(e) {outboundRequests.delete(pendingKey);throw e;}
      return {requestSent:true,roleAvailable:false};
    },
    /** Host can send ONLY after an authenticated, independently signed,
@@ -124,6 +118,9 @@ export function createRestrictedRoleService(s){
      const k=key(recipient,game.commit.action,seat),request=incomingRequests.get(k);
      if(!request||request.lease!==lease||Date.now()>request.expiresAt)
        throw Error('fresh signed recipient request required; DHT current is unproven');
+     // Consume before asynchronous crypto/network operations: concurrent
+     // sendRole calls must not reuse one live signed recipient request.
+     incomingRequests.delete(k);
      const payload=encodeRoleOpening(role,roleSalt,path);
      await verifyRoleOpening({payload,seat,root:game.commit.merkleRoot});
      const attestation=await discover(cell,recipient,lease);
@@ -138,7 +135,6 @@ export function createRestrictedRoleService(s){
      if(typeof s.session?.sendRoleFrame!=='function')throw Error('restricted H2HC relay unavailable');
      await s.session.sendRoleFrame(toRoleFrame(packet));
      unchanged(s.session,cell,lease);
-     incomingRequests.delete(k);
      return {queuedOnly:true};
    },
    /** Exclusive WS callback: no public chrome.runtime/page relay to this API.

@@ -23,13 +23,24 @@ export async function publishInstalledRecipientKey({
  const published=await native.publishSignedRecipientKey(contextId,entry);
  if(!published?.action||!published?.attestation)
    throw Error('native enrollment did not return signed action and entry');
+ const publishedAction=published.action instanceof Uint8Array?published.action:
+   Array.isArray(published.action)?Uint8Array.from(published.action):null;
+ if(!publishedAction||publishedAction.length!==39||
+    publishedAction[0]!==0x84||publishedAction[1]!==0x29||publishedAction[2]!==0x24)
+   throw Error('native enrollment returned invalid action hash');
+ const signed=published.attestation;
+ if(!eq(signed.dna,a.dna)||!eq(signed.agent,a.agent)||
+    !eq(signed.key_id,a.keyId)||!eq(signed.x25519_public_key,a.publicKey)||
+    !eq(signed.signature,a.signature)||signed.epoch!==a.epoch||
+    signed.not_before_ms!==a.notBefore||signed.not_after_ms!==a.notAfter)
+   throw Error('native published action does not match locally signed key');
  // Host-side independently native-validated lookup and immutable action
  // must agree. The DHT view is NOT considered globally newest.
  const response=await native.lookupRecipientKey(contextId,{
    recipient:a.agent,min_epoch:a.epoch,min_key_id:a.keyId
  });
  const observed=await validateObservedEnrollment(response,{dna,recipient:a.agent,now});
- if(!eq(observed.attestation.keyId,a.keyId)||
+ if(!eq(observed.action,publishedAction)||!eq(observed.attestation.keyId,a.keyId)||
     !eq(observed.attestation.publicKey,a.publicKey)||
     !eq(observed.attestation.signature,a.signature)||
     observed.attestation.epoch!==a.epoch)

@@ -6,6 +6,7 @@ import {attestInstalledCell} from './installed-cell.mjs';
 import {createRestrictedRoleService} from './trusted-receiver.mjs';
 import {encodeRoleOpening,verifyRoleOpening} from './merkle.mjs';
 import {publishInstalledRecipientKey} from './installed-native-enrollment.mjs';
+import {requireCurrentRoleState} from './native-state.mjs';
 const utf8=s=>new TextEncoder().encode(s);
 const cat=(...a)=>{const o=new Uint8Array(a.reduce((n,x)=>n+x.length,0));let k=0;for(const x of a){o.set(x,k);k+=x.length;}return o;};
 const sha=async b=>new Uint8Array(await crypto.subtle.digest('SHA-256',b));
@@ -52,7 +53,9 @@ function session(dna,agent,origin){
    revoke:()=>{live=false;epoch++;}, reconnect:()=>{live=true;epoch++;}};
 }
 async function fixture(){
- const d=dna(1),host=await identity(),b=await identity(),c=await identity(),proof=await roleProof();
+ const d=dna(1),ids=await Promise.all([identity(),identity(),identity()]);
+ ids.sort((x,y)=>Buffer.compare(x.agent,y.agent));
+ const [host,b,c]=ids,proof=await roleProof();
  const storeB=new Keys(),storeHost=new Keys(),stored=await storeB.rotateCell(d,b.agent,1);
  const hostCell=await storeHost.rotateCell(d,host.agent,1);
  const now=Date.now(),att=await attestKey({dna:d,agent:b.agent,epoch:stored.epoch,
@@ -61,10 +64,13 @@ async function fixture(){
  const hostAtt=await attestKey({dna:d,agent:host.agent,epoch:hostCell.epoch,
    keyId:hostCell.keyId,publicKey:hostCell.publicKey,sign:host.lair.signByPubKey,now});
  await storeHost.installCellAttestation(d,host.agent,hostAtt);
- const game={dna:d,currentRound:3,active:true,
-   lobby:{action:hash(1),author:host.agent,host:host.agent,round:3},
-   commit:{action:hash(2),author:host.agent,lobby:hash(1),round:3,
-     seats:[host.agent,b.agent,c.agent],merkleRoot:proof.root}};
+ const game={dna:d,phase:'playing',roles_dealt:true,
+   lobby:{action:hash(1),author:host.agent,
+     entry:{code:'TESTROOM',player_count:3,impostor_count:1,task_target:4}},
+   roleCommit:{action:hash(2),author:host.agent,
+     entry:{lobby:hash(1),player_count:3,impostor_count:1,
+       seats:[host.agent,b.agent,c.agent],joins:[hash(3),hash(4),hash(5)],
+       merkle_root:proof.root}}};
  const observed=(a)=>({status:'observed',current_unproven:true,
    view:{action:hash(11),attestation:{
      dna:a.dna,agent:a.agent,key_id:a.keyId,x25519_public_key:a.publicKey,
@@ -123,13 +129,13 @@ test('native wrong round/host/seat and revoked session deny before plaintext dis
  await f.hostSvc.receiveFromSocket(f.bSession.sent[0]);
  await f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path});
  const frame=f.hostSession.sent[0];
- f.game.currentRound=4;
- await assert.rejects(f.guestSvc.receiveFromSocket(frame),/current host-authored/);
- f.game.currentRound=3;f.game.commit.author=f.c.agent;
- await assert.rejects(f.guestSvc.receiveFromSocket(frame),/current host-authored/);
- f.game.commit.author=f.host.agent;f.game.commit.seats[1]=f.c.agent;
- await assert.rejects(f.guestSvc.receiveFromSocket(frame),/seat/);
- f.game.commit.seats[1]=f.b.agent;f.bSession.revoke();
+ f.game.phase='ended';
+ await assert.rejects(f.guestSvc.receiveFromSocket(frame),/committed phase/);
+ f.game.phase='playing';f.game.roleCommit.author=f.c.agent;
+ await assert.rejects(f.guestSvc.receiveFromSocket(frame),/entry mismatch/);
+ f.game.roleCommit.author=f.host.agent;f.game.roleCommit.entry.seats[1]=f.c.agent;
+ await assert.rejects(f.guestSvc.receiveFromSocket(frame),/noncanonical seats|seat/);
+ f.game.roleCommit.entry.seats[1]=f.b.agent;f.bSession.revoke();
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/live registered/);
 });
 test('signed message has no forged browser bool or generic remote API; absent native adapter rejects',async()=>{
@@ -176,4 +182,29 @@ test('installed cell publishes real-signed public attestation via native zome an
    lair:id.lair,store,native:malicious}),/native recipient DNA or author mismatch/);
  await assert.rejects(publishInstalledRecipientKey({contextId,dna:d,contextManager:manager,
    lair:id.lair,store,native:{publishSignedRecipientKey:async()=>({action:hash(29)})}}),/zome unavailable/);
+});
+
+test('native entry contract rejects invented round, substituted action/host/root, unordered seats and stale phase',async()=>{
+ const f=await fixture();
+ const cell={dna:f.d,agent:f.b.agent};
+ assert.equal(requireCurrentRoleState(f.game,cell).commit.seats.length,3);
+ const wrong=(mutate)=>{const copy=structuredClone(f.game);mutate(copy);return copy;};
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roleCommit.entry.lobby=hash(41)),cell),/entry mismatch/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roleCommit.author=f.c.agent),cell),/entry mismatch/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roleCommit.entry.merkle_root=new Uint8Array(16)),cell),/entry mismatch/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roleCommit.entry.seats.reverse()),cell),/noncanonical/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roles_dealt=false),cell),/committed phase/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.lobby.entry.player_count=4),cell),/entry mismatch/);
+ assert.throws(()=>requireCurrentRoleState(wrong(x=>x.roleCommit.entry.joins[2]=x.roleCommit.entry.joins[0]),cell),/duplicate PlayerJoin/);
+});
+test('native enrollment publication must match independently looked-up action and original exact attestation',async()=>{
+ const d=dna(27),id=await identity(),store=new Keys();
+ const cm={listContexts:async()=>[{id:'ctx',enabled:true,agentPubKey:id.agent,dnas:[{hash:d}]}]};
+ let publish=null;
+ const fake={
+  publishSignedRecipientKey:async(_ctx,att)=>{publish=att;return {action:hash(25),attestation:att};},
+  lookupRecipientKey:async()=>({status:'observed',current_unproven:true,
+   view:{action:hash(26),attestation:publish}})
+ };
+ await assert.rejects(publishInstalledRecipientKey({contextId:'ctx',dna:d,contextManager:cm,lair:id.lair,store,native:fake}),/native indexed entry differs|native enrollment differs|native published action|/);
 });
