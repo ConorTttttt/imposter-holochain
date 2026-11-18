@@ -120,14 +120,14 @@ def apply(root):
     replace(ws, "            authenticated_agent: None,",
         "            authenticated_agent: None,\n            session_token: None,")
     replace(ws,
-        "    // Spawn task to forward messages from channel to WebSocket",
+        "    // Subscribe BEFORE the first auth message to avoid missing a revoke",
         """    // Current *socket-specific* token; queued relays cannot follow reauth to a new socket.
     let active_session = Arc::new(RwLock::new(None::<String>));
     let active_session_send = active_session.clone();
     let dispatch_app = state.clone();
     let dispatch_sender = tx.clone();
 
-    // Spawn task to forward messages from channel to WebSocket""")
+    // Subscribe BEFORE the first auth message to avoid missing a revoke""")
     replace(ws,
         "            let Some(msg) = msg else { break; };",
         """            let Some(msg) = msg else { break; };
