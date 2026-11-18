@@ -42,6 +42,7 @@ jobs:
           set -euo pipefail
           python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
           python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 compatibility/hwc-imposter-compatibility/apply.py hwc --write
           python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --check
           python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --write
