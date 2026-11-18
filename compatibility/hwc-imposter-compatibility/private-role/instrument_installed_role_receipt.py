@@ -34,6 +34,11 @@ Object.defineProperty(globalThis, "__agent2RolePrivateCI", {
 background.write_text(source,encoding="utf-8")
 
 src=bridge.read_text(encoding="utf-8")
+# Nonsecret diagnostic for the REAL demo UI; preserve HWC's normal action
+# dispatch and fail without inventing a signed native action.
+old_wait="const timeout=setTimeout(()=>reject(Error('UI did not emit the signed public action')),60000);"
+assert src.count(old_wait)==1, 'Agent4 demo UI action listener drift'
+src=src.replace(old_wait, """const timeout=setTimeout(()=>reject(Error('UI did not emit signed action; notice='+document.querySelector('#notice')?.textContent+'; status='+document.querySelector('#connection-state')?.getAttribute('data-status'))),15000);""",1)
 # The pinned gateway deliberately REQUIRES separate operator-granted role
 # capabilities. Native conductors retain their old non-role allowlist.
 # Give only the genuine HWC host delivery and Guest B request privileges.
