@@ -2436,6 +2436,12 @@ async fn recipient_key_native_two_conductors_attest_discover_and_rotate() {
 // These are actual SweetConductor 0.7 cells. No page-supplied validation
 // flags, synthetic round fields, simulated records or generic role signals.
 
+#[derive(serde::Deserialize, Debug)]
+struct NativeCommitOnlyResult {
+    role_commit: ActionHash,
+    seats: Vec<AgentPubKey>,
+}
+
 #[derive(serde::Serialize, Debug, Clone)]
 struct NativeGameQuery {
     expected_lobby: ActionHash,
@@ -2524,20 +2530,19 @@ async fn native_game_role_commit_boundary_accepted_and_rejects_wrong_inputs() {
     assert_eq!(lobby_only.seats.len(), 3);
 
     // A guest can neither author the commitment nor open a host secret.
-    let wrong_host: Result<DealResult, _> = env.conductors[1].call_fallible(
+    let wrong_host: Result<NativeCommitOnlyResult, _> = env.conductors[1].call_fallible(
         &env.cells[1].zome(ZOME), "commit_roles_only", ()
     ).await;
     assert!(wrong_host.is_err(), "guest committed a host-only RoleCommit");
 
     // No send_remote_signal: a real sealed private entry and public native
     // RoleCommit are produced, without requiring encrypted role delivery.
-    let committed: DealResult = env.call(0, "commit_roles_only", ()).await;
+    let committed: NativeCommitOnlyResult = env.call(0, "commit_roles_only", ()).await;
     assert_eq!(committed.seats.len(), 3);
-    assert_eq!(committed.roles.len(), 3);
-    let retry: DealResult = env.call(0, "commit_roles_only", ()).await;
+    let retry: NativeCommitOnlyResult = env.call(0, "commit_roles_only", ()).await;
     assert_eq!(retry.role_commit, committed.role_commit,
         "retry created a duplicate commitment");
-    assert_eq!(retry.roles, committed.roles);
+    assert_eq!(retry.seats, committed.seats);
     env.sync().await;
 
     // Independent guest obtains exact native Valid action, sorted canonical
@@ -2587,7 +2592,8 @@ async fn native_game_role_commit_boundary_accepted_and_rejects_wrong_inputs() {
     assert_eq!(opening.role_commit, committed.role_commit);
     assert_eq!(opening.recipient, env.cells[1].agent_pubkey().clone());
     assert_eq!(opening.seat, seat);
-    assert_eq!(opening.role, committed.roles[seat as usize]);
+    assert!(imposter_core::verify_role_proof(&guest_view.merkle_root.unwrap(), seat,
+        opening.role, &opening.proof), "host opening did not validate against native root");
     let _ = opening.proof; // verified by native host_role_opening
 
     let foreign_open: Result<NativeHostOpening, _> = env.conductors[1].call_fallible(
@@ -2700,7 +2706,7 @@ async fn native_game_role_commit_boundary_mismatched_joins_rejected_by_integrity
     assert!(invalid.is_err(), "native integrity accepted a malformed join witness");
     // The invalid operation was rejected precommit. It cannot become
     // "current" merely because an untrusted caller names its record hash.
-    let accepted: DealResult = env.call(0, "commit_roles_only", ()).await;
+    let accepted: NativeCommitOnlyResult = env.call(0, "commit_roles_only", ()).await;
     env.sync().await;
     let valid: NativeGameView = env.call(2, "get_authoritative_game_view", NativeGameQuery {
         expected_lobby: lobby_hash.clone(),
