@@ -1,6 +1,6 @@
 /** RFC 9180 HPKE Base, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM.
  * One-shot seq=0 only. WebCrypto primitives; NOT independently audited.
- * Keep disabled in product until Agent 3's native vectors are accepted. */
+ * Restricted to extension-only crypto; no transport is enabled by this module. */
 const utf8 = (s) => new TextEncoder().encode(s);
 const concat = (...items) => { const out=new Uint8Array(items.reduce((n,a)=>n+a.length,0)); let o=0; for(const a of items){out.set(a,o);o+=a.length;}return out; };
 const n2 = (n) => new Uint8Array([(n>>8)&255,n&255]);
@@ -18,10 +18,14 @@ async function sharedSecret(dh,enc,pub){const prk=await lex(new Uint8Array(0),KE
 function raw32(b){if(!(b instanceof Uint8Array)||b.length!==32)throw Error('expected 32 bytes');return b;}
 export async function createRecipientKey(){return subtle().generateKey('X25519',false,['deriveBits']);}
 export async function rawPublicKey(publicKey){return raw32(new Uint8Array(await subtle().exportKey('raw',publicKey)));}
-export async function seal(recipientPublicKey,plaintext,aad,info=new Uint8Array(0)){
+export async function seal(recipientPublicKey,plaintext,aad,info=new Uint8Array(0),testEphemeral=null){
   raw32(recipientPublicKey);
   if(!(plaintext instanceof Uint8Array)||!(aad instanceof Uint8Array)||!(info instanceof Uint8Array))throw Error('bytes required');
-  const ephemeral=await createRecipientKey();const enc=await rawPublicKey(ephemeral.publicKey);
+  // Fixed ephemeral keys are accepted ONLY for deterministic native-vector tests.
+  // Runtime callers must omit testEphemeral to generate a fresh X25519 key.
+  const ephemeral=testEphemeral??await createRecipientKey();
+  if(ephemeral.privateKey?.extractable!==false||ephemeral.privateKey?.algorithm?.name!=='X25519')throw Error('non-extractable ephemeral X25519 key required');
+  const enc=await rawPublicKey(ephemeral.publicKey);
   const pub=await subtle().importKey('raw',recipientPublicKey,'X25519',false,[]);
   const dh=new Uint8Array(await subtle().deriveBits({name:'X25519',public:pub},ephemeral.privateKey,256));
   const s=await sharedSecret(dh,enc,recipientPublicKey);const {key,nonce}=await schedule(s,info);
