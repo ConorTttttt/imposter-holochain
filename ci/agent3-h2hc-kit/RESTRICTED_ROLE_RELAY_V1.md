@@ -1,0 +1,427 @@
+# Agent 3 / Agent 2 — restricted confidential role protocol v1
+
+**18 November 2026.** Gateway-side **v1 candidate revision 2**, pending explicit Agent 2 byte-for-byte approval. **NOT FROZEN**.
+**Agent 2 has independently accepted the exact revision-2 cryptographic bytes, but explicitly WITHHELD formal two-party freeze and browser receiver acceptance. No completed round is claimed.**
+Review references: Agent 3 `PRIVATE_GAMEPLAY_TRANSPORT_HANDOFF.md`;
+Agent 2 `docs/hwc-confidential-full-round-transport-proposal.md` on
+`validation/agent2-hwc-integration`.
+
+Only two gameplay operations exist in v1: `role_request_v1` and
+`role_delivery_v1`. No tasks, kill, sabotage, arbitrary signals, generic remote
+calls, generic HTTP zome calls, DHT fallback, offline mailbox or server decryption.
+
+## Authenticated WebSocket schema
+
+Each browser first completes the **existing signed Ed25519 H2HC challenge** on
+`/ws`, obtains its own session token and registers its exact 39-byte
+Holochain 0.7 DNA and agent pair. The operator grants separate
+`game_role_request` (seated player to host) or `game_role_deliver` (host to
+one committed recipient) capabilities. Ordinary `dht_read`, `dht_write`,
+`k2` and legacy generic signal privileges confer neither role capability.
+
+Client-to-gateway messages are JSON containing only:
+
+```json
+{
+  "type": "role_delivery_v1",
+  "envelope": {
+    "version": 1,
+    "domain": "imposter.h2hc.private-role.v1",
+    "dna_hash": "u<canonical-39-byte-DnaHash>",
+    "sender_agent": "u<canonical-39-byte-AgentPubKey>",
+    "recipient_agent": "u<canonical-39-byte-AgentPubKey>",
+    "role_commit": "u<canonical-39-byte-ActionHash>",
+    "seat": 1,
+    "recipient_key_id": "<32 lowercase hex characters>",
+    "recipient_key_epoch": 9,
+    "message_id": "<32 lowercase hex characters>",
+    "created_at_ms": 1700000000000,
+    "expires_at_ms": 1700000030000,
+    "in_reply_to": "<32 lowercase hex characters, or null>",
+    "hpke_enc": "<RFC 4648 standard padded base64 of 32-byte HPKE enc>",
+    "ciphertext": "<RFC 4648 standard padded base64 of HPKE ciphertext+tag>"
+  },
+  "signature": "<RFC 4648 standard padded base64 of 64-byte Ed25519 signature>"
+}
+```
+
+For `role_request_v1`, change only the outer `type` and create an independently
+signed envelope for the **request** operation. Both operations use the same
+header schema but different operation bytes. `role_request_v1` has
+`in_reply_to=null` (the gateway rejects any other value); `role_delivery_v1`
+uses null ONLY for an unsolicited host push that the recipient independently
+validates, or the original request message ID for recovery. An HWC recovery
+receiver MUST reject any unmatched reply ID, stale request, duplicate reply,
+wrong requester/host/DNA/role commitment/seat, or any reply issued for an old
+recipient key epoch. Gateway does NOT store requests or check correlation. Envelopes specify the target's
+actual current cell; `sender_agent` must exactly equal the **signed socket
+identity**, never an untrusted claimed name. DNA, sender, recipient and
+commitment must be canonical Holochain 0.7 hashes with correct types.
+`seat` is unsigned 16-bit big-endian. `recipient_key_epoch` is a positive, JavaScript-safe integer (1–9007199254740991), serialized u64 big-endian and cryptographically bound to the recipient's Lair-signed key attestation. A key rotation MUST change key ID and increment the epoch; gateway does not know which epoch is current. Message/key IDs each contain 16 bytes
+and are encoded as 32 lowercase hex characters.
+
+**Gateway response:** `{"type":"role_queued_v1","message_id":"<id>"}`
+only confirms enqueue to a live registered recipient channel. It is **not**
+recipient receipt, signature verification by HWC, role decryption, native
+validation, or application success. Denials return
+`{"type":"error","message":"<static error code>"}`; no input ciphertext,
+secret, session token or stack trace is returned. Forwarded recipient frame
+uses the same `role_request_v1` / `role_delivery_v1` type with
+`envelope` and `signature` only; internal origin token is excluded from
+serialization. A real HWC receipt is application-local after full validation;
+no unsigned gateway success signal may advance gameplay.
+
+## Canonical signature bytes and AAD — exact normative layout
+
+All signatures use the Ed25519 **32-byte core** of the sender's
+`AgentPubKey`, mapped only after validating the full 39-byte HoloHash.
+Do not sign stringified JSON, UTF-8 hash strings, a pre-hashed transcript,
+or sender-provided `provenance`.
+
+```text
+HEADER =
+    operation                              1 byte   (0x01 request, 0x02 delivery)
+    dna_hash                               39 bytes (canonical HoloHash raw39)
+    sender_agent                           39 bytes
+    recipient_agent                        39 bytes
+    role_commit                            39 bytes (ActionHash)
+    seat                                   u16 BE
+    recipient_key_id                       16 bytes
+    recipient_key_epoch                    u64 BE (>=1, <= 2^53-1)
+    message_id                             16 bytes
+    created_at_ms                          u64 BE
+    expires_at_ms                          u64 BE
+    in_reply_to presence                   1 byte (0 absent; 1 present)
+    in_reply_to ID                          16 bytes iff presence = 1
+
+AAD = ASCII("IMPOSTER-H2HC-ROLE-AAD") || 0x00 || 0x01 || HEADER
+
+SIGNED_BYTES =
+    ASCII("IMPOSTER-H2HC-ROLE-SIGNED") || 0x00 || 0x01 || HEADER
+    || hpke_enc                             32 bytes
+    || ciphertext_length                    u32 BE
+    || ciphertext                           ciphertext_length bytes (includes 16-byte AEAD tag)
+
+signature = Ed25519.sign(sender_Lair_key, SIGNED_BYTES)
+```
+
+The fixed v1 prefix/operation imply the literal `version` and `domain`.
+All other envelope fields are cryptographically included in `HEADER`.
+A verifier must require exact v1 domain and version before constructing
+bytes. There is no canonical-JSON ambiguity or optional field reordering.
+
+**Limits:** inbound WS UTF-8 frame <= 8,192 bytes; HPKE `enc` exactly
+32 bytes; decoded ciphertext **16–4,096** bytes; base64 must be canonical.
+Creation may be at most 30 seconds in the future; `expires_at_ms` must be
+strictly after creation, not older than receiver current time, and at most
+60,000 milliseconds after creation. These are gateway limits; HWC may impose
+stricter windows and rejects outdated rounds/commitments. `message_id`
+must come from a CSPRNG (>=128 random bits). `recipient_key_epoch`
+must be a safe integer; absent/zero/unsafe values are rejected, not defaulted.
+A different delivery/rotation
+uses a fresh message ID, fresh HPKE encapsulation and ciphertext.
+
+## RFC 9180 HPKE and signed key enrollment
+
+**Exact v1 cipher suite:**
+DHKEM(X25519, HKDF-SHA256) `0x0020`,
+HKDF-SHA256 `0x0001`,
+AES-256-GCM `0x0002`;
+HPKE base mode `0x00`, 32-byte X25519 encapsulated key, 16-byte tag,
+sequence number zero. AES-256-GCM is supported directly by browser WebCrypto; Agent 2 must use an audited RFC9180 HPKE implementation with identical KEM and key schedule. The fixed HPKE `info` bytes are
+`ASCII("imposter.h2hc.private-role/hpke-v1")`; HPKE `aad` is the
+byte-for-byte `AAD` specified above. Never reinterpret an Holochain
+Ed25519 key as X25519; no private key material is hosted at H2HC.
+
+**Key custody/registration is HWC-owned, not a gateway role operation.**
+Before a sender can encrypt, it MUST have a genuine Lair-signed, locally
+verified per-cell recipient X25519 key attestation. A v1 attestation is the
+following domain-separated canonical bytes:
+
+```text
+ASCII("IMPOSTER-H2HC-ROLE-KEY") || 0x00 || 0x01
+|| dna_hash raw39 || agent_hash raw39
+|| key_id bytes16 || x25519_public_key bytes32
+|| epoch u64 BE || not_before_ms u64 BE || not_after_ms u64 BE
+```
+
+Sign directly with the **cell author's** Lair Ed25519 key.
+The public vector JSON includes **two reproducible signed key attestations** with native-Holochain 0.7 verification, wrong-agent denial, monotonic epoch and validity fields; the fixture uses expired test dates and must never be accepted as a live key.
+Recipient and host independently verify the full signed binding, exact
+installed DNA/agent, key ID, epoch, validity and protocol version. HWC
+MUST provide a separately authenticated source for these public
+attestations (for example a natively validated public entry, or an
+explicit trusted exchange). **This gateway does not register, distribute,
+cache or authorize encryption keys**, and `recipient_key_id` alone is
+NOT an attestation. Until Agent 2 implements that enrollment/lookup and
+protected extension key persistence, sending is **blocked**. An initial
+recovery request can include the requester's signed public attestation
+INSIDE the encrypted host-bound payload, provided the host's own valid
+key is already authenticated; this is not an unsigned key-discovery API.
+
+Rotate by creating a new X25519 key, incrementing the per-cell monotonic
+epoch, generating a fresh CSPRNG `key_id`, signing a new attestation,
+and persisting protected key state before advertising it. New messages
+use only the current verified key/epoch; HWC MUST compare the signed
+`recipient_key_epoch` and key ID with its durable, latest authenticated
+key attestation, not just a sender-supplied number. Once rotated, any
+message to the old key/epoch fails closed, including matched replies.
+Old pending messages cannot
+resurface after reauth or key rotation. Lost keys require new keys and
+fresh host-signed encrypted delivery. No server-owned plaintext, key
+escrow, cache, or offline replay.
+
+## Security decisions and obligations
+
+The **gateway** checks signed socket identity, valid original bearer,
+strict source-cell DNA registration, operator capability for the exact
+operation, live allowlisted registered recipient on the same DNA,
+canonical signature and time/size limits. It rechecks both session
+bearers and the current recipient socket mapping immediately before
+dispatch, under the same bounded lock as agent/session revocation. No
+server-side private-role persistence, decryption, source-chain or WASM
+execution is added. The client WebSocket handler never prints raw inbound
+envelopes at debug level.
+
+The **HWC receiver** independently checks: installed exact cell/DNA,
+recipient equals locally Lair-held `me()`, signer equals the actual
+natively validated lobby host for `role_delivery_v1`, requester's
+committed seat for `role_request_v1`, current round and accepted
+RoleCommit hash, `RoleCommit.seats[seat]`, Merkle opening, X25519 key
+attestation/current epoch, signature/AAD/ciphertext, expiry and
+`in_reply_to` correlation. It atomically records
+`(DNA, recipient, sender, message_id, role_commit)` in durable local
+replay state before any application side effect. It must not invoke
+a zome as ChainAuthor or trust a spoofable `from_agent`/outer `provenance`.
+Agent 2 must review and test native coordinator role-seat and host checks.
+A gateway transport ACK does not satisfy any of these checks.
+
+## Test vector and verification commands
+
+The two public, reproducible encrypted role vector cases **and two separately signed recipient-key attestation cases** are generated as follows:
+native Holochain 0.7 `AgentPubKey::from_raw_32`,
+`DnaHash::from_raw_32` and `ActionHash::from_raw_32` produce canonical
+39-byte typed hashes; deterministic **test-only** Ed25519 signers
+use byte-27 (host) and byte-28 (guest) seeds, with byte-29 third agent.
+The Python cryptographic reference uses synthetic X25519 recipients
+byte-51 / byte-52, fixed ephemeral byte-61 / byte-62, independent HPKE
+key schedule and AESGCM tag verification, including invalid
+AAD and foreign-recipient decryption denials. Public vector JSON includes
+canonical `header_hex`, `signed_bytes_hex`, `aad_hex`,
+`hpke_info_hex`, `hpke_enc_hex`, `ciphertext_hex`, `signature_hex`,
+`signature_b64`, typed hashes, key-ID, key epoch, message-ID, signed key
+attestations and declarative negative mutations. These are safe synthetic
+fixtures for direct import into HWC tests, not a live Lair signing claim. Both cases are independently
+verified by the native Holochain Rust example against Ed25519 key cores.
+Fixed timestamps are **historic fixture values**: signatures/vectors
+test canonical bytes only; live traffic MUST use current time and HWC
+MUST reject the expired fixture.
+
+From the exact authenticated H2HC CI checkout **after** applying its
+existing security/compiler/revocation transformations and this branch's
+`apply_private_role_relay.py`:
+
+```bash
+mkdir -p examples
+cp "$IMPOSTER/ci/agent3-h2hc-kit/native-role-vectors.rs" examples/agent3_role_vectors.rs
+cargo run --locked --example agent3_role_vectors -- --hashes > /tmp/role-hashes.json
+python3 "$IMPOSTER/ci/agent3-h2hc-kit/generate_role_vectors.py" \
+  /tmp/role-hashes.json /tmp/role-public-vectors.json
+cargo run --locked --example agent3_role_vectors -- /tmp/role-public-vectors.json
+node "$IMPOSTER/ci/agent3-h2hc-kit/verify-role-vectors.mjs" /tmp/role-public-vectors.json
+cargo fmt --check && cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+The strict security workflow archives `role-public-vectors.json` ONLY on
+a completed successful generator/verification step. No fixture private
+keys, real role leaves, Lair keys, bearer or operator secrets are archived.
+The gateway live network probe uses three **separately authenticated
+Holochain Ed25519 fixture identities** and test ciphertext to validate
+routing/authorization; that probe does NOT prove HPKE receiver decryption.
+The deterministic crypto vectors establish HPKE interoperability only for
+the independent test reference, **not** an Agent 2 browser receiver.
+
+**Agent 2 integration:** implement protected per-cell key creation and
+signed attestation validation; build the above fixed transcript and HPKE
+AAD in extension-only code; sign via real Lair without exporting its secret;
+send exactly two `/ws` frame types; treat `role_queued_v1` as only queue
+acceptance; confirm local verified receipt and role-commit/seat binding;
+persist replay reservations across browser restart; prove guest C cannot
+receive or decrypt guest B's role and no old ciphertext is restored after
+revocation. Do NOT unblock inbound remote signals or remote zome calls
+to implement this feature.
+
+**Acceptance boundary:** even if Rust, signed WS and HPKE vectors are
+all green, private role delivery remains **NOT E2E ACCEPTED** until Agent 2
+has independently accepted a real encrypted message in its receiver and
+reported negative cases. Keep PR #6 Draft.
+
+
+## Interoperability delta and two-agent freeze gate (18 Nov 2026)
+
+**Historical mismatch at initial Agent 2 source \`8a7dd94a\`, since corrected in isolated crypto tests (NOT a frozen standard).** That earlier Agent 2 version signed
+`imposter-hwc/role-delivery/v1\\0` plus its own header, used
+`imposter-hwc/role-hpke/v1` as HPKE info, the header itself as AAD,
+a **u16** ciphertext length, **120,000 ms** maximum role lifetime,
+and an attestation with a different field order/prefix. That implementation
+also lacks `role_request_v1` and signed `in_reply_to` correlation.
+**Those *historical* bytes could not pass the H2HC verifier; newer isolated Agent 2 revision-2 bytes now match.**
+
+Proposed wire resolution for review:
+
+- Sign the precise v1 `SIGNED_BYTES` and use the precise `AAD` and
+  `info` above; no JSON signature, no UTF-8 hash signing, no key reinterpretation.
+- Represent the same canonical HoloHash raw39, u16 seat, u64 key epoch,
+  u64 timestamps, presence-tagged reply ID, 32-byte HPKE encapsulation,
+  and u32 ciphertext length in both receivers and gateway.
+- Use the existing wire `envelope` field names exactly;
+  HWC's internal `dna/agent/keyId/createdAt/enc` names may remain
+  internal but need explicit, lossless canonical mapping.
+- Keep 60s maximum lifetime and 30s future skew at the gateway;
+  HWC must reject at least the same invalid windows. Keep per-key
+  `not_before_ms/not_after_ms` independent from envelope expiry.
+- Use attestation `IMPOSTER-H2HC-ROLE-KEY\\0\\x01`
+  || DNA raw39 || agent raw39 || key ID raw16 || X25519 pk raw32
+  || epoch u64 BE || not-before u64 BE || not-after u64 BE.
+  No JSON/MessagePack serialization is part of its signature.
+- Request and reply must be separately signed with operation 0x01/0x02;
+  a valid gateway queue acknowledgement is never an application receipt.
+- Receiver acceptance requires genuine Lair signer verification,
+  exact installed DNA, local recipient and native-verified host,
+  matching round/commit/seat/Merkle proof, current attested key epoch,
+  correlated request where present, and durable replay reservation
+  before decryption/application. No role plaintext in gateway or public DHT.
+
+**Freeze is explicitly BLOCKED pending both written approvals**:
+1. **Satisfied for scoped bytes:** Agent 3 approves this exact candidate revision,
+   passing gateway, native vectors and live restricted network gates.
+2. **Satisfied for scoped bytes, NOT formal freeze:** Agent 2 independently
+   matches its isolated HWC cryptography module to the same canonical vector,
+   approves all normative bytes and has tested real **fixture-DNA** Lair signing.
+   Agent 2 explicitly withholds final protocol freeze and receiver acceptance
+   until authentic enrolled installed-DNA keys, trusted HWC handler and native
+   role/seat/commitment checks are implemented and independently accepted.
+
+Once both approvals exist, publish a single immutable v1 contract pin
+(commit SHA + fixture SHA-256); do not reinterpret candidate revision
+as already frozen. Browser/desktop live role delivery remains NOT ACCEPTED
+until independent receiver post-decryption proof checks pass.
+
+
+**Direct Agent 2 HWC fixture import:** download the *successful* Agent 3
+`agent3-h2hc-p0-security-<run_id>` Actions artifact and extract only
+`role-public-vectors.json`. JSON `cases[*].envelope` plus
+`cases[*].signature_b64` are ready for the gateway frame; the same objects
+provide binary `header_hex`, `signed_bytes_hex`, `aad_hex`,
+`hpke_info_hex`, `hpke_enc_hex`, `ciphertext_hex`, and
+`signature_hex` comparisons. `key_attestations[*]` and
+`negative_cases[*]` are separately importable without fixture private keys.
+A successful fixture-only check does not prove signed HWC/Lair live keys,
+durable replay, native RoleCommit validation or decryption of a real role.
+
+The previous confirmed-green baseline is security run **44299128149**,
+artifact **14424762920**, on pre-epoch commit `204cd95a`;
+those *older vectors are incompatible with candidate revision 2*.
+Use only a later full-green run with signed epoch for this candidate.
+
+
+### Candidate revision 2 — independently verified public fixture
+
+- **PASS** [Rust/native + Node 22 vector CI 44303144321](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44303144321), tested SHA `8500270ecb3285ff6435bba568d1ef46c0c3ac8e`. This checks all Rust library security tests, native Holochain 0.7 typed-hash signature preimages, two recipient-key attestations, deterministic RFC9180 HPKE and independent Node signature/decryption/negative cases.
+- **Public test artifact** [14426267353](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44303144321/artifacts/14426267353), file `role-public-vectors.json`, **SHA256 `065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`** of JSON bytes. The artifact retention window is 14 days; archive/reimport this verified JSON into HWC tests before expiry. Includes 2 signed/encrypted cases, 2 signed attestations, 9 declarative negative mutations. Deterministic **synthetic** signer seeds are kept only in source, never in the published JSON.
+- **No receiver acceptance claimed.** Node independent decryption used deterministic fixture X25519 keys, *not* the live HWC extension or Lair signer; no native coordinator role leaf/proof test, durable browser replay, or real guest denial has run against this revision.
+
+Agent 2 can extract with GitHub Actions artifact download (no auth credentials in fixture), then import the JSON as a test fixture in its `private-role` suite. Any change to signed bytes or normative fields requires a newly regenerated artifact and fresh written approval by both agents.
+
+
+### Durable repository copy of the same fixture
+
+A byte-exact copy of the successful JSON (SHA256
+`065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`)
+is committed as
+`ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64`.
+It is gzip-compressed, RFC4648 base64 text only to keep the repository copy
+compact. It is *not a secret, a bearer or a deployable key*. Decode with:
+
+```bash
+base64 --decode ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64 | gzip -dc > role-public-vectors.json
+echo '065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4  role-public-vectors.json' | sha256sum -c -
+node ci/agent3-h2hc-kit/verify-role-vectors.mjs ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64
+```
+
+Or use the Node test importer directly:
+`JSON.parse(gunzipSync(Buffer.from(readFileSync(path,'utf8').replace(/\\s/g,''),'base64')).toString('utf8'))`
+(with `gunzipSync` from `node:zlib`). CI compares the *exact decoded
+bytes* of this committed fixture to newly generated native-Holochain/Python
+vectors and verifies both representations. A new fixture implies a new
+contract-review cycle, not an implicit v1 freeze.
+
+
+**Permanent-fixture equality gate PASS:** [run 44304081583](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583), tested source `f40914d7c629b6c01568697e7c174cd4a4b02d57`; regenerated native/Python fixture equals the committed gzip-base64 payload byte-for-byte, and both forms pass independent Node Ed25519 and RFC9180 decryption checks. [CI archive 14426722802](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583/artifacts/14426722802). This is *candidate protocol conformance*, not HWC/Lair receiver acceptance or two-agent freeze.
+
+
+## Agent 3 runnable gateway handoff — epoch-bound v1 candidate
+
+**Latest full combined security/native vectors/real gateway PASS**:
+[GitHub Actions run 44304976936](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304976936),
+source Imposter `293563649f7fd18a6bc2e0d1426c31132bf2b8c7`,
+runner-built H2HC patched source `9f5eb04b5be12e3e9e7fcc304bd905da1449ade9`.
+Download [artifact 14428255589](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304976936/artifacts/14428255589)
+and extract `role-gateway/h2hc-linker-linux-x86_64`. The **exact
+stripped artifact executable SHA256** is
+`8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f`.
+The archived `role-gateway/SHA256SUMS` matches independently extracted
+binary bytes. `role-gateway/role-smoke-result.txt` reports
+`ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED`.
+The same successful job executes `cargo fmt --check`, `cargo test
+--locked`, strict `cargo clippy --locked --all-targets -- -D warnings`,
+native typed-hash/Ed25519/attestation verification, independently rechecked
+RFC9180/Node vector HPKE decryption, exact permanent-fixture equality,
+and the live signed three-agent restricted routing/security negative probe.
+Its included `role-public-vectors.json` SHA256 is the same
+`065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`
+as the committed fixture.
+
+**Independent runtime cross-check**: [run 44301679119](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44301679119)
+was also **SUCCESS**, on earlier epoch-bound source
+`72bbb7240af1be3d20c6f992a3dea3848d5acfdb`,
+[artifact 14426778975](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44301679119/artifacts/14426778975),
+executable SHA256
+`565061a877264df79050e9b1e7c3ae20931cf78e912f2a3d1dd58506e2f53d4a`.
+Either binary passed synthetic authenticated relay tests, but Agent 2
+should pin the **latest complete combined artifact 14428255589** for integration.
+
+These are CI synthetic-session gateway results; no real HWC/Lair role recipient
+decryption, live recipient attestation, installed-DNA native commitment proof,
+persistent replay or third-guest denied plaintext is claimed. Do not conflate
+an accepted `role_queued_v1` frame with receipt or decryption. A complete
+end-to-end HWC integration run is blocked on Agent 2's written byte-level
+approval and matching browser receiver.
+
+
+### Agent 2 revision-2 acknowledgment — scoped, not a final freeze
+
+[Agent 2 review and explicit **byte-level ACCEPTED**, with formal freeze
+withheld](https://github.com/ConorTttttt/imposter-holochain/pull/6#issuecomment-6978737118).
+Agent 2 independently imported the identical digest-checked JSON, implemented
+both operation transcripts and nine negative cases in isolated
+`compatibility/hwc-imposter-compatibility/private-role/wire.mjs`,
+and passed [isolated crypto CI 44305101716](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44305101716)
+and [real fixture-DNA Lair signer CI 44305102095](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44305102095).
+[Agent 3's scoped byte approval](https://github.com/ConorTttttt/imposter-holochain/pull/6#issuecomment-6978625209)
+is also recorded. **Both parties approve the cryptographic bytes only.**
+Agent 2's accepted crypto modules remain isolated from the HWC runtime.
+No authenticated recipient-key discovery/rotation authority, live installed
+DNA role receiver, current native RoleCommit/seat/proof, durable browser replay,
+or independent guest denial has been tested.
+
+**Possible authenticated public-key enrollment design, not an implementation
+or protocol expansion:** natively validate a separately defined public
+recipient-key attestation DHT entry/action signed by the installed cell's
+real Lair key. Independently verify the source author and DNA, canonical
+attestation signature, and durably monotonic current epoch and key ID.
+Do NOT trust an unsigned gateway key lookup, bypass native validation, or
+reuse the server as a decryption mailbox. If authentic enrollment cannot
+be established, stay fail-closed. [Agent 3 → Agent 2 trusted attestation
+handoff](https://github.com/ConorTttttt/imposter-holochain/pull/5#issuecomment-6978771764).

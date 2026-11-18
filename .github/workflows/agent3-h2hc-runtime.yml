@@ -1,0 +1,251 @@
+name: Agent 3 - authenticated H2HC executable and live network probe
+on:
+  push:
+    branches: [ci/agent3-h2hc-security-validation]
+    paths:
+      - '.github/workflows/agent3-h2hc-runtime.yml'
+      - 'ci/agent3-h2hc-kit/runtime-fixtures.rs'
+      - 'ci/agent3-h2hc-kit/network-probe.mjs'
+      - 'ci/agent3-h2hc-kit/apply_revocation_patch.py'
+      - 'ci/agent3-h2hc-kit/apply_private_role_relay.py'
+      - 'ci/agent3-h2hc-kit/private_role.rs'
+      - 'ci/agent3-h2hc-kit/network-role-probe.mjs'
+      - 'ci/agent3-h2hc-kit/secure.env.example'
+      - 'ci/agent3-h2hc-kit/RUNTIME_RUNBOOK.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent3-h2hc-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authenticated-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - name: Check out CI validation branch (never main)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check out exact upstream H2HC source
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/h2hc-linker
+          ref: cab242d32c988fe5e4e9fd06ebc82ed043541aa2
+          path: h2hc
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Isolate standalone H2HC checkout from Imposter Cargo workspace
+        run: cp -a h2hc "$RUNNER_TEMP/h2hc"
+
+      - name: Verify signed-off source and decode complete source kit
+        run: |
+          set -euo pipefail
+          test "$(git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD)" = cab242d32c988fe5e4e9fd06ebc82ed043541aa2
+          cat ci/agent3-h2hc-kit/part00.b64 ci/agent3-h2hc-kit/part01.b64 ci/agent3-h2hc-kit/part02.b64 | base64 --decode > "$RUNNER_TEMP/h2hc-security-kit.tar.xz"
+          echo "afcf5c406b6b6040ac00060d31052a9eaa121c5b8540ca6a7354898b6752be62  $RUNNER_TEMP/h2hc-security-kit.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/h2hc-security-kit.tar.xz" -C "$GITHUB_WORKSPACE"
+          python3 -m py_compile agent3-h2hc-patches/apply_security_patches.py
+          echo "CI source: $(git rev-parse HEAD)"
+          echo "Pinned H2HC: $(git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD)"
+
+      - name: Apply three existing security transformations to pinned checkout
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/h2hc"
+          git config user.name 'Agent 3 security CI'
+          git config user.email 'agent3-security-ci@users.noreply.github.com'
+          bash "$GITHUB_WORKSPACE/agent3-h2hc-patches/run_security_checks.sh" --apply-only | tee "$RUNNER_TEMP/h2hc-apply.log"
+          echo "Applied H2HC SHA $(git rev-parse HEAD)"
+          git log --oneline -4
+          git status --porcelain
+          git diff cab242d32c988fe5e4e9fd06ebc82ed043541aa2...HEAD --stat
+
+      - name: Apply integration fixes identified by real Rust compiler (E0425, E0382)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+          root = Path(os.environ["RUNNER_TEMP"]) / "h2hc"
+          gateway = root / "src/gateway_kitsune.rs"
+          content = gateway.read_text()
+          old = "let signal_data = signal_to_b64(&ExternIO(signal.zome_call_params.clone()));"
+          new = "let signal_data = base64::engine::general_purpose::STANDARD.encode(&signal.zome_call_params);"
+          assert content.count(old) == 1, "unexpected gateway signal encoder source"
+          assert "use base64::Engine;" not in content, "encoder import unexpectedly present"
+          content = content.replace(old, new, 1)
+          content = content.replace("use bytes::Bytes;", "use base64::Engine;\nuse bytes::Bytes;", 1)
+          gateway.write_text(content)
+
+          websocket = root / "src/routes/websocket.rs"
+          content = websocket.read_text()
+          old = "state.registrations.push(key);"
+          assert content.count(old) == 1, "unexpected registration ownership source"
+          websocket.write_text(content.replace(old, "state.registrations.push(key.clone());", 1))
+          subprocess.run(["git", "-C", str(root), "add", "src/gateway_kitsune.rs", "src/routes/websocket.rs"], check=True)
+          subprocess.run(["git", "-C", str(root), "commit", "-m", "security: fix signal encoder and registration key ownership"], check=True)
+          subprocess.run(["git", "-C", str(root), "diff", "--check"], check=True)
+          PY
+
+      - name: Fix regression tests and targeted strict-Clippy failures from real Cargo run
+        run: |
+          set -euo pipefail
+          python3 ci/agent3-h2hc-kit/apply_rust_regression_fixes.py --repo "$RUNNER_TEMP/h2hc"
+          git -C "$RUNNER_TEMP/h2hc" add src/router.rs src/routes/websocket.rs src/auth/middleware.rs src/config.rs src/gateway_kitsune.rs src/lib.rs
+          git -C "$RUNNER_TEMP/h2hc" commit -m "security: correct Rust regression fixtures and targeted Clippy errors"
+          git -C "$RUNNER_TEMP/h2hc" diff --check
+
+      - name: Apply fail-closed revocation patch without modifying upstream pin
+        run: |
+          set -euo pipefail
+          python3 ci/agent3-h2hc-kit/apply_revocation_patch.py --repo "$RUNNER_TEMP/h2hc"
+          git -C "$RUNNER_TEMP/h2hc" add src/auth/store.rs src/auth/memory_store.rs src/routes/websocket.rs
+          git -C "$RUNNER_TEMP/h2hc" commit -m "security: revoke every active websocket and close session race"
+          git -C "$RUNNER_TEMP/h2hc" diff --check
+          git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD
+
+      - name: Install pinned Rust toolchain with fmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.96.1'
+          components: rustfmt, clippy
+
+      - name: Install Holochain native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev pkg-config build-essential
+
+      - name: Cache pinned Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ runner.temp }}/h2hc
+          cache-on-failure: true
+
+      - name: Format generated Rust sources
+        working-directory: ${{ runner.temp }}/h2hc
+        run: |
+          set -euo pipefail
+          cargo fmt
+          git diff --stat
+          git diff --check
+
+
+      - name: Apply restricted role relay, format and pin the exact generated Rust tree
+        run: |
+          set -euo pipefail
+          python3 ci/agent3-h2hc-kit/apply_private_role_relay.py --repo "$RUNNER_TEMP/h2hc"
+          cd "$RUNNER_TEMP/h2hc"
+          cargo fmt
+          git add src
+          git diff --cached --check
+          git commit -m "security: bounded opaque role-request and role-delivery relay"
+          echo "Private relay H2HC SHA: $(git rev-parse HEAD)"
+          git status --porcelain
+
+      - name: Install Node 22 for real WebSocket client
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build actual H2HC executable from pinned patched source
+        working-directory: ${{ runner.temp }}/h2hc
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin h2hc-linker 2>&1 | tee "$RUNNER_TEMP/h2hc-build.log"
+          test -x target/debug/h2hc-linker
+          mkdir -p "$GITHUB_WORKSPACE/ci-evidence/runtime"
+          cp target/debug/h2hc-linker "$GITHUB_WORKSPACE/ci-evidence/runtime/h2hc-linker-linux-x86_64"
+          strip --strip-debug "$GITHUB_WORKSPACE/ci-evidence/runtime/h2hc-linker-linux-x86_64"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/secure.env.example" "$GITHUB_WORKSPACE/ci-evidence/runtime/secure.env.example"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/RUNTIME_RUNBOOK.md" "$GITHUB_WORKSPACE/ci-evidence/runtime/RUNTIME_RUNBOOK.md"
+          sha256sum "$GITHUB_WORKSPACE/ci-evidence/runtime/h2hc-linker-linux-x86_64" > "$GITHUB_WORKSPACE/ci-evidence/runtime/SHA256SUMS"
+          file "$GITHUB_WORKSPACE/ci-evidence/runtime/h2hc-linker-linux-x86_64"
+          echo "SOURCE_H2HC=$(git rev-parse HEAD)" > "$GITHUB_WORKSPACE/ci-evidence/runtime/build-provenance.txt"
+          echo "SOURCE_IMPOSTER=$GITHUB_SHA" >> "$GITHUB_WORKSPACE/ci-evidence/runtime/build-provenance.txt"
+          rustc --version >> "$GITHUB_WORKSPACE/ci-evidence/runtime/build-provenance.txt"
+          cargo --version >> "$GITHUB_WORKSPACE/ci-evidence/runtime/build-provenance.txt"
+
+      - name: Build synthetic Holochain 0.7 signed-action wire fixtures
+        working-directory: ${{ runner.temp }}/h2hc
+        run: |
+          set -euo pipefail
+          mkdir -p examples
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/runtime-fixtures.rs" examples/agent3_runtime_fixtures.rs
+          cargo run --locked --example agent3_runtime_fixtures > "$RUNNER_TEMP/agent3-runtime-fixtures.json"
+          python3 -m json.tool "$RUNNER_TEMP/agent3-runtime-fixtures.json" > /dev/null
+          echo "Generated native Holochain 0.7 fixture. Synthetic signing seeds intentionally NOT uploaded."
+
+      # Official Holochain development bootstrap only; synthetic fixture/test identities,
+      # NO deployable host bound DNA and NO sensitive game data.
+      - name: Verify production auth fails closed and perform actual HTTP/WebSocket traffic
+        working-directory: ${{ runner.temp }}/h2hc
+        env:
+          H2HC_LINKER_ADDRESS: "127.0.0.1"
+          H2HC_LINKER_PORT: "18090"
+          H2HC_LINKER_BOOTSTRAP_URL: "https://dev-test-bootstrap2.holochain.org/"
+          H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK: "false"
+          H2HC_LINKER_ALLOW_INSECURE_DEV: "false"
+          H2HC_LINKER_KEY_FILE: ${{ runner.temp }}/agent3-linker-ci-identity.key
+          H2HC_FIXTURE_FILE: ${{ runner.temp }}/agent3-runtime-fixtures.json
+          H2HC_RESULT_FILE: ${{ github.workspace }}/ci-evidence/runtime/live-network-results.json
+          H2HC_BASE_URL: "http://127.0.0.1:18090"
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-evidence/runtime"
+          binary=target/debug/h2hc-linker
+          # Intentional refusal checks: no production auth / insecure local authority.
+          if env -u H2HC_LINKER_ADMIN_SECRET "$binary" --address 127.0.0.1 --port 18090 > "$RUNNER_TEMP/startup-no-auth.log" 2>&1; then
+            echo "FAIL: production runtime accepted missing admin secret"; exit 1
+          fi
+          grep -q 'Authentication required' "$RUNNER_TEMP/startup-no-auth.log"
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          if H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=true "$binary" --address 127.0.0.1 --port 18090 > "$RUNNER_TEMP/startup-unsafe-fallback.log" 2>&1; then
+            echo "FAIL: authenticated runtime accepted unvalidated fallback"; exit 1
+          fi
+          grep -q 'Unvalidated local-authority fallback is forbidden' "$RUNNER_TEMP/startup-unsafe-fallback.log"
+          echo "PASS: absent production auth and unsafe fallback rejected at startup"
+          "$binary" --address 127.0.0.1 --port 18090 > "$RUNNER_TEMP/h2hc-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:18090/health > /dev/null; then ready=1; break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then echo "H2HC exited during startup"; break; fi
+            sleep 1
+          done
+          if test "$ready" -ne 1; then tail -90 "$RUNNER_TEMP/h2hc-server.log"; exit 1; fi
+          echo "PASS: real H2HC binary started with authentication and fallback disabled"
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/network-probe.mjs" | tee "$RUNNER_TEMP/h2hc-network-probe.log"
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/network-role-probe.mjs" | tee "$RUNNER_TEMP/h2hc-role-probe.log"
+
+      - name: Collect runtime evidence without private test keys
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence/runtime
+          for entry in h2hc-build.log h2hc-server.log h2hc-network-probe.log h2hc-role-probe.log startup-no-auth.log startup-unsafe-fallback.log; do
+            if test -f "$RUNNER_TEMP/$entry"; then cp "$RUNNER_TEMP/$entry" "ci-evidence/runtime/$entry"; fi
+          done
+          # DO NOT upload $RUNNER_TEMP/agent3-runtime-fixtures.json or the H2HC secret or identity key.
+          test ! -e ci-evidence/runtime/agent3-runtime-fixtures.json
+          git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD > ci-evidence/runtime/h2hc-applied-source-commit.txt 2>/dev/null || true
+
+      - name: Upload executable, secure config, and real runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent3-h2hc-authenticated-runtime-${{ github.run_id }}
+          path: ci-evidence/runtime/
+          if-no-files-found: warn
+          retention-days: 14
