@@ -192,6 +192,54 @@ jobs:
           cp "$RUNNER_TEMP/role-public-vectors.json" "$GITHUB_WORKSPACE/ci-evidence/role-public-vectors.json"
           echo "HPKE_ROLE_VECTORS=PASS"
 
+      - name: Pin Node 22 for actual authenticated WebSocket role traffic
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build checksummed epoch-bound gateway and run restricted three-agent live WS probe
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/h2hc"
+          cargo build --locked --bin h2hc-linker
+          test -x target/debug/h2hc-linker
+          dest="$GITHUB_WORKSPACE/ci-evidence/role-gateway"
+          mkdir -p "$dest" examples
+          cp target/debug/h2hc-linker "$dest/h2hc-linker-linux-x86_64"
+          strip --strip-debug "$dest/h2hc-linker-linux-x86_64"
+          (cd "$dest" && sha256sum h2hc-linker-linux-x86_64 > SHA256SUMS)
+          git rev-parse HEAD > "$dest/h2hc-applied-source-commit.txt"
+          printf 'SOURCE_IMPOSTER=%s\n' "$GITHUB_SHA" > "$dest/build-provenance.txt"
+          printf 'SOURCE_H2HC=%s\n' "$(git rev-parse HEAD)" >> "$dest/build-provenance.txt"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/secure.env.example" "$dest/secure.env.example"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/RUNTIME_RUNBOOK.md" "$dest/RUNTIME_RUNBOOK.md"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/runtime-fixtures.rs" examples/agent3_runtime_fixtures.rs
+          cargo run --locked --example agent3_runtime_fixtures > "$RUNNER_TEMP/role-live-fixtures.json"
+          export H2HC_LINKER_ADDRESS="127.0.0.1"
+          export H2HC_LINKER_PORT="18091"
+          export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK="false"
+          export H2HC_LINKER_ALLOW_INSECURE_DEV="false"
+          export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/role-gateway-identity.key"
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          export H2HC_FIXTURE_FILE="$RUNNER_TEMP/role-live-fixtures.json"
+          export H2HC_BASE_URL="http://127.0.0.1:18091"
+          target/debug/h2hc-linker --address 127.0.0.1 --port 18091 > "$RUNNER_TEMP/role-gateway-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:18091/health > /dev/null 2>&1; then ready=1; break; fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if test "$ready" -ne 1; then echo "ROLE_GATEWAY_STARTUP=FAIL"; exit 1; fi
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/network-role-probe.mjs" | tee "$RUNNER_TEMP/role-smoke-out.txt"
+          grep -Fq 'ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED' "$RUNNER_TEMP/role-smoke-out.txt"
+          cp "$RUNNER_TEMP/role-smoke-out.txt" "$dest/role-smoke-result.txt"
+          echo "EPOCH_BOUND_GATEWAY_BINARY_AND_NETWORK=PASS"
+          cat "$dest/SHA256SUMS"
+
       - name: Collect source commits and final Git diff
         if: always()
         run: |
