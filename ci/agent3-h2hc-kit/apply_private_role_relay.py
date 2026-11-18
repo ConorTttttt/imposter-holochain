@@ -195,6 +195,13 @@ def apply(root):
 
         ClientMessage::Ping => {""")
     replace(ws,
+        "            if sender.send(Message::Text(json.into())).await.is_err() {",
+        """            // A stalled socket cannot hold the administrative revoke lock forever.
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(2), sender.send(Message::Text(json.into()))).await,
+                Ok(Ok(()))
+            ) {""")
+    replace(ws,
         "    state.authenticated_agent = Some(agent.clone());",
         "    state.authenticated_agent = Some(agent.clone());\n    state.session_token = Some(session_token.as_str().to_string());")
     subprocess.run(["git", "-C", str(root), "diff", "--check"], check=True)
