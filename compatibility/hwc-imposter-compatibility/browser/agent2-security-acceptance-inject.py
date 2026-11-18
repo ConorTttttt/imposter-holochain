@@ -36,7 +36,7 @@ probe = r"""
         }
         // Intentional invalid record ID: authorization must precede record
         // parsing and any native DHT lookup. Status only is returned.
-        const url = linkerUrl.replace(/\\/$/, "") +
+        const url = linkerUrl.replace(/\/$/, "") +
           "/dht/" + encodeURIComponent(message.dna) +
           "/record/invalid-action-hash";
         try {
