@@ -16,10 +16,11 @@ HAPP = f"frontend/{APP_ID}.happ"
 DNA = "backend/game.dna"
 GATEWAY = "backend/h2hc-linker-linux-x86_64"
 EXTENSION = "chromium-hwc.zip"
+SETUP = {"browser-setup.html", "browser-setup.js"}
 FILES = {
     EXTENSION, HAPP, DNA, GATEWAY, "frontend/browser-demo.html",
     "frontend/deployment.json", "config/public.example.json", "config/operator.example.json",
-}
+} | {f"frontend/{name}" for name in SETUP}
 SECRET_MARKERS = re.compile(
     rb"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{25,}"
 )
@@ -165,6 +166,7 @@ def assemble(args):
         for source, target in [(args.native / "app" / f"{APP_ID}.happ", HAPP),
                                (args.native / "dna/game.dna", DNA), (args.gateway, GATEWAY),
                                (args.demo, "frontend/browser-demo.html"),
+                               *((HERE / "frontend" / name, "frontend/" + name) for name in sorted(SETUP)),
                                (HERE / "public.example.json", "config/public.example.json"),
                                (HERE / "operator.example.json", "config/operator.example.json")]:
             shutil.copyfile(source, root / target)
