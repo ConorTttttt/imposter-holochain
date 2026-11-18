@@ -33,7 +33,7 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
    },
    async reserve({dna,recipient,sender,commit,messageId}){
      if(!(messageId instanceof Uint8Array)||messageId.length!==16)throw Error('invalid replay message id');
-     const id=[hash(dna,'dna'),hash(recipient,'recipient'),hash(sender,'sender'),hash(commit,'commit'),hex(messageId)].join(':');
+     // RoleCommit remains signed in the message but is deliberately NOT part of\n     // replay identity: the same message ID cannot be reused in another round.\n     hash(commit,'commit');\n     const id=[hash(dna,'dna'),hash(recipient,'recipient'),hash(sender,'sender'),hex(messageId)].join(':');
      const t=db.transaction('replay','readwrite',{durability:'strict'}),finished=done(t);
      try{t.objectStore('replay').add({id,receivedAt:Date.now()});await finished;}catch(e){try{t.abort();}catch{}try{await finished;}catch{}throw Error('role delivery replay or persistence failure');}
    },
