@@ -170,6 +170,24 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   wsService.onStateChange((state: ConnectionState) => {''')
 
     background = "packages/extension/src/background/index.ts"
+    # Public CALL_ZOME supports legitimate native game actions, including
+    # commit_roles_only. It cannot disclose a host's private opening or
+    # publish webpage-selected keys. Only a privileged native executor may
+    # invoke these functions, never the content-script/page call router.
+    edit(background, '''    const payload = requestPayload.payload;
+
+    // Build cell_id from context''', '''    const payload = requestPayload.payload;
+
+    if (zome_name === "game" && [
+      "host_role_opening",
+      "publish_signed_recipient_key_attestation",
+      "enroll_recipient_key",
+      "deal_roles",
+    ].includes(fn_name)) {
+      return createErrorResponse(message.id, "PRIVILEGED_ROLE_OPERATION_DENIED");
+    }
+
+    // Build cell_id from context''')
     edit(background, '''executor.onRemoteSignal((data) => {
   handleRemoteSignal(data);
 });''', '''executor.onRemoteSignal((data) => {
