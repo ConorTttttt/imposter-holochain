@@ -228,6 +228,7 @@ cargo run --locked --example agent3_role_vectors -- --hashes > /tmp/role-hashes.
 python3 "$IMPOSTER/ci/agent3-h2hc-kit/generate_role_vectors.py" \
   /tmp/role-hashes.json /tmp/role-public-vectors.json
 cargo run --locked --example agent3_role_vectors -- /tmp/role-public-vectors.json
+node "$IMPOSTER/ci/agent3-h2hc-kit/verify-role-vectors.mjs" /tmp/role-public-vectors.json
 cargo fmt --check && cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
@@ -303,3 +304,20 @@ Once both approvals exist, publish a single immutable v1 contract pin
 (commit SHA + fixture SHA-256); do not reinterpret candidate revision
 as already frozen. Browser/desktop live role delivery remains NOT ACCEPTED
 until independent receiver post-decryption proof checks pass.
+
+
+**Direct Agent 2 HWC fixture import:** download the *successful* Agent 3
+`agent3-h2hc-p0-security-<run_id>` Actions artifact and extract only
+`role-public-vectors.json`. JSON `cases[*].envelope` plus
+`cases[*].signature_b64` are ready for the gateway frame; the same objects
+provide binary `header_hex`, `signed_bytes_hex`, `aad_hex`,
+`hpke_info_hex`, `hpke_enc_hex`, `ciphertext_hex`, and
+`signature_hex` comparisons. `key_attestations[*]` and
+`negative_cases[*]` are separately importable without fixture private keys.
+A successful fixture-only check does not prove signed HWC/Lair live keys,
+durable replay, native RoleCommit validation or decryption of a real role.
+
+The previous confirmed-green baseline is security run **44299128149**,
+artifact **14424762920**, on pre-epoch commit `204cd95a`;
+those *older vectors are incompatible with candidate revision 2*.
+Use only a later full-green run with signed epoch for this candidate.
