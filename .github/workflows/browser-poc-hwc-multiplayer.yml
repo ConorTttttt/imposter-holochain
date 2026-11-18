@@ -87,6 +87,15 @@ jobs:
           python3 agent3-kit/ci/agent3-h2hc-kit/instrument_negative_validation.py scripts/agent3-native-authority-browser-bridge.mjs
           python3 agent3-kit/ci/agent3-h2hc-kit/instrument_native_admin.py scripts/agent3-native-authority-browser-bridge.mjs
           python3 scripts/agent4-native-three-player-instrument.py scripts/agent3-native-authority-browser-bridge.mjs
+          # Correct the historic CI bootstrap's artifact metadata to this run.
+          python3 - <<'PY'
+          from pathlib import Path
+          bridge = Path('scripts/agent3-native-authority-browser-bridge.mjs')
+          old = 'h2hc_secure_artifact_run:44165793922'
+          raw = bridge.read_text()
+          assert raw.count(old) == 1, 'Unexpected H2HC provenance metadata drift'
+          bridge.write_text(raw.replace(old, 'h2hc_secure_artifact_run:44274859411'))
+          PY
           node --check scripts/agent3-native-authority-browser-bridge.mjs
           python3 -m py_compile scripts/agent4-native-three-player-instrument.py agent3-kit/ci/agent3-h2hc-kit/instrument_native_convergence.py agent3-kit/ci/agent3-h2hc-kit/instrument_negative_validation.py agent3-kit/ci/agent3-h2hc-kit/instrument_exact_lobby_op.py agent3-kit/ci/agent3-h2hc-kit/instrument_native_admin.py agent3-kit/ci/agent3-h2hc-kit/audit_native_dht.py
           mkdir -p runtime-evidence
@@ -94,27 +103,34 @@ jobs:
           printf '%s\n' "Agent4=${{ github.sha }}" "Agent4_native_bridge_bootstrap=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent3_native_positive=f49b0dfcc9f8b86a3e2abcd48e6c13375c347ed5" "Agent2=bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
           echo "Original Agent4 and HWC source remain untouched in repositories"
 
-      - name: Reuse exact successful H2HC executable from prior CI (no rebuild)
+      - name: Download independently tested revocation-secure Agent 3 H2HC executable
         uses: actions/download-artifact@v4
         with:
-          run-id: 44165793922
+          run-id: 44274859411
           repository: ConorTttttt/imposter-holochain
-          name: agent3-h2hc-authenticated-runtime-44165793922
+          name: agent3-h2hc-authenticated-runtime-44274859411
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: h2hc-binary
 
-      - name: Validate H2HC artifact checksum and pinned source record
+      - name: Validate externally pinned H2HC executable digest and revocation-patched source
         shell: bash
         run: |
           set -euo pipefail
-          expected="$(head -1 h2hc-binary/SHA256SUMS | cut -d' ' -f1)"
-          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | cut -d' ' -f1)"
-          test "$expected" = "$actual"
+          # Artifact ZIP: sha256:c9af3f19ba5b7abbae5cbb0c9a8c6ac4b5f7046d8585bbbbbdb293f4bcf7d7a5
+          expected="6c1266de8e22c854068dcdeaeb351cae6de8c70fb20d910bf79cc1fb4af4bb88"
+          declared="$(head -1 h2hc-binary/SHA256SUMS | awk '{print $1}')"
+          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | awk '{print $1}')"
+          test "$declared" = "$expected"
+          test "$actual" = "$expected"
           applied="$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)"
+          originating="$(sed -n 's/^SOURCE_IMPOSTER=//p' h2hc-binary/build-provenance.txt)"
+          test "$applied" = "09df766ee2a596a6f36c46ffa9c4d07588bedb82"
+          test "$originating" = "03e116ea6f59d88248096ac7dee2f653ded26e60"
           test "$applied" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
-          grep -q cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
+          grep -Fq cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
           chmod +x h2hc-binary/h2hc-linker-linux-x86_64
-          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_RUN=44165793922\n' "$applied" "$actual" > runtime-evidence/h2hc-provenance.txt
+          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_SOURCE_IMPOSTER=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_ID=14413159313\nARTIFACT_RUN=44274859411\nZIP_SHA256=c9af3f19ba5b7abbae5cbb0c9a8c6ac4b5f7046d8585bbbbbdb293f4bcf7d7a5\n' "$applied" "$originating" "$actual" > runtime-evidence/h2hc-provenance.txt
+          echo 'PASS: externally pinned revocation-secure H2HC executable and exact source provenance'
 
       - name: Set up Node 22 for actual patched HWC
         uses: actions/setup-node@v4
