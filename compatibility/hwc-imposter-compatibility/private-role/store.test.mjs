@@ -110,7 +110,7 @@ test('native-enrolled recipient watermark rejects rollback and same-epoch equivo
  await assert.rejects(restarted.getTrustedRecipient(d,a,{now:now+61000}),/expired/);
  restarted.close();
 });
-test('version-1 key/replay rows survive version-2 trusted watermark upgrade',async()=>{
+test('version-1 key/replay rows survive version-3 trusted watermark/action-pin upgrade',async()=>{
  const name='agent2-role-idb-upgrade-'+Date.now();
  const initial=indexedDB.open(name,1);
  initial.onupgradeneeded=()=>{const db=initial.result;db.createObjectStore('cells',{keyPath:'cell'});db.createObjectStore('replay',{keyPath:'id'});};
@@ -151,4 +151,50 @@ test('consecutive native key epochs and non-rewinding renewal windows are requir
  const newer=await store.rotateCell(d,agentId,2);
  assert.equal(newer.epoch,2);
  store.close();
+});
+
+test('native Lobby and RoleCommit pins survive restart and never switch actions',async()=>{
+ const name='agent2-role-action-pins-'+Date.now();
+ const d=dna(41),a=agent(42),lobby=commit(51),roleCommit=commit(52);
+ const first=await openRoleStore(name);
+ assert.equal(await first.getPinnedLobby(d,a),null);
+ assert.equal(await first.getPinnedRoleCommit(d,a),null);
+ await assert.rejects(first.pinTrustedRoleCommit(d,a,lobby,roleCommit),/missing/);
+ await first.pinNativeLobby(d,a,lobby);
+ await first.pinNativeLobby(d,a,lobby);
+ await assert.rejects(first.pinNativeLobby(d,a,commit(53)),/Lobby action changed/);
+ await first.pinTrustedRoleCommit(d,a,lobby,roleCommit);
+ await first.pinTrustedRoleCommit(d,a,lobby,roleCommit);
+ first.close();
+ const second=await openRoleStore(name);
+ assert.deepEqual(await second.getPinnedLobby(d,a),lobby);
+ assert.deepEqual(await second.getPinnedRoleCommit(d,a),roleCommit);
+ await assert.rejects(second.pinTrustedRoleCommit(d,a,lobby,commit(54)),/RoleCommit action changed/);
+ await assert.rejects(second.pinTrustedRoleCommit(d,a,commit(55),roleCommit),/RoleCommit action changed/);
+ await assert.rejects(second.pinNativeLobby(d,a,commit(55)),/Lobby action changed/);
+ assert.deepEqual(await second.getPinnedRoleCommit(d,a),roleCommit);
+ assert.equal(await second.getPinnedRoleCommit(dna(42),a),null);
+ assert.equal(await second.getPinnedRoleCommit(d,agent(44)),null);
+ await assert.rejects(second.pinNativeLobby(d,a,new Uint8Array(39)),/ActionHash/);
+ second.close();
+});
+test('existing version-2 trusted recipient records survive the version-3 action pin migration',async()=>{
+ const name='agent2-role-v2-to-v3-'+Date.now();
+ const req=indexedDB.open(name,2);
+ req.onupgradeneeded=()=>{
+  const d=req.result;
+  d.createObjectStore('cells',{keyPath:'cell'});
+  d.createObjectStore('replay',{keyPath:'id'});
+  d.createObjectStore('trusted',{keyPath:'cell'});
+ };
+ const original=await new Promise((resolve,reject)=>{
+  req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+ });
+ original.close();
+ const upgraded=await openRoleStore(name);
+ const d=dna(81),a=agent(82),l=commit(83),c=commit(84);
+ await upgraded.pinNativeLobby(d,a,l);
+ await upgraded.pinTrustedRoleCommit(d,a,l,c);
+ assert.deepEqual(await upgraded.getPinnedRoleCommit(d,a),c);
+ upgraded.close();
 });
