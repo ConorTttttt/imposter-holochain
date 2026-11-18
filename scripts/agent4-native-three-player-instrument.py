@@ -38,6 +38,12 @@ replace_once(
     // later genuine join can remain in native AwaitingDeps even while its
     // CreateRecord and CreateEntry operations integrate successfully.
     await step('GUEST_C_REAL_GENESIS_AND_PUBLIC_DHT_PREFLIGHT',async()=>{
+      // Capture an exact native GetReq/GetRes interval beginning with THIS
+      // third independent browser's first-ever successful DHT query.
+      // A subsequent read may use the DHT-backed local cache instead of
+      // repeating GetReq for the same immutable action.
+      evidence.guest_c_first_network_get_offset=fs.readFileSync(
+        process.env.H2HC_SERVER_LOG,'utf8').replace(/\x1b\[[0-9;]*m/g,'').length;
       const result=await guestCPage.evaluate(async()=>
         window.holochain.callZome({
           zome_name:'game',fn_name:'get_game_state',payload:null
@@ -299,7 +305,8 @@ replace_once('  const allP0Green=', r"""
     const offset=readGatewayLog().length;
     const v=await awaitSeats(guestCPage,[host,pubkeys[1]],pubkeys[2],
       'Guest C before its join');
-    const fresh=readGatewayLog().slice(offset);
+    const fresh=readGatewayLog().slice(
+      evidence.guest_c_first_network_get_offset??offset);
     const reqs=[...fresh.matchAll(/Preparing GetReq message[^\n]*msg_id=(\d+)[^\n]*hash=(uhCkk[^\s]+)/g)]
       .filter(x=>x[2]===lobbyActionHash).map(x=>Number(x[1]));
     // A native GetRes can race our first post-query log snapshot; poll it.
@@ -312,8 +319,9 @@ replace_once('  const allP0Green=', r"""
       if(replies.length)break;
       await wait(250);
     }
-    // A fresh isolated third profile must fetch through native, not local
-    // database copies; non-null state alone cannot establish exact hash.
+    // The third browser's first read above MUST issue exact native GetReq/Res.
+    // Later reads may use the browser's *own* DHT-backed cache; no storage
+    // or game state has been injected, copied or shared across browsers.
     must(replies.length>0,
       'Guest C did not receive a native GetRes for the exact host lobby action');
     evidence.networked_players.guest_c_prejoin={...v,
