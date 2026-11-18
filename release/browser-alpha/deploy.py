@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import subprocess
 from urllib.parse import urlsplit
@@ -143,8 +144,22 @@ def run_gateway(root, public, paths):
     os.execve(exe, [exe, "--address", "127.0.0.1", "--port", "8090"], env)
 
 
-def change_admission(method, agent, role, host, secret_file):
+def check_agent(agent):
     require(re.fullmatch(r"uhCAk[A-Za-z0-9_-]{48}", agent), "Expected a public HWC agent key")
+
+
+def admission_status(path, agent):
+    check_agent(agent)
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5) as db:
+        allowed, sessions = db.execute("""
+            select exists(select 1 from allowed_agents where agent_pubkey = ?),
+                   (select count(*) from sessions where agent_pubkey = ?)
+        """, (agent, agent)).fetchone()
+    return {"allowed": bool(allowed), "active_sessions": sessions}
+
+
+def change_admission(method, agent, role, host, secret_file):
+    check_agent(agent)
     body = {"agent_pubkey": agent}
     if method == "POST":
         require((role == "host") == (agent == host), "Host admission differs from the host-bound hApp")
@@ -263,7 +278,7 @@ def remote_preflight(public, release):
 def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["check", "render-proxy", "bootstrap-site", "publish", "rollback",
-                                              "preflight", "gateway", "admit", "revoke",
+                                              "preflight", "gateway", "admit", "revoke", "admission-status",
                                               "init-native", "run-native", "native-status"])
     parser.add_argument("--public", type=Path, required=True)
     parser.add_argument("--operator", type=Path, required=True)
@@ -310,9 +325,13 @@ def main():
             change_admission("POST" if args.operation == "admit" else "DELETE",
                              args.agent, args.role, manifest["game"]["host_agent_pub_key"], paths["admin_secret_file"])
             print("Authenticated loopback gateway admission change accepted")
+        if args.operation == "admission-status":
+            require(args.agent, "Specify the public agent to audit")
+            print(json.dumps(admission_status(paths["gateway_session_db"], args.agent)))
     except ValidationError as error:
         parser.exit(1, f"Browser alpha deployment command failed. {error}\n")
-    except (ValueError, KeyError, TypeError, OSError, BadZipFile, subprocess.SubprocessError, http.client.HTTPException):
+    except (ValueError, KeyError, TypeError, OSError, BadZipFile, sqlite3.Error,
+            subprocess.SubprocessError, http.client.HTTPException):
         # Detailed credentials, gateway responses and environment remain on the operator host.
         parser.exit(1, "Browser alpha deployment command failed. Check configuration, artifact pins and local service status.\n")
 

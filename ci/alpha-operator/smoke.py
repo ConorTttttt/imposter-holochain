@@ -8,7 +8,6 @@ from pathlib import Path
 import secrets
 import shutil
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,8 +15,8 @@ import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "release/browser-alpha"))
-from deploy import (change_admission, configuration, gateway_environment, https_request, proxy_config,
-                    release_files, remote_preflight)
+from deploy import (admission_status, change_admission, configuration, gateway_environment,
+                    https_request, proxy_config, release_files, remote_preflight)
 from package import GATEWAY, SETUP, digest, verify
 from site_release import activate_site
 
@@ -59,12 +58,6 @@ def service(command, port, root, env):
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait()
-
-
-def admitted(db):
-    with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True) as connection:
-        count, = connection.execute("select count(*) from allowed_agents").fetchone()
-    return count
 
 
 def local_gateway_health():
@@ -149,7 +142,7 @@ def smoke(release, commit, caddy, report):
                 local_gateway_health()
                 remote_preflight(public, release)
                 change_admission("POST", host, "host", host, secret_path)
-                assert admitted(db) == 1
+                assert admission_status(db, host) == {"allowed": True, "active_sessions": 0}
                 identity_before = digest(paths["gateway_identity_file"])
                 candidate = activate_site(site, release_files(updated, public))
                 assert candidate != original
@@ -161,12 +154,12 @@ def smoke(release, commit, caddy, report):
             with service(gateway, 8090, root, env):
                 remote_preflight(public, release)
                 assert digest(paths["gateway_identity_file"]) == identity_before
-                assert admitted(db) == 1
+                assert admission_status(db, host) == {"allowed": True, "active_sessions": 0}
                 change_admission("DELETE", host, None, host, secret_path)
-                assert admitted(db) == 0
+                assert admission_status(db, host) == {"allowed": False, "active_sessions": 0}
             with service(gateway, 8090, root, env):
                 local_gateway_health()
-                assert admitted(db) == 0
+                assert admission_status(db, host) == {"allowed": False, "active_sessions": 0}
 
     report.write_text(json.dumps({
         "https_wss_loopback_preflight": "PASS",
