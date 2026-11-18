@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {openRoleStore} from './store.mjs';
 import {seal,openForCell} from './hpke.mjs';
+import {attestKey} from './wire.mjs';
 const hash=(prefix,n)=>new Uint8Array([...prefix,...new Array(36).fill(n)]);
 const dna=n=>hash([0x84,0x2d,0x24],n);
 const agent=n=>hash([0x84,0x20,0x24],n);
@@ -52,4 +53,27 @@ test('atomic replay insertion persists across DB reopening; concurrent duplicate
  await restarted.reserve(replay(dna(4),r,s,c,7));
  await restarted.reserve(replay(d,agent(9),s,c,7));
  restarted.close();
+});
+
+test('signed attestation is durably pinned only to the active nonextractable cell key',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const n='agent2-role-attestation-'+Date.now(),store=await openRoleStore(n);
+ const signKey=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signKey.publicKey));
+ const a=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]),d=dna(12);
+ const sign=async(_core,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signKey.privateKey,b));
+ const c=await store.rotateCell(d,a,1);
+ const now=Date.now(),att=await attestKey({dna:d,agent:a,keyId:c.keyId,epoch:1,publicKey:c.publicKey,sign,now});
+ assert.equal(await store.installCellAttestation(d,a,att,{now}),true);
+ await assert.rejects(store.installCellAttestation(dna(13),a,att,{now}),/wrong attested cell/);
+ await assert.rejects(store.installCellAttestation(d,a,{...att,publicKey:new Uint8Array(32)},{now}),/forged/);
+ await assert.rejects(store.installCellAttestation(d,a,{...att,keyId:new Uint8Array(16)},{now}),/forged/);
+ store.close();
+ const reopened=await openRoleStore(n),persisted=await reopened.getCell(d,a);
+ assert.deepEqual(persisted.attestation.signature,att.signature);
+ assert.equal(persisted.privateKey.extractable,false);
+ await reopened.rotateCell(d,a,2);
+ await assert.rejects(reopened.installCellAttestation(d,a,att,{now}),/does not match current/);
+ assert.equal((await reopened.getCell(d,a)).attestation,undefined);
+ reopened.close();
 });
