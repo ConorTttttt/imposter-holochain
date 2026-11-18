@@ -6,8 +6,12 @@
  */
 import {readFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
 const source=readFileSync(new URL('./agent3-role-public-vectors-v1-candidate.json.gz.base64',import.meta.url),'utf8').replace(/\s/g,'');
-const raw=JSON.parse(gunzipSync(Buffer.from(source,'base64')).toString('utf8'));
+const decoded=gunzipSync(Buffer.from(source,'base64'));
+const expectedSha256='065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4';
+if(createHash('sha256').update(decoded).digest('hex')!==expectedSha256)throw Error('Agent 3 native fixture digest mismatch');
+const raw=JSON.parse(decoded.toString('utf8'));
 if(raw.fixture_only!==true||raw.version!==1||raw.cases?.length!==2||raw.key_attestations?.length!==2||raw.negative_cases?.length!==9)throw Error('unexpected Agent 3 fixture');
 const [request,delivery]=raw.cases;
 if(request.operation!=='role_request_v1'||delivery.operation!=='role_delivery_v1')throw Error('unexpected Agent 3 operations');
