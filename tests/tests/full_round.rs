@@ -2430,3 +2430,285 @@ async fn recipient_key_native_two_conductors_attest_discover_and_rotate() {
     println!("RECIPIENT_ATTESTATION_STALE_FLOOR_DENIED=PASS");
     println!("RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN");
 }
+
+
+// --- Native RoleCommit / HWC receiver boundary --------------------------
+// These are actual SweetConductor 0.7 cells. No page-supplied validation
+// flags, synthetic round fields, simulated records or generic role signals.
+
+#[derive(serde::Serialize, Debug, Clone)]
+struct NativeGameQuery {
+    expected_lobby: ActionHash,
+    expected_role_commit: Option<ActionHash>,
+    expected_recipient: Option<AgentPubKey>,
+    expected_seat: Option<u16>,
+}
+#[derive(serde::Deserialize, Debug)]
+struct NativeLobbyFields {
+    code: String,
+    player_count: u16,
+    impostor_count: u16,
+    task_target: u32,
+}
+#[derive(serde::Deserialize, Debug)]
+struct NativeSeat {
+    seat: u16,
+    agent: AgentPubKey,
+    join_action: ActionHash,
+    display_name: String,
+}
+#[derive(serde::Deserialize, Debug)]
+struct NativeGameView {
+    schema_version: u8,
+    dna: DnaHash,
+    network_seed: String,
+    host: AgentPubKey,
+    lobby_action: ActionHash,
+    lobby: NativeLobbyFields,
+    role_commit_action: Option<ActionHash>,
+    merkle_root: Option<[u8; 32]>,
+    seats: Vec<NativeSeat>,
+    phase: String,
+    observed_only: bool,
+}
+#[derive(serde::Serialize, Debug)]
+struct NativeHostOpeningQuery {
+    expected_lobby: ActionHash,
+    expected_role_commit: ActionHash,
+    expected_recipient: AgentPubKey,
+    expected_seat: u16,
+}
+#[derive(serde::Deserialize, Debug)]
+struct NativeHostOpening {
+    role_commit: ActionHash,
+    recipient: AgentPubKey,
+    seat: u16,
+    role: u8,
+    proof: RoleProof,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_game_role_commit_boundary_accepted_and_rejects_wrong_inputs() {
+    let env = Lobby::setup(3).await;
+    let host = env.cells[0].agent_pubkey().clone();
+    let lobby_record: Record = env.call(0, "create_lobby", CreateLobby {
+        code: env.seed.clone(), player_count: 3, impostor_count: 1,
+        task_target: 1, display_name: "Host".into(),
+    }).await;
+    let lobby_action = lobby_record.action_address().clone();
+    env.sync().await;
+    let mut guest_joins = Vec::new();
+    for (i, name) in [(1, "Guest B"), (2, "Guest C")] {
+        let join: Record = env.call(i, "join_lobby", JoinLobby {
+            display_name: name.into(),
+        }).await;
+        guest_joins.push((env.cells[i].agent_pubkey().clone(), join.action_address().clone()));
+    }
+    env.sync().await;
+
+    let lobby_only: NativeGameView = env.call(2, "get_authoritative_game_view", NativeGameQuery {
+        expected_lobby: lobby_action.clone(), expected_role_commit: None,
+        expected_recipient: None, expected_seat: None,
+    }).await;
+    assert_eq!(lobby_only.schema_version, 1);
+    assert_eq!(lobby_only.phase, "lobby");
+    assert_eq!(lobby_only.role_commit_action, None);
+    assert_eq!(lobby_only.merkle_root, None);
+    assert_eq!(lobby_only.host, host);
+    assert_eq!(lobby_only.dna, env.cells[2].cell_id().dna_hash().clone());
+    assert_eq!(lobby_only.network_seed, env.seed);
+    assert_eq!(lobby_only.lobby.code, env.seed);
+    assert_eq!(lobby_only.lobby.player_count, 3);
+    assert_eq!(lobby_only.lobby.impostor_count, 1);
+    assert_eq!(lobby_only.lobby.task_target, 1);
+    assert_eq!(lobby_only.seats.len(), 3);
+
+    // A guest can neither author the commitment nor open a host secret.
+    let wrong_host: Result<DealResult, _> = env.conductors[1].call_fallible(
+        &env.cells[1].zome(ZOME), "commit_roles_only", ()
+    ).await;
+    assert!(wrong_host.is_err(), "guest committed a host-only RoleCommit");
+
+    // No send_remote_signal: a real sealed private entry and public native
+    // RoleCommit are produced, without requiring encrypted role delivery.
+    let committed: DealResult = env.call(0, "commit_roles_only", ()).await;
+    assert_eq!(committed.seats.len(), 3);
+    assert_eq!(committed.roles.len(), 3);
+    let retry: DealResult = env.call(0, "commit_roles_only", ()).await;
+    assert_eq!(retry.role_commit, committed.role_commit,
+        "retry created a duplicate commitment");
+    assert_eq!(retry.roles, committed.roles);
+    env.sync().await;
+
+    // Independent guest obtains exact native Valid action, sorted canonical
+    // seats, actual signed PlayerJoin witnesses and source-DNA hash.
+    let guest_view: NativeGameView = env.call(1, "get_authoritative_game_view", NativeGameQuery {
+        expected_lobby: lobby_action.clone(),
+        expected_role_commit: Some(committed.role_commit.clone()),
+        expected_recipient: None, expected_seat: None,
+    }).await;
+    assert_eq!(guest_view.schema_version, 1);
+    assert_eq!(guest_view.lobby_action, lobby_action);
+    assert_eq!(guest_view.role_commit_action, Some(committed.role_commit.clone()));
+    assert!(guest_view.merkle_root.is_some());
+    assert_eq!(guest_view.phase, "playing");
+    assert!(guest_view.observed_only, "native Valid is not global DHT finality");
+    assert_eq!(guest_view.dna, env.cells[1].cell_id().dna_hash().clone());
+    assert_eq!(guest_view.seats.len(), 3);
+    assert_eq!(guest_view.seats.iter().map(|s| s.agent.clone()).collect::<Vec<_>>(),
+        committed.seats);
+    for (i, seat) in guest_view.seats.iter().enumerate() {
+        assert_eq!(seat.seat as usize, i);
+        assert!(!seat.display_name.is_empty());
+        if let Some((_, join)) = guest_joins.iter().find(|(k,_)| k == &seat.agent) {
+            assert_eq!(&seat.join_action, join, "wrong native PlayerJoin cited");
+        } else {
+            assert_eq!(seat.agent, host, "unrecognized seat");
+        }
+    }
+    println!("NATIVE_ROLE_COMMIT_ACTION={}", committed.role_commit);
+    println!("NATIVE_GAME_VALID_LOBBY_AND_JOINS=PASS");
+    println!("NATIVE_GAME_EXACT_COMMIT_INDEPENDENT_READ=PASS");
+    println!("NATIVE_GAME_NO_SIGNAL_COMMIT_AND_IDEMPOTENT_RETRY=PASS");
+
+    let seat = guest_view.seats.iter().find(|s| s.agent == env.cells[1].agent_pubkey().clone())
+        .expect("guest has canonical seat").seat;
+    let owned: NativeGameView = env.call(1, "get_authoritative_game_view", NativeGameQuery {
+        expected_lobby: lobby_action.clone(),
+        expected_role_commit: Some(committed.role_commit.clone()),
+        expected_recipient: Some(env.cells[1].agent_pubkey().clone()),
+        expected_seat: Some(seat),
+    }).await;
+    assert_eq!(owned.role_commit_action, Some(committed.role_commit.clone()));
+    let opening: NativeHostOpening = env.call(0, "host_role_opening", NativeHostOpeningQuery {
+        expected_lobby: lobby_action.clone(), expected_role_commit: committed.role_commit.clone(),
+        expected_recipient: env.cells[1].agent_pubkey().clone(), expected_seat: seat,
+    }).await;
+    assert_eq!(opening.role_commit, committed.role_commit);
+    assert_eq!(opening.recipient, env.cells[1].agent_pubkey().clone());
+    assert_eq!(opening.seat, seat);
+    assert_eq!(opening.role, committed.roles[seat as usize]);
+    let _ = opening.proof; // verified by native host_role_opening
+
+    let foreign_open: Result<NativeHostOpening, _> = env.conductors[1].call_fallible(
+        &env.cells[1].zome(ZOME), "host_role_opening", NativeHostOpeningQuery {
+            expected_lobby: lobby_action.clone(),
+            expected_role_commit: committed.role_commit.clone(),
+            expected_recipient: env.cells[1].agent_pubkey().clone(), expected_seat: seat,
+        }
+    ).await;
+    assert!(foreign_open.is_err(), "non-host extracted another role opening");
+
+    let wrong_lobby: Result<NativeGameView, _> = env.conductors[2].call_fallible(
+        &env.cells[2].zome(ZOME), "get_authoritative_game_view", NativeGameQuery {
+            expected_lobby: ActionHash::from_raw_32(vec![17;32]),
+            expected_role_commit: Some(committed.role_commit.clone()),
+            expected_recipient: None, expected_seat: None,
+        }
+    ).await;
+    assert!(wrong_lobby.is_err(), "wrong lobby identity accepted");
+    let stale: Result<NativeGameView, _> = env.conductors[2].call_fallible(
+        &env.cells[2].zome(ZOME), "get_authoritative_game_view", NativeGameQuery {
+            expected_lobby: lobby_action.clone(),
+            expected_role_commit: Some(ActionHash::from_raw_32(vec![23;32])),
+            expected_recipient: None, expected_seat: None,
+        }
+    ).await;
+    assert!(stale.is_err(), "unrecognized/stale role commitment accepted");
+    let wrong_seat = (seat + 1) % 3;
+    let mismatched: Result<NativeGameView, _> = env.conductors[1].call_fallible(
+        &env.cells[1].zome(ZOME), "get_authoritative_game_view", NativeGameQuery {
+            expected_lobby: lobby_action.clone(),
+            expected_role_commit: Some(committed.role_commit.clone()),
+            expected_recipient: Some(env.cells[1].agent_pubkey().clone()),
+            expected_seat: Some(wrong_seat),
+        }
+    ).await;
+    assert!(mismatched.is_err(), "different recipient seat was authorized");
+    let wrong_open: Result<NativeHostOpening, _> = env.conductors[0].call_fallible(
+        &env.cells[0].zome(ZOME), "host_role_opening", NativeHostOpeningQuery {
+            expected_lobby: lobby_action,
+            expected_role_commit: committed.role_commit,
+            expected_recipient: env.cells[1].agent_pubkey().clone(),
+            expected_seat: wrong_seat,
+        }
+    ).await;
+    assert!(wrong_open.is_err(), "host opened a role for the wrong recipient seat");
+    println!("NATIVE_GAME_WRONG_HOST_DENIED=PASS");
+    println!("NATIVE_GAME_WRONG_LOBBY_DENIED=PASS");
+    println!("NATIVE_GAME_WRONG_RECIPIENT_SEAT_DENIED=PASS");
+    println!("NATIVE_GAME_STALE_COMMIT_DENIED=PASS");
+}
+
+/// Build the forge coordinator only in CI. The genuine native integrity zome
+/// is unchanged and still rejects a host-signed malformed RoleCommit BEFORE
+/// it can enter an authoritative snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn native_game_role_commit_boundary_mismatched_joins_rejected_by_integrity() {
+    let normal = load_dna().await;
+    let forge = load_forge_dna().await;
+    assert_eq!(normal.dna_hash(), forge.dna_hash(),
+        "test forge must preserve real integrity and network identity");
+    let mut conductors = SweetConductorBatch::standard(3).await;
+    let mut agents = Vec::new();
+    for i in 0..3 {
+        let role = (ROLE.to_string(), if i == 0 { forge.clone() } else { normal.clone() });
+        let app = conductors[i].setup_app(APP_ID, [&role]).await.unwrap();
+        agents.push(app.agent().clone());
+    }
+    let seed = game_seed(&agents[0]);
+    let mut cells = Vec::new();
+    for i in 0..3 {
+        let cc = conductors[i].create_clone_cell(&APP_ID.to_string(), CreateCloneCellPayload {
+            role_name: ROLE.into(),
+            modifiers: DnaModifiersOpt::none().with_network_seed(seed.clone()),
+            membrane_proof: None,
+            name: Some(seed.clone()),
+        }).await.unwrap();
+        cells.push(conductors[i].get_sweet_cell(cc.cell_id.clone()).unwrap());
+    }
+    conductors.exchange_peer_info().await;
+    let env = Lobby { conductors, cells, seed };
+    let created: Record = env.call(0, "create_lobby", CreateLobby {
+        code: env.seed.clone(), player_count: 3, impostor_count: 1,
+        task_target: 1, display_name: "Host".into(),
+    }).await;
+    let lobby_hash = created.action_address().clone();
+    env.sync().await;
+    for i in 1..3 {
+        let _: Record = env.call(i, "join_lobby", JoinLobby {
+            display_name: format!("Guest {i}"),
+        }).await;
+    }
+    env.sync().await;
+    let observed: NativeGameView = env.call(0, "get_authoritative_game_view", NativeGameQuery {
+        expected_lobby: lobby_hash.clone(), expected_role_commit: None,
+        expected_recipient: None, expected_seat: None,
+    }).await;
+    assert_eq!(observed.seats.len(), 3);
+    let mut forged_joins: Vec<ActionHash> = observed.seats.iter()
+        .map(|s| s.join_action.clone()).collect();
+    forged_joins[0] = lobby_hash.clone(); // a native Valid Lobby is NOT a PlayerJoin
+    let invalid: Result<ActionHash, _> = env.conductors[0].call_fallible(
+        &env.cells[0].zome(ZOME), "forge_role_commit", game_integrity::RoleCommit {
+            lobby: lobby_hash.clone(), merkle_root: [99;32],
+            player_count: 3, impostor_count: 1,
+            seats: observed.seats.iter().map(|s| s.agent.clone()).collect(),
+            joins: forged_joins,
+        }
+    ).await;
+    assert!(invalid.is_err(), "native integrity accepted a malformed join witness");
+    // The invalid operation was rejected precommit. It cannot become
+    // "current" merely because an untrusted caller names its record hash.
+    let accepted: DealResult = env.call(0, "commit_roles_only", ()).await;
+    env.sync().await;
+    let valid: NativeGameView = env.call(2, "get_authoritative_game_view", NativeGameQuery {
+        expected_lobby: lobby_hash.clone(),
+        expected_role_commit: Some(accepted.role_commit.clone()),
+        expected_recipient: None, expected_seat: None,
+    }).await;
+    assert_eq!(valid.role_commit_action, Some(accepted.role_commit));
+    assert_eq!(valid.seats.len(), 3);
+    println!("NATIVE_GAME_MISMATCHED_JOIN_NATIVE_INVALID=PASS");
+    println!("NATIVE_GAME_INVALID_RECORD_FAIL_CLOSED=PASS");
+}
