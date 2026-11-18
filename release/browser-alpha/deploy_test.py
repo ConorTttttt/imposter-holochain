@@ -99,6 +99,7 @@ class DeploymentTests(TestCase):
                     patch("deploy.os.umask"):
                 native_command("init-native", release, self.public, authorities)
                 native_command("run-native", release, self.public, authorities)
+                self.assertNotIn("--ports", run.call_args.args[0])
                 with self.assertRaisesRegex(ValueError, "different release bytes or endpoints"):
                     native_command("run-native", release, {**self.public, "relay_url": "https://other.test"}, authorities)
                 happ.write_bytes(b"another test-only hApp")

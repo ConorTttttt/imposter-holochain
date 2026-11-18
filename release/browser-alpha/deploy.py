@@ -160,9 +160,27 @@ def change_admission(method, agent, role, host, secret_file):
         connection.close()
 
 
-def native_command(operation, release, public, root):
+def verify_native_cli():
     hc_version = subprocess.check_output(["hc", "--version"], text=True)
     require(re.search(r"\b0\.7\.0\b", hc_version), "Run native commands inside the pinned Holochain 0.7.0 Nix shell")
+
+
+def authority_cells(dna):
+    verify_native_cli()
+    agents = []
+    for port in (33555, 33557):
+        cells = json.loads(subprocess.check_output(
+            ["hc", "client", "call", "--port", str(port), "list-cells"], text=True, timeout=20
+        ))
+        require(len(cells) == 1 and cells[0]["dna_hash"] == dna,
+                f"Native authority on port {port} does not have exactly the expected installed DNA")
+        agents.append(cells[0]["agent_pub_key"])
+    require(len(set(agents)) == 2, "Expected two distinct native authority identities")
+    return tuple(agents)
+
+
+def native_command(operation, release, public, root):
+    verify_native_cli()
     binding = root / ".imposter-authority.json"
     config = {
         "happ_sha256": digest(release / HAPP),
@@ -180,7 +198,9 @@ def native_command(operation, release, public, root):
         require((root / ".hc").is_file(), "Initialize the two native authorities first")
         require(binding.is_file() and not binding.is_symlink() and load(binding) == config,
                 "Native authorities were initialized for different release bytes or endpoints")
-        args = ["--force-admin-ports", "33555,33557", "run", "--all", "--ports", "33556,33558"]
+        # Holochain persists app interfaces. Attaching the same ports on
+        # every restart can fail and the authorities only need private admin.
+        args = ["--force-admin-ports", "33555,33557", "run", "--all"]
     password = getpass("Native authority Lair passphrase: ")
     require(bool(password), "Native authority passphrase is required")
     env = {key: value for key, value in os.environ.items() if not key.startswith("H2HC_LINKER_")}
@@ -244,7 +264,7 @@ def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=["check", "render-proxy", "bootstrap-site", "publish", "rollback",
                                               "preflight", "gateway", "admit", "revoke",
-                                              "init-native", "run-native"])
+                                              "init-native", "run-native", "native-status"])
     parser.add_argument("--public", type=Path, required=True)
     parser.add_argument("--operator", type=Path, required=True)
     parser.add_argument("--release", type=Path)
@@ -281,6 +301,10 @@ def main():
             run_gateway(release, public, paths)
         if args.operation in ("init-native", "run-native"):
             native_command(args.operation, release, public, paths["native_authority_root"])
+        if args.operation == "native-status":
+            dna = manifest["game"]["dna_hash"]
+            authority_cells(dna)
+            print(f"Two separate local native authorities reported installed DNA {dna}")
         if args.operation in ("admit", "revoke"):
             require(args.agent and (args.operation == "revoke" or args.role), "Specify the public agent and admission role")
             change_admission("POST" if args.operation == "admit" else "DELETE",
