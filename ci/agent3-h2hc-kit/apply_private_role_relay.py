@@ -174,8 +174,12 @@ def apply(root):
         "        ClientMessage::Ping => {",
         """        ClientMessage::RoleRequestV1 { envelope, signature } => {
             let result = private_role::queue_role(
-                app_state, state.authenticated_agent.as_ref(),
-                state.session_token.as_deref(), sender, &state.registrations,
+                app_state, private_role::RoleSocketContext {
+                    agent: state.authenticated_agent.as_ref(),
+                    token: state.session_token.as_deref(),
+                    wire: sender,
+                    registrations: &state.registrations,
+                },
                 envelope, signature, RoleOperation::Request,
             ).await;
             Some(match result {
@@ -186,8 +190,12 @@ def apply(root):
 
         ClientMessage::RoleDeliveryV1 { envelope, signature } => {
             let result = private_role::queue_role(
-                app_state, state.authenticated_agent.as_ref(),
-                state.session_token.as_deref(), sender, &state.registrations,
+                app_state, private_role::RoleSocketContext {
+                    agent: state.authenticated_agent.as_ref(),
+                    token: state.session_token.as_deref(),
+                    wire: sender,
+                    registrations: &state.registrations,
+                },
                 envelope, signature, RoleOperation::Delivery,
             ).await;
             Some(match result {

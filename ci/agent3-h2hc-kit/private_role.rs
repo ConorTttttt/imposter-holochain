@@ -152,12 +152,16 @@ impl RoleEnvelope {
     }
 }
 
+pub struct RoleSocketContext<'a> {
+    pub agent: Option<&'a AgentPubKey>,
+    pub token: Option<&'a str>,
+    pub wire: &'a WsSender,
+    pub registrations: &'a [(DnaHash, AgentPubKey)],
+}
+
 pub async fn queue_role(
     app: &AppState,
-    socket_agent: Option<&AgentPubKey>,
-    socket_token: Option<&str>,
-    socket_sender: &WsSender,
-    registrations: &[(DnaHash, AgentPubKey)],
+    socket: RoleSocketContext<'_>,
     envelope: RoleEnvelope,
     signature: String,
     op: RoleOperation,
@@ -165,11 +169,11 @@ pub async fn queue_role(
     // Production authentication is mandatory even when the service runs in dev mode.
     let store = app.auth_store.as_ref().ok_or("authentication_required")?;
     let verified = envelope.verify(op, &signature)?;
-    if socket_agent != Some(&verified.sender)
-        || !registrations.contains(&(verified.dna.clone(), verified.sender.clone())) {
+    if socket.agent != Some(&verified.sender)
+        || !socket.registrations.contains(&(verified.dna.clone(), verified.sender.clone())) {
         return Err("sender_cell");
     }
-    let token = socket_token.ok_or("authentication_required")?;
+    let token = socket.token.ok_or("authentication_required")?;
     let sender = store.validate_session(token).await.ok_or("sender_session")?;
     if sender.agent_pubkey != verified.sender || !sender.has_dna(&verified.dna)
         || !sender.has_capability(op.capability()) { return Err("sender_permission"); }
@@ -184,11 +188,11 @@ pub async fn queue_role(
     let message = match op {
         RoleOperation::Request => super::websocket::ServerMessage::RoleRequestV1 {
             envelope, signature, origin_token: token.to_string(),
-            origin_wire: socket_sender.clone(),
+            origin_wire: socket.wire.clone(),
         },
         RoleOperation::Delivery => super::websocket::ServerMessage::RoleDeliveryV1 {
             envelope, signature, origin_token: token.to_string(),
-            origin_wire: socket_sender.clone(),
+            origin_wire: socket.wire.clone(),
         },
     };
     if !app.agent_proxy.send_signal(&verified.dna, &verified.recipient, message).await {
