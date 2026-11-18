@@ -24,6 +24,7 @@ use imposter_core::{
     CrisisKind, CrisisTag, ROLE_CREW, ROLE_IMPOSTOR,
 };
 use game_integrity::*;
+use imposter_core::role_auth::authorize_role_delivery;
 
 // ------------------------------------------------------------------- init
 
@@ -351,6 +352,7 @@ pub fn deal_roles(_: ()) -> ExternResult<DealResult> {
         let proof = role_proof(&layers, &salt, seat as u16);
         let payload = GameSignal::RoleDealt {
             role_commit: rc_hash.clone(),
+            recipient: key.clone(),
             seat: seat as u16,
             role: roles[seat],
             proof,
@@ -385,12 +387,22 @@ pub fn resend_role(seat: u16) -> ExternResult<()> {
         .get(seat as usize)
         .cloned()
         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("no such seat".into())))?;
+    let role = *sealed.roles.get(seat as usize).ok_or_else(|| {
+        wasm_error!(WasmErrorInner::Guest("sealed roles do not include this seat".into()))
+    })?;
     let proof = role_proof(&layers, &sealed.salt, seat);
+    authorize_role_delivery(
+        host.get_raw_39(), host.get_raw_39(), key.get_raw_39(), key.get_raw_39(),
+        rc.1.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
+        seat, role, &proof,
+    ).map_err(role_delivery_error)?;
     send_remote_signal(
         GameSignal::RoleDealt {
             role_commit: rc.0,
+            recipient: key.clone(),
             seat,
-            role: sealed.roles[seat as usize],
+            role,
             proof,
         },
         vec![key],
@@ -428,12 +440,24 @@ pub fn provide_role(_: ()) -> ExternResult<Option<RoleLeafResp>> {
         None => return Ok(None),
     };
     let sealed = my_sealed_roles()?;
+    let role = *sealed.roles.get(seat as usize).ok_or_else(|| {
+        wasm_error!(WasmErrorInner::Guest("sealed roles do not include this seat".into()))
+    })?;
     let layers = build_layers(&sealed.roles, &sealed.salt);
+    let proof = role_proof(&layers, &sealed.salt, seat);
+    // The remote executor MUST set call_info().provenance from the verified
+    // Lair-authenticated caller. HWC currently rejects inbound remote calls.
+    authorize_role_delivery(
+        host.get_raw_39(), host.get_raw_39(), caller.get_raw_39(), caller.get_raw_39(),
+        rc.1.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+        rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
+        seat, role, &proof,
+    ).map_err(role_delivery_error)?;
     Ok(Some(RoleLeafResp {
         role_commit: rc.0,
         seat,
-        role: sealed.roles[seat as usize],
-        proof: role_proof(&layers, &sealed.salt, seat),
+        role,
+        proof,
     }))
 }
 
@@ -455,7 +479,17 @@ pub fn request_role(_: ()) -> ExternResult<Option<u8>> {
             Some(s) => s,
             None => return Ok(None),
         };
-        let role = my_sealed_roles()?.roles[seat];
+        let sealed = my_sealed_roles()?;
+        let role = *sealed.roles.get(seat).ok_or_else(|| {
+            wasm_error!(WasmErrorInner::Guest("sealed roles do not include my seat".into()))
+        })?;
+        let proof = role_proof(&build_layers(&sealed.roles, &sealed.salt), &sealed.salt, seat as u16);
+        authorize_role_delivery(
+            host.get_raw_39(), host.get_raw_39(), my_key.get_raw_39(), my_key.get_raw_39(),
+            rc.1.seats.get(seat).map(|k| k.get_raw_39().as_slice()),
+            rc.0.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
+            seat as u16, role, &proof,
+        ).map_err(role_delivery_error)?;
         emit_signal(GameSignal::YourRole {
             seat: seat as u16,
             role,
@@ -481,11 +515,14 @@ pub fn request_role(_: ()) -> ExternResult<Option<u8>> {
 
     let rc = find_role_commit()?
         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("no role commit yet".into())))?;
-    if !verify_role_proof(&rc.1.merkle_root, leaf.seat, leaf.role, &leaf.proof) {
-        return Err(wasm_error!(WasmErrorInner::Guest(
-            "role proof from host does not open the commitment".into()
-        )));
-    }
+    // The transport must authenticate the host. A valid Merkle opening
+    // for a different seat or previous commitment is never sufficient.
+    authorize_role_delivery(
+        host.get_raw_39(), host.get_raw_39(), my_key.get_raw_39(), my_key.get_raw_39(),
+        rc.1.seats.get(leaf.seat as usize).map(|k| k.get_raw_39().as_slice()),
+        leaf.role_commit.get_raw_39(), rc.0.get_raw_39(), &rc.1.merkle_root,
+        leaf.seat, leaf.role, &leaf.proof,
+    ).map_err(role_delivery_error)?;
     emit_signal(GameSignal::YourRole {
         seat: leaf.seat,
         role: leaf.role,
@@ -510,12 +547,23 @@ fn my_sealed_roles() -> ExternResult<SealedRoles> {
 }
 
 fn find_role_commit() -> ExternResult<Option<(ActionHash, RoleCommit)>> {
+    let (lobby_hash, host, _) = find_lobby()?;
     for r in all_records()? {
+        if r.action().author() != &host {
+            continue;
+        }
         if let Some(rc) = app_entry::<RoleCommit>(&r) {
-            return Ok(Some((r.action_address().clone(), rc)));
+            if rc.lobby == lobby_hash {
+                return Ok(Some((r.action_address().clone(), rc)));
+            }
         }
     }
     Ok(None)
+}
+
+/// Shared non-secret rejection for remote role authorization.
+fn role_delivery_error(reason: &'static str) -> WasmError {
+    wasm_error!(WasmErrorInner::Guest(format!("role delivery rejected: {reason}")))
 }
 
 // ---------------------------------------------------- sabotage: lights
@@ -1200,6 +1248,7 @@ pub enum GameSignal {
     /// host → player: your sealed role, with a proof against the commitment.
     RoleDealt {
         role_commit: ActionHash,
+        recipient: AgentPubKey,
         seat: u16,
         role: u8,
         proof: RoleProof,
@@ -1228,16 +1277,27 @@ pub fn recv_remote_signal(sig: GameSignal) -> ExternResult<()> {
     match sig {
         GameSignal::RoleDealt {
             role_commit,
+            recipient,
             seat,
             role,
             proof,
         } => {
-            let rc: RoleCommit = fetch(&role_commit)?;
-            if !verify_role_proof(&rc.merkle_root, seat, role, &proof) {
-                return Err(wasm_error!(WasmErrorInner::Guest(
-                    "role proof from host does not open the commitment".into()
-                )));
-            }
+            // HWC remote receive is still disabled. Future adapters MUST
+            // inject independently verified sender provenance, never a
+            // caller-supplied from_agent/ChainAuthor substitution.
+            let sender = call_info()?.provenance;
+            let (_, host, _) = find_lobby()?;
+            let local_agent = me()?;
+            let (accepted_hash, rc) = find_role_commit()?.ok_or_else(|| {
+                wasm_error!(WasmErrorInner::Guest("role commitment is unavailable".into()))
+            })?;
+            authorize_role_delivery(
+                sender.get_raw_39(), host.get_raw_39(),
+                recipient.get_raw_39(), local_agent.get_raw_39(),
+                rc.seats.get(seat as usize).map(|k| k.get_raw_39().as_slice()),
+                role_commit.get_raw_39(), accepted_hash.get_raw_39(), &rc.merkle_root,
+                seat, role, &proof,
+            ).map_err(role_delivery_error)?;
             emit_signal(GameSignal::YourRole { seat, role })?;
         }
         GameSignal::Killed {
@@ -1340,7 +1400,18 @@ fn my_role_leaf() -> ExternResult<RoleLeafResp> {
     let leaf: Option<RoleLeafResp> = io
         .decode()
         .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("bad provide_role reply: {e:?}"))))?;
-    leaf.ok_or_else(|| wasm_error!(WasmErrorInner::Guest("roles not dealt yet".into())))
+    let leaf = leaf.ok_or_else(|| wasm_error!(WasmErrorInner::Guest("roles not dealt yet".into())))?;
+    let (accepted_hash, rc) = find_role_commit()?.ok_or_else(|| {
+        wasm_error!(WasmErrorInner::Guest("role commitment is unavailable".into()))
+    })?;
+    let local_agent = me()?;
+    authorize_role_delivery(
+        host.get_raw_39(), host.get_raw_39(), local_agent.get_raw_39(), local_agent.get_raw_39(),
+        rc.seats.get(leaf.seat as usize).map(|k| k.get_raw_39().as_slice()),
+        leaf.role_commit.get_raw_39(), accepted_hash.get_raw_39(), &rc.merkle_root,
+        leaf.seat, leaf.role, &leaf.proof,
+    ).map_err(role_delivery_error)?;
+    Ok(leaf)
 }
 
 // ---------------------------------------------------- tasks
