@@ -9,10 +9,17 @@ const game={schema_version:1,dna,network_seed:'native-g1-seed',
  seats:[{seat:0,agent:host,join_action:h('action',11),display_name:'host'},
         {seat:1,agent:b,join_action:h('action',12),display_name:'guest'}],
  phase:'playing',observed_only:true};
-function setup({revoked=false,changed=false,disabled=false}={}){
+function setup({revoked=false,changed=false,disabled=false,initialCommit=null,malformedOpening=null}={}){
  const calls=[],cell={contextId:'installed:game',dna,agent:a,enabled:!disabled};
+ let durableCommit=initialCommit;
  const service=createInstalledNativeAuthority({
   installedCell:async()=>cell,pinnedLobby:async()=>lobby,
+  pinRoleCommit:async(_dna,_agent,l,c)=>{
+   assert.deepEqual(l,lobby);
+   if(durableCommit&&!Buffer.from(durableCommit).equals(Buffer.from(c)))throw Error('protected RoleCommit changed');
+   durableCommit=c;
+  },
+  readPinnedRoleCommit:async()=>durableCommit,
   trustedFloor:async()=>({epoch:3,keyId:new Uint8Array(16),revoked}),
   zomeCall:async request=>{
    calls.push(request);
@@ -20,13 +27,14 @@ function setup({revoked=false,changed=false,disabled=false}={}){
      if(!request.payload.expected_role_commit)return game;
      return changed?{...game,merkle_root:new Uint8Array(32).fill(1)}:game;
    }
-   if(request.fn==='host_role_opening')return {role_commit:commit,
-     recipient:b,seat:1,role:0,proof:{role_salt:new Uint8Array(16),path:[]}};
+   if(request.fn==='host_role_opening')return malformedOpening??{role_commit:Array.from(commit),
+     recipient:Array.from(b),seat:1,role:0,proof:{role_salt:Array(16).fill(0),
+       path:Array.from({length:6},()=>Array(32).fill(0))}};
    if(request.fn==='lookup_recipient_key')return {status:'observed',current_unproven:true};
    return {action:h('action',14),attestation:request.payload};
   }
  });
- return {service,calls,cell};
+ return {service,calls,cell,getDurable:()=>durableCommit,setDurable:x=>{durableCommit=x;}};
 }
 test('native installed action pin and observed-to-exact-role-commit requery',async()=>{
  const f=setup(),v=await f.service.readCurrentGame(f.cell);
@@ -43,9 +51,13 @@ test('native changes between query and pinned requery fail closed',async()=>{
  await assert.rejects(f.service.readCurrentGame(f.cell),/changed between/);
 });
 test('native role opening only for installed pinned lobby, exact recipient and action',async()=>{
- const f=setup(),r=await f.service.readHostRoleOpening(f.cell,
+ const f=setup({initialCommit:commit}),r=await f.service.readHostRoleOpening(f.cell,
   {expected_lobby:lobby,expected_role_commit:commit,expected_recipient:b,expected_seat:1});
  assert.equal(r.seat,1);
+ assert(r.proof.role_salt instanceof Uint8Array);
+ assert.equal(r.proof.role_salt.length,16);
+ assert.equal(r.proof.path.length,6);
+ assert(r.proof.path.every(x=>x instanceof Uint8Array&&x.length===32));
  await assert.rejects(f.service.readHostRoleOpening(f.cell,
   {expected_lobby:h('action',77),expected_role_commit:commit,expected_recipient:b,expected_seat:1}),/not bound/);
 });
@@ -65,4 +77,35 @@ test('uninstalled, disabled or foreign context never accesses native executor',a
  await assert.rejects(ok.service.readCurrentGame({...ok.cell,agent:b}),/changed/);
  assert.equal(ok.calls.length,0);
  await assert.rejects(ok.service.publishSignedRecipientKey('fake',{dna,agent:a}),/foreign/);
+});
+
+test('durable RoleCommit prevents a different native Valid candidate after restart',async()=>{
+ const f=setup({initialCommit:h('action',77)});
+ await assert.rejects(f.service.readCurrentGame(f.cell),/protected RoleCommit changed/);
+ assert.deepEqual(f.getDurable(),h('action',77));
+ const noPin=setup();
+ await assert.rejects(noPin.service.readHostRoleOpening(noPin.cell,
+  {expected_lobby:lobby,expected_role_commit:commit,expected_recipient:b,expected_seat:1}),/invalid installed HoloHash/);
+});
+test('opening refuses malformed native serde binary rather than truncating',async()=>{
+ for(const proof of [
+  {role_salt:[...Array(15).fill(0)],path:Array.from({length:6},()=>Array(32).fill(0))},
+  {role_salt:Array(16).fill(0),path:Array.from({length:5},()=>Array(32).fill(0))},
+  {role_salt:Array(16).fill(0),path:Array.from({length:6},()=>Array(32).fill(0.5))},
+ ]) {
+  const f=setup({initialCommit:commit,malformedOpening:{
+    role_commit:commit,recipient:b,seat:1,role:0,proof}});
+  await assert.rejects(f.service.readHostRoleOpening(f.cell,
+   {expected_lobby:lobby,expected_role_commit:commit,expected_recipient:b,expected_seat:1}),/invalid native role/);
+ }
+});
+test('HWC Chromium dense integer-key serde object is normalized without coercion',async()=>{
+ const obj=n=>Object.fromEntries(Array.from({length:n},(_,i)=>[String(i),0]));
+ const f=setup({initialCommit:commit,malformedOpening:{
+  role_commit:commit,recipient:b,seat:1,role:1,
+  proof:{role_salt:obj(16),path:Array.from({length:6},()=>obj(32))}}});
+ const opening=await f.service.readHostRoleOpening(f.cell,
+  {expected_lobby:lobby,expected_role_commit:commit,expected_recipient:b,expected_seat:1});
+ assert.equal(opening.role,1);
+ assert(opening.proof.path.every(x=>x instanceof Uint8Array&&x.length===32));
 });
