@@ -61,46 +61,20 @@ jobs:
       - name: Apply the installed extension receiver and prepare native browser topology
         run: bash integration/ci/installed-role/prepare.sh
 
-      - name: Download exact tested role-only authenticated H2HC gateway
-        uses: actions/download-artifact@v4
-        with:
-          run-id: 44304976936
-          repository: ConorTttttt/imposter-holochain
-          name: agent3-h2hc-p0-security-44304976936
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: gateway-artifact
-
-      - name: Pin executable bytes, generating source and role gateway provenance
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Recover the exact tested role-only authenticated H2HC gateway
         run: |
           set -euo pipefail
-          gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 | jq -e '.id == 14428255589 and .expired == false and .workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
-          gh api repos/ConorTttttt/imposter-holochain/actions/runs/44304976936 | jq -e '.conclusion == "success" and .head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
-          dir=gateway-artifact/role-gateway
-          (cd "$dir" && sha256sum --check SHA256SUMS)
-          printf '%s  %s\n' 8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f "$dir/h2hc-linker-linux-x86_64" | sha256sum --check
-          test "$(cat "$dir/h2hc-applied-source-commit.txt")" = 9f5eb04b5be12e3e9e7fcc304bd905da1449ade9
-          grep -Fxq 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' "$dir/build-provenance.txt"
-          grep -Fxq 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' "$dir/build-provenance.txt"
-          grep -Fxq 'ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED' "$dir/role-smoke-result.txt"
+          tool=integration/release/browser-alpha/gateway_archive.py
+          archive="$RUNNER_TEMP/accepted-gateway"
+          python3 "$tool" fetch "$archive"
           mkdir -p h2hc-binary runtime-evidence
-          cp "$dir/h2hc-linker-linux-x86_64" h2hc-binary/h2hc-linker-linux-x86_64
-          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          python3 "$tool" restore "$archive" h2hc-binary/h2hc-linker-linux-x86_64
           echo 'ARTIFACT_ID=14428255589' > runtime-evidence/h2hc-provenance.txt
           echo 'ARTIFACT_RUN=44304976936' >> runtime-evidence/h2hc-provenance.txt
           echo 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' >> runtime-evidence/h2hc-provenance.txt
-          echo 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' >> runtime-evidence/h2hc-provenance.txt
+          echo 'ARTIFACT_ARCHIVE_COMMIT=81ddc627cdac30d1af42ea67bc803a570ad93925' >> runtime-evidence/h2hc-provenance.txt
           echo 'H2HC_BINARY_SHA256=8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f' >> runtime-evidence/h2hc-provenance.txt
           echo 'GATEWAY_PINNED_BINARY=PASS; SIGNED_BYTES_AND_HPKE_FORMAT=UNCHANGED'
-
-      - name: Set up Node 22 for actual patched HWC
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: hwc/package-lock.json
 
       - name: Build corrected HWC Chrome extension and typecheck runtime workspaces
         shell: bash
