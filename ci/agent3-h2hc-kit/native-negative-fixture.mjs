@@ -291,10 +291,10 @@ export async function runNativeNegativeFixture({
       genesisAccepted?'Native independently accepted and integrated all initial chain dependencies':
         'Genesis dependencies missing; no application-integrity inference permitted');
     record('NATIVE_INTEGRITY_INVALID_LOBBY_REJECTION',
-      genesisAccepted&&entryRejected&&integratedInvalid.length===0?'PASS':'BLOCKED',
-      genesisAccepted&&entryRejected&&integratedInvalid.length===0?
-        'Exact Holochain 0.7 native CreateEntry op Rejected after integrated genesis; none of its invalid op variants accepted/integrated':
-        'Native app rejection NOT established: dependency status, rejection, or accepted-invalid-content guard failed');
+      genesisAccepted&&entryRejected&&reasonVisible&&integratedInvalid.length===0?'PASS':'BLOCKED',
+      genesisAccepted&&entryRejected&&reasonVisible&&integratedInvalid.length===0?
+        'Exact native CreateEntry Rejected, app-specific reason confirmed from native validator log, dependencies accepted, no invalid op variants integrated':
+        'Native app rejection NOT established: dependency status, exact app reason, rejection, or accepted-invalid-content guard failed');
     record('NEGATIVE_ORIGINAL_VALIDATION_REASON',
       reasonVisible?'SEEN_IN_NATIVE_LOG':'NOT_LOGGED',
       'Per-op native verdict is authoritative; reason requires native validator logging and cannot be inferred from gateway');
