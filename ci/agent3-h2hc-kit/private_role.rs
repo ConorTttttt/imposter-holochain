@@ -45,6 +45,7 @@ pub struct RoleEnvelope {
     pub role_commit: String,
     pub seat: u16,
     pub recipient_key_id: String,
+    pub recipient_key_epoch: u64,
     pub message_id: String,
     pub created_at_ms: u64,
     pub expires_at_ms: u64,
@@ -94,6 +95,14 @@ impl RoleEnvelope {
     // Fixed-length, typed, byte-for-byte canonical header. Never sign JSON.
     fn header(&self, op: RoleOperation) -> Result<Vec<u8>, &'static str> {
         if self.version != 1 || self.domain != DOMAIN { return Err("version_or_domain"); }
+        // A request cannot be a reply; a delivery may bind to one request ID.
+        if matches!(op, RoleOperation::Request) && self.in_reply_to.is_some() {
+            return Err("invalid_reply_reference");
+        }
+        // JavaScript HWC represents epochs as safe integers; no silent JSON rounding.
+        if self.recipient_key_epoch == 0 || self.recipient_key_epoch > 9_007_199_254_740_991 {
+            return Err("invalid_key_epoch");
+        }
         let dna = DnaHash::try_from(self.dna_hash.as_str()).map_err(|_| "dna_hash")?;
         let sender = AgentPubKey::try_from(self.sender_agent.as_str()).map_err(|_| "sender_agent")?;
         let recipient = AgentPubKey::try_from(self.recipient_agent.as_str()).map_err(|_| "recipient_agent")?;
@@ -110,6 +119,7 @@ impl RoleEnvelope {
         out.extend_from_slice(&raw_hash(&self.role_commit)?);
         out.extend_from_slice(&self.seat.to_be_bytes());
         out.extend_from_slice(&hex16(&self.recipient_key_id)?);
+        out.extend_from_slice(&self.recipient_key_epoch.to_be_bytes());
         out.extend_from_slice(&hex16(&self.message_id)?);
         out.extend_from_slice(&self.created_at_ms.to_be_bytes());
         out.extend_from_slice(&self.expires_at_ms.to_be_bytes());
@@ -243,6 +253,25 @@ mod tests {
         assert!(hex16("ABCDEF0123456789ABCDEF0123456789").is_err());
         assert!(b64("AA==",16,4096).is_err());
         assert!(b64("not_base64",32,32).is_err());
+        // A zero-epoch key or non-null request correlation must fail before signing.
+        let mut env = RoleEnvelope {
+            version: 1, domain: DOMAIN.into(),
+            dna_hash: DnaHash::from_raw_32(vec![5; 32]).to_string(),
+            sender_agent: AgentPubKey::from_raw_32(vec![27; 32]).to_string(),
+            recipient_agent: AgentPubKey::from_raw_32(vec![28; 32]).to_string(),
+            role_commit: ActionHash::from_raw_32(vec![88; 32]).to_string(),
+            seat: 1, recipient_key_id: "11".repeat(16), recipient_key_epoch: 1,
+            message_id: "22".repeat(16), created_at_ms: 1_700_000_000_000,
+            expires_at_ms: 1_700_000_030_000, in_reply_to: None,
+            hpke_enc: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            ciphertext: base64::engine::general_purpose::STANDARD.encode([0u8; 16]),
+        };
+        assert!(env.header(RoleOperation::Request).is_ok());
+        env.in_reply_to = Some("33".repeat(16));
+        assert_eq!(env.header(RoleOperation::Request).unwrap_err(), "invalid_reply_reference");
+        assert!(env.header(RoleOperation::Delivery).is_ok());
+        env.recipient_key_epoch = 0;
+        assert_eq!(env.header(RoleOperation::Delivery).unwrap_err(), "invalid_key_epoch");
     }
 
     #[tokio::test]
@@ -296,7 +325,7 @@ mod tests {
             dna_hash: dna.to_string(), sender_agent: a.to_string(),
             recipient_agent: b.to_string(),
             role_commit: ActionHash::from_raw_32(vec![88; 32]).to_string(),
-            seat: 1, recipient_key_id: "11".repeat(16),
+            seat: 1, recipient_key_id: "11".repeat(16), recipient_key_epoch: 1,
             message_id: "22".repeat(16),
             created_at_ms: now, expires_at_ms: now + 30_000,
             in_reply_to: None, hpke_enc: "AA==".into(), ciphertext: "AA==".into(),
