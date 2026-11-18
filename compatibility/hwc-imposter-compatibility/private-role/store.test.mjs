@@ -1,0 +1,55 @@
+/** Simulated IndexedDB durability and concurrency, not physical Chromium acceptance.
+ * The CI workflow imports fake-indexeddb/auto. No secrets printed. */
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {openRoleStore} from './store.mjs';
+import {seal,openForCell} from './hpke.mjs';
+const hash=(prefix,n)=>new Uint8Array([...prefix,...new Array(36).fill(n)]);
+const dna=n=>hash([0x84,0x2d,0x24],n);
+const agent=n=>hash([0x84,0x20,0x24],n);
+const commit=n=>hash([0x84,0x29,0x24],n);
+const replay=(d,r,s,root,id)=>({dna:d,recipient:r,sender:s,commit:root,messageId:new Uint8Array(16).fill(id)});
+test('cell key retains non-extractable X25519 identity across DB closure and reopening',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const name='agent2-role-cell-restart-'+Date.now();
+ const first=await openRoleStore(name),a=agent(1),b=agent(2),d=dna(5);
+ const k1=await first.rotateCell(d,a,1);
+ assert.equal(k1.privateKey.extractable,false);
+ assert.equal(await first.getCell(d,b),null);
+ assert.equal(await first.getCell(dna(6),a),null);
+ const k2=await first.rotateCell(d,b,1);
+ assert.notDeepEqual(k1.publicKey,k2.publicKey);
+ await assert.rejects(first.rotateCell(d,a,1),/non-monotonic/);
+ first.close();
+ const second=await openRoleStore(name);
+ const retrieved=await second.getCell(d,a);
+ assert.ok(retrieved?.privateKey);
+ assert.equal(retrieved.epoch,1);
+ assert.equal(retrieved.privateKey.extractable,false);
+ assert.deepEqual(retrieved.keyId,k1.keyId);
+ const aad=new Uint8Array([1,2,3]),plaintext=new Uint8Array([4,5,6]);
+ const packet=await seal(retrieved.publicKey,plaintext,aad);
+ assert.deepEqual(await openForCell(retrieved,packet.enc,packet.ciphertext,aad),plaintext);
+ const newer=await second.rotateCell(d,a,2);
+ assert.equal(newer.epoch,2);
+ await assert.rejects(second.rotateCell(d,a,1),/non-monotonic/);
+ second.close();
+});
+test('atomic replay insertion persists across DB reopening; concurrent duplicate and other cells',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const name='agent2-role-replay-'+Date.now();
+ const d=dna(3),r=agent(3),s=agent(2),c=commit(8);
+ const a=await openRoleStore(name),b=await openRoleStore(name);
+ const msg=replay(d,r,s,c,7);
+ const both=await Promise.allSettled([a.reserve(msg),b.reserve(msg)]);
+ assert.equal(both.filter(x=>x.status==='fulfilled').length,1);
+ assert.equal(both.filter(x=>x.status==='rejected').length,1);
+ a.close();b.close();
+ const restarted=await openRoleStore(name);
+ await assert.rejects(restarted.reserve(msg),/replay/);
+ await assert.rejects(restarted.reserve(replay(d,r,s,commit(9),7)),/replay/);
+ await restarted.reserve(replay(d,r,s,c,8));
+ await restarted.reserve(replay(dna(4),r,s,c,7));
+ await restarted.reserve(replay(d,agent(9),s,c,7));
+ restarted.close();
+});
