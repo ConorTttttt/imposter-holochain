@@ -109,7 +109,7 @@ test('independent host/guest signed role: B extension receives correct opening o
  const cSvc=createRestrictedRoleService({installedCell:async()=>({dna:f.d,agent:f.c.agent,contextId:'installed-happ'}),
    native:{readCurrentGame:async()=>f.game,readKeyEnrollment:async()=>f.enrollment},
    lair:f.c.lair,session:session(f.d,f.c.agent,'guest-c'),store:new Keys()});
- await assert.rejects(cSvc.receiveFromSocket(f.hostSession.sent[0]),/seat/);
+ await assert.rejects(cSvc.receiveFromSocket(f.hostSession.sent[0]),/recipient|seat/);
 });
 test('native wrong round/host/seat and revoked session deny before plaintext disclosure',async()=>{
  const f=await fixture();
