@@ -77,11 +77,7 @@ for that legacy message or its remote caller provenance.
 4. A `role_request_v1` recovery operation is not yet implemented.
    No secret `provide_role` HTTP GET/POST, generic remote calls,
    server-side plaintext/mailbox, private DHT writes, or task recovery.
-5. Chromium/Firefox extension build, real CryptoKey structured clone
-   across browser process restarts, Lair signer vectors, real three-browser
-   guest isolation, native app-validation, stale/revoked in-flight delivery
-   and persistent replay after revocation **have not been accepted**.
-   `fake-indexeddb` is useful for unit tests but not browser persistence.
+5. **Isolated real Chromium key-storage test PASS:** [run 44296271475](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44296271475) launches two genuine Chromium processes with one persisted profile. Non-extractable X25519 CryptoKey clone, post-restart decryption, replay denial and epoch rotation passed, but only for the isolated test origin, **not** the installed HWC extension. Firefox extension build, actual HWC Lair signer vectors, three-browser role disclosure/isolation, native app-validation, stale/revoked delivery, and replay after real gateway session revocation **remain unaccepted**. `fake-indexeddb` tests are separately emulated only.
 6. Review and test RFC 9180 against independent IETF vectors, audit the
    HPKE glue, check full HoloHash type+location hashes using the installed
    HWC functions and cap the wire payload before exposure. A malformed
