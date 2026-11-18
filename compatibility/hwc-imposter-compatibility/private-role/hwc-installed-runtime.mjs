@@ -220,12 +220,13 @@ export function createInstalledHwcRoleRuntime({
     if(!c?.enabled || c.dnas?.length!==1)return false;
     const cell=await installed(c.dnas[0].hash,c.agentPubKey);
     const signed=record?.signed_action?.hashed;
-    const author=bytes(signed?.content?.author);
+    const author=bytes(signed?.content?.header?.author);
     const ownAction=bytes(signed?.hash);
     if(!action(ownAction) || !eq(author,cell.agent) ||
-       (signed.content?.type!=='Create' && !signed.content?.Create))
+       signed.content?.data?.type!=='Create')
       throw Error('local native Lobby/Join result lacks signed Create action');
-    const app=bytes(record?.entry?.Present?.App);
+    const entryValue=record?.entry?.Present;
+    const app=entryValue?.entry_type==='App' && bytes(entryValue.entry);
     if(!app)throw Error('native Create record missing app entry');
     const entry=decodeApp(app); // MessagePack from actual local WASM result
     let lobby;
@@ -285,6 +286,7 @@ export function createInstalledHwcRoleRuntime({
         const lobby=await h.store.getPinnedLobby(h.cell.dna,h.cell.agent);
         const commit=await h.store.getPinnedRoleCommit(h.cell.dna,h.cell.agent);
         const gateway=await probeSocket().catch(()=>null);
+        const receipt=acceptedReceipts.get(cellKey(h.cell));
         out.push({contextId:h.cell.contextId,installedDna:hex(h.cell.dna),
           installedAgent:hex(h.cell.agent),pinnedLobby:lobby?hex(lobby):null,
           pinnedRoleCommit:commit?hex(commit):null,
@@ -292,7 +294,9 @@ export function createInstalledHwcRoleRuntime({
           sessionBound:!!h.session.leaseId(),
           gatewayRoleRequestQueued:gateway?.queuedAcks?.requests??0,
           gatewayRoleDeliveryQueued:gateway?.queuedAcks?.deliveries??0,
-          decryptedRoleReceipts:acceptedReceipts.has(cellKey(h.cell))?1:0});
+          decryptedRoleReceipts:receipt?1:0,
+          receipt:receipt?{seat:receipt.seat,roleCommit:receipt.roleCommit,
+            recipient:receipt.recipient,coordinatorInvoked:receipt.coordinatorInvoked}:null});
       }
       return out;
     }

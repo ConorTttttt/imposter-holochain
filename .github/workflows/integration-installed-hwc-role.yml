@@ -1,0 +1,241 @@
+name: Integration - installed HWC encrypted role receipt
+on:
+  push:
+    branches: [integration/installed-hwc-role-receipt]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: installed-role-receipt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-ephemeral-hwc-to-h2hc:
+    name: Three installed HWC profiles, native Holochain and authenticated H2HC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BROWSER_POC_IDENTITY_SOURCE: EPHEMERAL_HWC_BROWSER_PROFILE
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout immutable Agent 4 native enrollment and game source
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 0f7b17592e682a7b7d77e9346528cba69a096cdc
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout integration branch and installed receiver
+        uses: actions/checkout@v4
+        with:
+          path: integration
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout Agent 3 tested native DHT topology and exact-op inspector
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: f49b0dfcc9f8b86a3e2abcd48e6c13375c347ed5
+          path: agent3-kit
+          persist-credentials: false
+
+      - name: Checkout pinned upstream HWC
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Apply the installed extension receiver and prepare native browser topology
+        run: bash integration/ci/installed-role/prepare.sh
+
+      - name: Download exact tested role-only authenticated H2HC gateway
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 44304976936
+          repository: ConorTttttt/imposter-holochain
+          name: agent3-h2hc-p0-security-44304976936
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: gateway-artifact
+
+      - name: Pin executable bytes, generating source and role gateway provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 | jq -e '.id == 14428255589 and .expired == false and .workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+          gh api repos/ConorTttttt/imposter-holochain/actions/runs/44304976936 | jq -e '.conclusion == "success" and .head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+          dir=gateway-artifact/role-gateway
+          (cd "$dir" && sha256sum --check SHA256SUMS)
+          printf '%s  %s\n' 8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f "$dir/h2hc-linker-linux-x86_64" | sha256sum --check
+          test "$(cat "$dir/h2hc-applied-source-commit.txt")" = 9f5eb04b5be12e3e9e7fcc304bd905da1449ade9
+          grep -Fxq 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' "$dir/build-provenance.txt"
+          grep -Fxq 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' "$dir/build-provenance.txt"
+          grep -Fxq 'ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED' "$dir/role-smoke-result.txt"
+          mkdir -p h2hc-binary runtime-evidence
+          cp "$dir/h2hc-linker-linux-x86_64" h2hc-binary/h2hc-linker-linux-x86_64
+          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          echo 'ARTIFACT_ID=14428255589' > runtime-evidence/h2hc-provenance.txt
+          echo 'ARTIFACT_RUN=44304976936' >> runtime-evidence/h2hc-provenance.txt
+          echo 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' >> runtime-evidence/h2hc-provenance.txt
+          echo 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' >> runtime-evidence/h2hc-provenance.txt
+          echo 'H2HC_BINARY_SHA256=8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f' >> runtime-evidence/h2hc-provenance.txt
+          echo 'GATEWAY_PINNED_BINARY=PASS; SIGNED_BYTES_AND_HPKE_FORMAT=UNCHANGED'
+
+      - name: Set up Node 22 for actual patched HWC
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+
+      - name: Build corrected HWC Chrome extension and typecheck runtime workspaces
+        shell: bash
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc 2>&1 | tee runtime-evidence/hwc-npm-install.log
+          (
+            cd hwc
+            npx tsc -p packages/shared/tsconfig.json
+            npx tsc -p packages/lair/tsconfig.json
+            npx tsc -p packages/core/tsconfig.json
+            npx tsc --noEmit -p packages/extension/tsconfig.json
+            npm run build:chrome --workspace @hwc/extension
+            # Test-only bundle of the original pinned HWC hashOp/hashAction implementation,
+            # not a modification to HWC, Imposter's WASM, or its native validators.
+            npx esbuild packages/core/src/hash/index.ts --bundle --platform=node --format=cjs --outfile=../runtime-evidence/hwc-op-hash-native.cjs
+          ) 2>&1 | tee runtime-evidence/hwc-build.log
+          test -s hwc/packages/extension/dist-chrome/manifest.json
+          test -s hwc/packages/extension/dist-chrome/background/index.js
+          node -e "import('./runtime-evidence/hwc-op-hash-native.cjs').then(m=>{const n=m.default||m;if(typeof n.hashOp!=='function'||typeof n.hashAction!=='function')process.exit(1)})"
+
+      - name: Install pinned native hc-spin 0.700.0 from Imposter package lock
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          npm ci 2>&1 | tee runtime-evidence/hc-spin-npm-ci.log
+          test -x node_modules/.bin/hc-spin
+          node -e "const p=require('./node_modules/@holochain/hc-spin/package.json');if(p.version!=='0.700.0')process.exit(1);console.log('PINNED_NATIVE_CONDUCTOR_CLI',p.version)"
+
+      - name: Install Playwright Chromium and Xvfb prerequisites
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          # Ubuntu hosted CI already provides Chromium system libraries and Xvfb.
+          # Avoid repeated slow apt/font package downloads on every P0 probe.
+          (cd hwc && npx playwright install chromium) 2>&1 | tee runtime-evidence/playwright-install.log
+          command -v xvfb-run
+
+      - name: Install Nix with exact Agent4 Holochain 0.7 binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+
+      - name: Resolve exactly pinned Imposter native Holochain build tooling
+        shell: bash
+        timeout-minutes: 28
+        run: |
+          set -euo pipefail
+          # Only reviewed coordinator authorization and additive signed
+          # attestation modules may differ. All other DNA/build sources stay pinned.
+          git diff --exit-code 111e6a44795e6572ed01191a98245ed723788c12 HEAD -- \
+            Cargo.toml Cargo.lock flake.nix flake.lock dnas/game \
+            ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs' \
+            ':(exclude)dnas/game/zomes/coordinator/game/src/recipient_keys.rs' \
+            ':(exclude)dnas/game/zomes/integrity/game_integrity/src/lib.rs' \
+            ':(exclude)dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs'
+          # Verifies all preexisting integrity rules match the pinned commit.
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = 'dnas/game/zomes/integrity/game_integrity/src/lib.rs'
+          source = Path(path).read_text()
+          additions = [
+              "mod recipient_keys;\npub use recipient_keys::*;\n",
+              "    RecipientKeyAttestation(RecipientKeyAttestation),\n",
+              "    RecipientKeyByAgent,\n",
+              "            LinkTypes::RecipientKeyByAgent => validate_recipient_key_link(&action),\n",
+              "        EntryTypes::RecipientKeyAttestation(a) => validate_recipient_key(a, &author, action.timestamp()),\n",
+          ]
+          for delta in additions:
+              assert source.count(delta) == 1
+              source = source.replace(delta, '', 1)
+          pinned = subprocess.check_output(['git', 'show',
+              '111e6a44795e6572ed01191a98245ed723788c12:' + path], text=True)
+          assert source == pinned, 'existing integrity validator was modified'
+          print('NATIVE_LEGACY_INTEGRITY_UNCHANGED=PASS')
+          PY
+          timeout --signal=TERM --kill-after=60s 1550s nix -L develop --no-write-lock-file --command bash -c 'hc --version; cargo --version' 2>&1 | tee runtime-evidence/pinned-toolchain.log
+
+      - name: Run isolated host/recipient/seat/commitment role authorization regressions
+        shell: bash
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          nix develop --no-write-lock-file --command cargo test --locked -p imposter-core role_auth::tests
+
+      - name: Execute native lobby, restarts and installed encrypted roles
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-evidence
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$H2HC_LINKER_ADMIN_SECRET"
+          export H2HC_LINKER_ADDRESS=127.0.0.1
+          export H2HC_LINKER_PORT=8090
+          export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/ephemeral-H2HC-identity.key"
+          export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_RELAY_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_ALLOW_INSECURE_DEV=false
+          export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false
+          export H2HC_BASE_URL="http://127.0.0.1:8090"
+          export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
+          RUST_LOG="h2hc_linker::gateway_kitsune=debug,h2hc_linker::dht_query=debug,h2hc_linker::routes::publish=info,h2hc_linker::routes::websocket=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
+          H2HC_PID=$!
+          trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8090/health >/dev/null; then ok=1;break;fi
+            if ! kill -0 "$H2HC_PID" 2>/dev/null; then break;fi
+            sleep 1
+          done
+          test "$ok" = 1
+          timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-native-authority-browser-bridge.mjs > "${RUNNER_TEMP}/installed-role-bridge.log" 2>&1
+
+      - name: Summarize verified gates without raw runtime logs
+        if: always()
+        shell: bash
+        run: |
+          if test -f runtime-evidence/runtime-evidence.json; then
+            jq -r '.checks | to_entries[] | [.key,.value.result] | @tsv' runtime-evidence/runtime-evidence.json
+          fi
+          if test -f runtime-evidence/installed-role-evidence.json; then
+            cat runtime-evidence/installed-role-evidence.json
+          fi
+
+      - name: Upload role evidence and executable provenance only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-role-evidence-${{ github.run_id }}
+          path: |
+            runtime-evidence/installed-role-evidence.json
+            runtime-evidence/h2hc-provenance.txt
