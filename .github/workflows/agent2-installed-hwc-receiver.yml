@@ -67,7 +67,12 @@ jobs:
           set -euo pipefail
           node --test compatibility/hwc-imposter-compatibility/private-role/native-authority.test.mjs
           node --test compatibility/hwc-imposter-compatibility/private-role/trusted-receiver.test.mjs
-          node --test compatibility/hwc-imposter-compatibility/private-role/store.test.mjs
+          mkdir -p "$RUNNER_TEMP/agent2-idb"
+          cd "$RUNNER_TEMP/agent2-idb"
+          printf '{"name":"agent2-idb-only","private":true}\n' > package.json
+          npm install --no-save --ignore-scripts --package-lock=false --no-audit --no-fund fake-indexeddb@6.2.5
+          cd "$GITHUB_WORKSPACE"
+          node --import "$RUNNER_TEMP/agent2-idb/node_modules/fake-indexeddb/auto/index.mjs" --test compatibility/hwc-imposter-compatibility/private-role/store.test.mjs
       - name: Install pinned HWC dependencies
         run: npm ci --prefix hwc
       - name: Typecheck original core and installed extension
