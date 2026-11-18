@@ -52,24 +52,30 @@ function session(dna,agent,origin){
 }
 async function fixture(){
  const d=dna(1),host=await identity(),b=await identity(),c=await identity(),proof=await roleProof();
- const storeB=new Keys(),stored=await storeB.rotateCell(d,b.agent,1);
+ const storeB=new Keys(),storeHost=new Keys(),stored=await storeB.rotateCell(d,b.agent,1);
+ const hostCell=await storeHost.rotateCell(d,host.agent,1);
  const now=Date.now(),att=await attestKey({dna:d,agent:b.agent,epoch:stored.epoch,
    keyId:stored.keyId,publicKey:stored.publicKey,sign:b.lair.signByPubKey,now});
  await storeB.installCellAttestation(d,b.agent,att);
+ const hostAtt=await attestKey({dna:d,agent:host.agent,epoch:hostCell.epoch,
+   keyId:hostCell.keyId,publicKey:hostCell.publicKey,sign:host.lair.signByPubKey,now});
+ await storeHost.installCellAttestation(d,host.agent,hostAtt);
  const game={dna:d,currentRound:3,active:true,
    lobby:{action:hash(1),author:host.agent,host:host.agent,round:3},
    commit:{action:hash(2),author:host.agent,lobby:hash(1),round:3,
      seats:[host.agent,b.agent,c.agent],merkleRoot:proof.root}};
  const enrollment={dna:d,author:b.agent,attestation:att};
+ const hostEnrollment={dna:d,author:host.agent,attestation:hostAtt};
+ const native={readCurrentGame:async()=>game,readKeyEnrollment:async(_,recipient)=>
+   Buffer.compare(recipient,host.agent)===0?hostEnrollment:enrollment};
  const a=agent=>({dna:d,agent,contextId:'installed-happ'});
  const hostSession=session(d,host.agent,'host'),bSession=session(d,b.agent,'guest-b');
  const hostSvc=createRestrictedRoleService({installedCell:async()=>a(host.agent),
-   native:{readCurrentGame:async()=>game,readKeyEnrollment:async()=>enrollment},
-   lair:host.lair,session:hostSession,store:new Keys()});
+   native,lair:host.lair,session:hostSession,store:storeHost});
  const guestSvc=createRestrictedRoleService({installedCell:async()=>a(b.agent),
-   native:{readCurrentGame:async()=>game,readKeyEnrollment:async()=>enrollment},
-   lair:b.lair,session:bSession,store:storeB});
- return {d,host,b,c,proof,att,stored,game,enrollment,hostSession,bSession,hostSvc,guestSvc,storeB};
+   native,lair:b.lair,session:bSession,store:storeB});
+ return {d,host,b,c,proof,att,stored,game,enrollment,hostEnrollment,
+   hostSession,bSession,hostSvc,guestSvc,storeB,storeHost};
 }
 test('Merkle verifier matches native leaf/node domains and denies wrong seat, role, root, salt',async()=>{
  const p=await roleProof();assert.equal(await verifyRoleOpening({payload:p.payload,seat:1,root:p.root}),1);
@@ -92,6 +98,9 @@ test('installed-cell signer uses enabled context, exact DNA, Lair signer and hel
 });
 test('independent host/guest signed role: B extension receives correct opening only once, never invokes coordinator',async()=>{
  const f=await fixture();
+ await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/fresh signed recipient request/);
+ assert.deepEqual(await f.guestSvc.requestRole({seat:1}),{requestSent:true,roleAvailable:false});
+ assert.deepEqual(await f.hostSvc.receiveFromSocket(f.bSession.sent[0]),{validatedRecipientRequest:true,coordinatorInvoked:false});
  assert.deepEqual(await f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),{queuedOnly:true});
  assert.equal(f.hostSession.sent.length,1);
  const out=await f.guestSvc.receiveFromSocket(f.hostSession.sent[0]);
@@ -104,6 +113,8 @@ test('independent host/guest signed role: B extension receives correct opening o
 });
 test('native wrong round/host/seat and revoked session deny before plaintext disclosure',async()=>{
  const f=await fixture();
+ await f.guestSvc.requestRole({seat:1});
+ await f.hostSvc.receiveFromSocket(f.bSession.sent[0]);
  await f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path});
  const frame=f.hostSession.sent[0];
  f.game.currentRound=4;
@@ -124,7 +135,7 @@ test('signed message has no forged browser bool or generic remote API; absent na
 });
 test('host fails closed on missing native recipient enrollment and unregistered session',async()=>{
  const f=await fixture();f.enrollment.author=f.c.agent;
- await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/native-enrolled/);
+ await assert.rejects(f.guestSvc.requestRole({seat:1}),/native-enrolled|recipient attestation/);
  f.enrollment.author=f.b.agent;f.hostSession.revoke();
  await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/live registered/);
 });
