@@ -25,7 +25,7 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      const t=db.transaction('cells','readwrite',{durability:'strict'}),finished=done(t);
      const s=t.objectStore('cells');
      const previous=await req(s.get(cell));
-     if(previous&&previous.epoch>=epoch){t.abort();try{await finished;}catch{}throw Error('non-monotonic key rotation');}
+     if((previous&&previous.epoch+1!==epoch)||(!previous&&epoch!==1)){t.abort();try{await finished;}catch{}throw Error('non-monotonic or skipped key rotation');}
      const keyId=crypto.getRandomValues(new Uint8Array(16));
      const value={cell,dna,agent,epoch,keyId,publicKey,privateKey:pair.privateKey};
      s.put(value);
@@ -45,6 +45,12 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      if(!stored||stored.epoch!==attestation.epoch||!equal(stored.keyId,attestation.keyId)||!equal(stored.publicKey,attestation.publicKey)||!stored.privateKey||stored.privateKey.extractable){
        t.abort();try{await finished;}catch{}throw Error('signed attestation does not match current non-extractable cell key');
      }
+     if(stored.attestation &&
+       (attestation.notBefore<stored.attestation.notBefore||
+        attestation.notAfter<stored.attestation.notAfter)){
+       t.abort();try{await finished;}catch{}
+       throw Error('installed key attestation validity rollback');
+     }
      s.put({...stored,attestation});await finished;
      return true;
    },
@@ -60,8 +66,12 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      const prior=await req(s.get(cell));
      const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
      if(prior&&(attestation.epoch<prior.epoch||
+       attestation.epoch>prior.epoch+1||
        (attestation.epoch===prior.epoch&&
-         (prior.revoked||!eq(attestation.keyId,prior.keyId)||!eq(attestation.publicKey,prior.publicKey))))){
+         (prior.revoked||!eq(attestation.keyId,prior.keyId)||
+          !eq(attestation.publicKey,prior.publicKey)||
+          attestation.notBefore<prior.attestation.notBefore||
+          attestation.notAfter<prior.attestation.notAfter)))){
        t.abort();try{await finished;}catch{}throw Error('trusted recipient rollback, equivocation or revoked epoch');
      }
      s.put({cell,epoch:attestation.epoch,keyId:attestation.keyId,publicKey:attestation.publicKey,attestation,revoked:false});
