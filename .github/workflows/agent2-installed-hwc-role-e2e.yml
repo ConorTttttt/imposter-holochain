@@ -4,6 +4,9 @@ on:
     branches: [validation/agent2-hwc-integration]
     paths:
       - '.github/workflows/agent2-installed-hwc-role-e2e.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/hwc-installed-runtime.mjs'
+      - 'compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py'
+      - 'compatibility/hwc-imposter-compatibility/private-role/instrument_installed_role_receipt.py'
   workflow_dispatch:
 
 permissions:
@@ -84,8 +87,11 @@ jobs:
           # receiver, all against the exact immutable HWC commit.
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py hwc --write
-          for symbol in get_authoritative_game_view commit_roles_only host_role_opening publish_signed_recipient_key_attestation lookup_recipient_key; do
+          for symbol in get_authoritative_game_view commit_roles_only host_role_opening; do
             grep -Fq "pub fn $symbol" dnas/game/zomes/coordinator/game/src/lib.rs
+          done
+          for symbol in publish_signed_recipient_key_attestation lookup_recipient_key; do
+            grep -Fq "pub fn $symbol" dnas/game/zomes/coordinator/game/src/recipient_keys.rs
           done
           test -s hwc/packages/extension/src/private-role/hwc-installed-runtime.mjs
           grep -Fq 'PRIVATE_ROLE_SESSION_PROBE' hwc/packages/extension/src/offscreen/index.ts
