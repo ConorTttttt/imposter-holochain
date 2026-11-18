@@ -30,6 +30,7 @@ try{
       const result=JSON.parse(await page.locator('body').textContent());
       assert.equal(result.status,'PASS',phase+' browser stage failed');
       assert.equal(result.nonextractable,true);
+      if(phase!=='register')assert.equal(result.actionPinsRetained,true);
       if(phase==='revoked-restart'){
         assert.equal(result.revokedFloorRetained,true);
         assert.equal(result.replayDenied,true);
@@ -47,4 +48,5 @@ try{
   console.log('CHROMIUM_NON_EXTRACTABLE_KEY_REPLAY_ROTATION_PASS');
   console.log('CHROMIUM_PERSISTED_SIGNED_RECIPIENT_EPOCH_REVOCATION_PASS');
   console.log('CHROMIUM_PERSISTED_REVOKED_EPOCH_FLOOR_THREE_PROCESS_PASS');
+  console.log('CHROMIUM_LOBBY_ROLECOMMIT_ACTION_PIN_RESTART_PASS');
 } finally {await new Promise(ok=>server.close(ok));await rm(profile,{recursive:true,force:true});}
