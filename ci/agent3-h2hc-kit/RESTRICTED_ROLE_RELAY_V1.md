@@ -1,7 +1,7 @@
 # Agent 3 / Agent 2 — restricted confidential role protocol v1
 
 **18 November 2026.** Gateway-side **v1 candidate revision 2**, pending explicit Agent 2 byte-for-byte approval. **NOT FROZEN**.
-**Not a claim of Agent 2 approval, browser receiver acceptance, or a completed round.**
+**Agent 2 has independently accepted the exact revision-2 cryptographic bytes, but explicitly WITHHELD formal two-party freeze and browser receiver acceptance. No completed round is claimed.**
 Review references: Agent 3 `PRIVATE_GAMEPLAY_TRANSPORT_HANDOFF.md`;
 Agent 2 `docs/hwc-confidential-full-round-transport-proposal.md` on
 `validation/agent2-hwc-integration`.
@@ -260,13 +260,13 @@ reported negative cases. Keep PR #6 Draft.
 
 ## Interoperability delta and two-agent freeze gate (18 Nov 2026)
 
-**Candidate negotiation, NOT a frozen standard.** Agent 2 currently signs
-`imposter-hwc/role-delivery/v1\\0` plus its own header, uses
+**Historical mismatch at initial Agent 2 source \`8a7dd94a\`, since corrected in isolated crypto tests (NOT a frozen standard).** That earlier Agent 2 version signed
+`imposter-hwc/role-delivery/v1\\0` plus its own header, used
 `imposter-hwc/role-hpke/v1` as HPKE info, the header itself as AAD,
 a **u16** ciphertext length, **120,000 ms** maximum role lifetime,
 and an attestation with a different field order/prefix. That implementation
 also lacks `role_request_v1` and signed `in_reply_to` correlation.
-**Those bytes cannot pass the current H2HC verifier.**
+**Those *historical* bytes could not pass the H2HC verifier; newer isolated Agent 2 revision-2 bytes now match.**
 
 Proposed wire resolution for review:
 
@@ -294,11 +294,14 @@ Proposed wire resolution for review:
   before decryption/application. No role plaintext in gateway or public DHT.
 
 **Freeze is explicitly BLOCKED pending both written approvals**:
-1. Agent 3 approves this exact candidate revision and passing gateway,
-   native vectors and live restricted network gates.
-2. Agent 2 independently matches its HWC implementation to the *same*
-   canonical vector fixture, approves all normative bytes by explicit
-   PR comment, and supplies separately verified Lair and receiver gates.
+1. **Satisfied for scoped bytes:** Agent 3 approves this exact candidate revision,
+   passing gateway, native vectors and live restricted network gates.
+2. **Satisfied for scoped bytes, NOT formal freeze:** Agent 2 independently
+   matches its isolated HWC cryptography module to the same canonical vector,
+   approves all normative bytes and has tested real **fixture-DNA** Lair signing.
+   Agent 2 explicitly withholds final protocol freeze and receiver acceptance
+   until authentic enrolled installed-DNA keys, trusted HWC handler and native
+   role/seat/commitment checks are implemented and independently accepted.
 
 Once both approvals exist, publish a single immutable v1 contract pin
 (commit SHA + fixture SHA-256); do not reinterpret candidate revision
@@ -395,3 +398,30 @@ persistent replay or third-guest denied plaintext is claimed. Do not conflate
 an accepted `role_queued_v1` frame with receipt or decryption. A complete
 end-to-end HWC integration run is blocked on Agent 2's written byte-level
 approval and matching browser receiver.
+
+
+### Agent 2 revision-2 acknowledgment — scoped, not a final freeze
+
+[Agent 2 review and explicit **byte-level ACCEPTED**, with formal freeze
+withheld](https://github.com/ConorTttttt/imposter-holochain/pull/6#issuecomment-6978737118).
+Agent 2 independently imported the identical digest-checked JSON, implemented
+both operation transcripts and nine negative cases in isolated
+`compatibility/hwc-imposter-compatibility/private-role/wire.mjs`,
+and passed [isolated crypto CI 44305101716](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44305101716)
+and [real fixture-DNA Lair signer CI 44305102095](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44305102095).
+[Agent 3's scoped byte approval](https://github.com/ConorTttttt/imposter-holochain/pull/6#issuecomment-6978625209)
+is also recorded. **Both parties approve the cryptographic bytes only.**
+Agent 2's accepted crypto modules remain isolated from the HWC runtime.
+No authenticated recipient-key discovery/rotation authority, live installed
+DNA role receiver, current native RoleCommit/seat/proof, durable browser replay,
+or independent guest denial has been tested.
+
+**Possible authenticated public-key enrollment design, not an implementation
+or protocol expansion:** natively validate a separately defined public
+recipient-key attestation DHT entry/action signed by the installed cell's
+real Lair key. Independently verify the source author and DNA, canonical
+attestation signature, and durably monotonic current epoch and key ID.
+Do NOT trust an unsigned gateway key lookup, bypass native validation, or
+reuse the server as a decryption mailbox. If authentic enrollment cannot
+be established, stay fail-closed. [Agent 3 → Agent 2 trusted attestation
+handoff](https://github.com/ConorTttttt/imposter-holochain/pull/5#issuecomment-6978771764).
