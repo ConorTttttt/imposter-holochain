@@ -6,6 +6,7 @@ on:
       - '.github/workflows/agent3-h2hc-runtime.yml'
       - 'ci/agent3-h2hc-kit/runtime-fixtures.rs'
       - 'ci/agent3-h2hc-kit/network-probe.mjs'
+      - 'ci/agent3-h2hc-kit/apply_revocation_patch.py'
       - 'ci/agent3-h2hc-kit/secure.env.example'
       - 'ci/agent3-h2hc-kit/RUNTIME_RUNBOOK.md'
   workflow_dispatch:
@@ -101,6 +102,15 @@ jobs:
           git -C "$RUNNER_TEMP/h2hc" add src/router.rs src/routes/websocket.rs src/auth/middleware.rs src/config.rs src/gateway_kitsune.rs src/lib.rs
           git -C "$RUNNER_TEMP/h2hc" commit -m "security: correct Rust regression fixtures and targeted Clippy errors"
           git -C "$RUNNER_TEMP/h2hc" diff --check
+
+      - name: Apply fail-closed revocation patch without modifying upstream pin
+        run: |
+          set -euo pipefail
+          python3 ci/agent3-h2hc-kit/apply_revocation_patch.py --repo "$RUNNER_TEMP/h2hc"
+          git -C "$RUNNER_TEMP/h2hc" add src/auth/store.rs src/auth/memory_store.rs src/routes/websocket.rs
+          git -C "$RUNNER_TEMP/h2hc" commit -m "security: revoke every active websocket and close session race"
+          git -C "$RUNNER_TEMP/h2hc" diff --check
+          git -C "$RUNNER_TEMP/h2hc" rev-parse HEAD
 
       - name: Install pinned Rust toolchain with fmt and clippy
         uses: dtolnay/rust-toolchain@stable
