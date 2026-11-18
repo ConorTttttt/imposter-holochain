@@ -130,8 +130,7 @@ def apply(root):
     // Subscribe BEFORE the first auth message to avoid missing a revoke""")
     replace(ws,
         "            let json = match serde_json::to_string(&msg) {",
-        """            let Some(msg) = msg else { break; };
-            // For queued private messages, the lock is held THROUGH the actual
+        """            // For queued private messages, the lock is held THROUGH the actual
             // socket write, so an administrative remove cannot race between
             // permission recheck and the wire send. The token is never serialized.
             let _dispatch_guard = match &msg {
