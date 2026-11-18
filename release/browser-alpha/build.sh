@@ -6,6 +6,10 @@ if [[ $# != 6 ]]; then
   exit 2
 fi
 rc=$(cd "$(dirname "$0")" && pwd)
+fail(){ echo "Browser alpha build: $*" >&2; exit 1; }
+for tool in git jq node npm npx nix python3 realpath sha256sum; do
+  command -v "$tool" >/dev/null || fail "install $tool before building"
+done
 repo=$(git -C "$rc" rev-parse --show-toplevel)
 game=$(cd "$1" && pwd)
 hwc=$(cd "$2" && pwd)
@@ -13,13 +17,16 @@ host=$3
 seed=$4
 gateway=$(realpath "$5")
 output=$(realpath -m "$6")
-test ! -e "$output" && test ! -L "$output"
-test -z "$(git -C "$repo" status --porcelain --untracked-files=no)"
-test -z "$(git -C "$game" status --porcelain)"
-test "$(git -C "$game" rev-parse HEAD)" = "$(jq -er .game_commit "$rc/pins.json")"
-test "$(git -C "$hwc" rev-parse HEAD)" = "$(jq -er .hwc_commit "$rc/pins.json")"
-test "$(node --version)" = "$(jq -er .node_version "$rc/pins.json")"
-[[ "$seed" == "g1.$host."* ]]
+[[ ! -e "$output" && ! -L "$output" && -d "$(dirname "$output")" ]] ||
+  fail 'use a new output directory under an existing parent'
+test -z "$(git -C "$repo" status --porcelain --untracked-files=no)" || fail 'commit release source changes first'
+test -z "$(git -C "$game" status --porcelain)" || fail 'use a clean pinned game checkout'
+test "$(git -C "$game" rev-parse HEAD)" = "$(jq -er .game_commit "$rc/pins.json")" || fail 'wrong game commit'
+test "$(git -C "$hwc" rev-parse HEAD)" = "$(jq -er .hwc_commit "$rc/pins.json")" || fail 'wrong HWC commit'
+node_version=$(jq -er .node_version "$rc/pins.json")
+test "$(node --version)" = "$node_version" || fail "use Node $node_version"
+[[ "$seed" == "g1.$host."* ]] || fail 'the seed must bind the supplied public host key'
+test -f "$gateway" || fail 'the accepted gateway executable is missing'
 node "$game/scripts/browser-poc-lib.mjs" validate-seed "$seed"
 printf '%s  %s\n' "$(jq -er .gateway.sha256 "$rc/pins.json")" "$gateway" | sha256sum --check
 
@@ -45,13 +52,13 @@ fi
   cd "$game"
   export SOURCE_DATE_EPOCH=$source_epoch
   export BROWSER_POC_IDENTITY_SOURCE=$native_identity
-  nix develop --no-write-lock-file --command bash scripts/browser-poc-build.sh "$seed"
+  nix --extra-experimental-features 'nix-command flakes' develop --no-write-lock-file --command bash scripts/browser-poc-build.sh "$seed"
 )
 tag=$(printf %s "$seed" | sha256sum | cut -c1-16)
 native="$game/target/browser-poc/$tag"
 (
   cd "$game"
-  nix develop --no-write-lock-file --command bash -euc '
+  nix --extra-experimental-features 'nix-command flakes' develop --no-write-lock-file --command bash -euc '
     command -v hc >/dev/null
     bash scripts/browser-poc-verify.sh "$1"
   ' verify-native "$native"

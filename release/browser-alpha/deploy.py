@@ -12,15 +12,15 @@ from pathlib import Path
 import re
 import stat
 import subprocess
-import tempfile
 from urllib.parse import urlsplit
+from zipfile import BadZipFile
 
-from package import GATEWAY, HAPP, HERE, SETUP, digest, load, require, sha256_stream, verify
+from package import GATEWAY, HAPP, HERE, SETUP, ValidationError, digest, load, require, sha256_stream, verify
+from site_release import FRONTEND, activate_site
 
 PUBLIC = {"frontend_origin", "gateway_origin", "bootstrap_url", "relay_url"}
 PRIVATE = {"static_root", "gateway_identity_file", "gateway_session_db",
            "admin_secret_file", "native_authority_root"}
-FRONTEND = SETUP | {"browser-demo.html", "deployment.json", Path(HAPP).name, "browser-config.json"}
 CI_BOOTSTRAP = "dev-test-bootstrap2.holochain.org"
 
 
@@ -83,7 +83,8 @@ def proxy_config(public, paths):
     redir / /browser-setup.html 302
     @alpha path {routes}
     handle @alpha {{
-        root * "{paths['static_root']}"
+        header Cache-Control "no-store"
+        root * "{paths['static_root'] / 'current'}"
         file_server
     }}
     handle {{
@@ -99,24 +100,10 @@ def proxy_config(public, paths):
 """
 
 
-def place_static(root, files):
-    require(not root.exists() or root.is_dir(), "Static root is unavailable")
-    root.mkdir(parents=True, exist_ok=True)
-    require(all(p.name in FRONTEND and p.is_file() and not p.is_symlink() for p in root.iterdir()),
-            "Static root contains unexpected files or symbolic links")
-    for name, content in files.items():
-        target = root / name
-        require(not target.exists() or target.read_bytes() == content,
-                "Static root has different release bytes. Use a new static root for an upgrade.")
-    for name, content in files.items():
-        target = root / name
-        if target.exists():
-            continue
-        with tempfile.NamedTemporaryFile(dir=root) as stage:
-            stage.write(content)
-            stage.flush()
-            os.fchmod(stage.fileno(), 0o644)
-            os.link(stage.name, target)
+def release_files(release, public):
+    files = {name: (release / "frontend" / name).read_bytes() for name in FRONTEND - {"browser-config.json"}}
+    files["browser-config.json"] = (json.dumps(browser_config(public), sort_keys=True) + "\n").encode()
+    return files
 
 
 def verify_private_config_location(static, *files):
@@ -133,7 +120,7 @@ def admin_secret(path):
     return value
 
 
-def run_gateway(root, public, paths):
+def gateway_environment(public, paths):
     secret = admin_secret(paths["admin_secret_file"])
     for key in ("gateway_identity_file", "gateway_session_db"):
         require(paths[key].parent.is_dir(), "Create the protected gateway state directory first")
@@ -146,6 +133,11 @@ def run_gateway(root, public, paths):
         H2HC_LINKER_BOOTSTRAP_URL=public["bootstrap_url"], H2HC_LINKER_RELAY_URL=public["relay_url"],
         H2HC_LINKER_ALLOW_INSECURE_DEV="false", H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK="false",
     )
+    return env
+
+
+def run_gateway(root, public, paths):
+    env = gateway_environment(public, paths)
     os.umask(0o077)
     exe = str((root / GATEWAY).resolve())
     os.execve(exe, [exe, "--address", "127.0.0.1", "--port", "8090"], env)
@@ -171,6 +163,12 @@ def change_admission(method, agent, role, host, secret_file):
 def native_command(operation, release, public, root):
     hc_version = subprocess.check_output(["hc", "--version"], text=True)
     require(re.search(r"\b0\.7\.0\b", hc_version), "Run native commands inside the pinned Holochain 0.7.0 Nix shell")
+    binding = root / ".imposter-authority.json"
+    config = {
+        "happ_sha256": digest(release / HAPP),
+        "bootstrap_url": public["bootstrap_url"],
+        "relay_url": public["relay_url"],
+    }
     if operation == "init-native":
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         require(not any(root.iterdir()), "Native authority state already exists")
@@ -180,6 +178,8 @@ def native_command(operation, release, public, root):
                 "--target-arc-factor", "1", "quic", public["relay_url"]]
     else:
         require((root / ".hc").is_file(), "Initialize the two native authorities first")
+        require(binding.is_file() and not binding.is_symlink() and load(binding) == config,
+                "Native authorities were initialized for different release bytes or endpoints")
         args = ["--force-admin-ports", "33555,33557", "run", "--all", "--ports", "33556,33558"]
     password = getpass("Native authority Lair passphrase: ")
     require(bool(password), "Native authority passphrase is required")
@@ -187,13 +187,22 @@ def native_command(operation, release, public, root):
     os.umask(0o077)
     subprocess.run(["hc", "sandbox", "--piped", *args], cwd=root, env=env,
                    input=password + "\n", text=True, check=True)
+    if operation == "init-native":
+        require((root / ".hc").is_file(), "Native initialization did not create sandbox state")
+        with binding.open("x") as target:
+            json.dump(config, target, sort_keys=True)
+            target.write("\n")
 
 
 def https_request(origin, path, headers=None):
     url = urlsplit(origin)
     connection = http.client.HTTPSConnection(url.hostname, url.port or 443, timeout=10)
-    connection.request("GET", path, headers=headers or {})
-    return connection, connection.getresponse()
+    try:
+        connection.request("GET", path, headers=headers or {})
+        return connection, connection.getresponse()
+    except (OSError, http.client.HTTPException):
+        connection.close()
+        raise
 
 
 def remote_preflight(public, release):
@@ -202,12 +211,12 @@ def remote_preflight(public, release):
                  "/" + Path(HAPP).name, "/browser-config.json"):
         connection, response = https_request(front, path)
         try:
-            require(response.status == 200, "Frontend HTTPS preflight failed")
+            require(response.status == 200, f"Frontend HTTPS preflight failed for {path}")
             if path == "/browser-config.json":
                 require(json.load(response) == browser_config(public), "Served browser settings differ")
             else:
                 require(sha256_stream(response) == digest(release / "frontend" / path[1:]),
-                        "Served release bytes differ")
+                        f"Served release bytes differ for {path}")
         finally:
             connection.close()
     for path, expected in (("/health", 200), ("/admin/agents", 404)):
@@ -233,13 +242,14 @@ def remote_preflight(public, release):
 
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["check", "render-proxy", "bootstrap-site", "publish",
+    parser.add_argument("operation", choices=["check", "render-proxy", "bootstrap-site", "publish", "rollback",
                                               "preflight", "gateway", "admit", "revoke",
                                               "init-native", "run-native"])
     parser.add_argument("--public", type=Path, required=True)
     parser.add_argument("--operator", type=Path, required=True)
     parser.add_argument("--release", type=Path)
     parser.add_argument("--release-commit")
+    parser.add_argument("--manifest-sha256", help="Independently recorded release manifest checksum")
     parser.add_argument("--agent")
     parser.add_argument("--role", choices=["host", "guest"])
     args = parser.parse_args()
@@ -254,17 +264,17 @@ def main():
             print(proxy_config(public, paths), end="")
             return
         if args.operation == "bootstrap-site":
-            place_static(root, {name:(HERE / "frontend" / name).read_bytes() for name in SETUP})
+            version = activate_site(root, {name: (HERE / "frontend" / name).read_bytes() for name in SETUP})
+            print(f"Bootstrap snapshot active {version}")
             return
         require(args.release and args.release_commit, "This operation requires a verified release and source commit")
         release = args.release.resolve()
         require(not release.is_relative_to(root) and not root.is_relative_to(release),
                 "Serve the dedicated static root rather than the distribution directory")
-        manifest = verify(release, args.release_commit)
-        if args.operation == "publish":
-            files = {name:(release / "frontend" / name).read_bytes() for name in sorted(FRONTEND - {"browser-config.json"})}
-            files["browser-config.json"] = (json.dumps(browser_config(public), sort_keys=True) + "\n").encode()
-            place_static(root, files)
+        manifest = verify(release, args.release_commit, manifest_sha256=args.manifest_sha256)
+        if args.operation in ("publish", "rollback"):
+            version = activate_site(root, release_files(release, public), rollback=args.operation == "rollback")
+            print(f"Static release snapshot active {version}")
         if args.operation == "preflight":
             remote_preflight(public, release)
         if args.operation == "gateway":
@@ -276,7 +286,9 @@ def main():
             change_admission("POST" if args.operation == "admit" else "DELETE",
                              args.agent, args.role, manifest["game"]["host_agent_pub_key"], paths["admin_secret_file"])
             print("Authenticated loopback gateway admission change accepted")
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, http.client.HTTPException):
+    except ValidationError as error:
+        parser.exit(1, f"Browser alpha deployment command failed. {error}\n")
+    except (ValueError, KeyError, TypeError, OSError, BadZipFile, subprocess.SubprocessError, http.client.HTTPException):
         # Detailed credentials, gateway responses and environment remain on the operator host.
         parser.exit(1, "Browser alpha deployment command failed. Check configuration, artifact pins and local service status.\n")
 

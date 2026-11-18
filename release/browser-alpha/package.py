@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tempfile
-from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
 HERE = Path(__file__).resolve().parent
 PINS = json.loads((HERE / "pins.json").read_text())
@@ -31,9 +31,13 @@ CI_MARKERS = (
 )
 
 
+class ValidationError(ValueError):
+    """A controlled diagnostic from release input validation."""
+
+
 def require(condition, error):
     if not condition:
-        raise ValueError(error)
+        raise ValidationError(error)
 
 
 def digest(path):
@@ -107,7 +111,7 @@ def checksums(root):
     return "".join(f"{digest(root / item)}  {item}\n" for item in sorted(FILES | {"release-manifest.json"}))
 
 
-def verify(root, expected_commit, identity="OPERATOR_SUPPLIED_PUBLIC_INPUT"):
+def verify(root, expected_commit, identity="OPERATOR_SUPPLIED_PUBLIC_INPUT", *, manifest_sha256=None):
     actual = set()
     for member in root.rglob("*"):
         require(not member.is_symlink(), "Symlink in release")
@@ -116,6 +120,10 @@ def verify(root, expected_commit, identity="OPERATOR_SUPPLIED_PUBLIC_INPUT"):
         else:
             require(member.is_dir(), "Unexpected release entry")
     require(actual == FILES | {"release-manifest.json", "SHA256SUMS"}, "Release file inventory differs")
+    if manifest_sha256 is not None:
+        require(re.fullmatch(r"[0-9a-f]{64}", manifest_sha256)
+                and digest(root / "release-manifest.json") == manifest_sha256,
+                "Release manifest differs from the operator's trusted checksum")
     require((root / "SHA256SUMS").read_text() == checksums(root), "Release checksums differ")
     manifest = load(root / "release-manifest.json")
     expected_fields = {"schema_version", "release_commit", "pins", "identity_provenance",
@@ -211,13 +219,14 @@ def main():
         assembler.add_argument(f"--{name}", type=Path, required=True)
     assembler.add_argument("--node-version", required=True)
     assembler.add_argument("--npm-version", required=True)
+    checker.add_argument("--manifest-sha256", help="Independently recorded SHA-256 of release-manifest.json")
     args = parser.parse_args()
     try:
         if args.command == "assemble":
             assemble(args)
         else:
-            verify(args.out, args.release_commit, args.identity)
-    except (ValueError, KeyError, TypeError, OSError) as error:
+            verify(args.out, args.release_commit, args.identity, manifest_sha256=args.manifest_sha256)
+    except (ValueError, KeyError, TypeError, OSError, BadZipFile) as error:
         parser.exit(1, f"Browser alpha package verification failed: {error}\n")
     print("Browser alpha checksums, source pins, asset inventory and embedded metadata verified")
 

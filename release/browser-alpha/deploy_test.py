@@ -1,9 +1,11 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
-from deploy import admin_secret, browser_config, configuration, place_static, proxy_config
-from package import EXTENSION, archive_extension, check_extension, verify_public_bytes
+from deploy import admin_secret, browser_config, configuration, native_command, proxy_config
+from package import EXTENSION, HAPP, archive_extension, check_extension, verify_public_bytes
+from site_release import FRONTEND, activate_site
 
 
 class DeploymentTests(TestCase):
@@ -48,15 +50,61 @@ class DeploymentTests(TestCase):
         with self.assertRaises(ValueError):
             configuration(self.public, {**self.operator, "admin_secret_file": "/srv/imposter-alpha/secret"})
 
-    def test_static_publication_is_idempotent_and_rejects_drift(self):
+    def test_static_publication_and_rollback_keep_exact_game_binding(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            files = {"browser-setup.html": b"bootstrap"}
-            place_static(root, files)
-            place_static(root, {**files, "deployment.json": b"{}"})
-            with self.assertRaises(ValueError):
-                place_static(root, {"browser-setup.html": b"unexpected"})
-            self.assertEqual((root / "browser-setup.html").read_bytes(), b"bootstrap")
+            setup = {"browser-setup.html": b"bootstrap", "browser-setup.js": b"/* setup */"}
+            activate_site(root, setup)
+            self.assertFalse((root / "current/deployment.json").exists())
+            first = {**{name: b"{}" for name in FRONTEND}, **setup, "browser-demo.html": b"first"}
+            second = {**first, "browser-demo.html": b"second"}
+            prior = activate_site(root, first)
+            self.assertEqual(activate_site(root, first), prior)
+            activate_site(root, second)
+            self.assertEqual((root / "current/browser-demo.html").read_bytes(), b"second")
+            with self.assertRaisesRegex(ValueError, "bound game"):
+                activate_site(root, {**first, "deployment.json": b'{"dna_hash":"other"}'})
+            with self.assertRaisesRegex(ValueError, "snapshot"):
+                activate_site(root, {**first, "browser-demo.html": b"unknown"}, rollback=True)
+            self.assertEqual((root / "current/browser-demo.html").read_bytes(), b"second")
+            self.assertEqual(activate_site(root, first, rollback=True), prior)
+            self.assertEqual((root / "current/browser-demo.html").read_bytes(), b"first")
+            with self.assertRaisesRegex(ValueError, "already has a bound game"):
+                activate_site(root, setup)
+
+    def test_failed_static_activation_leaves_last_complete_snapshot(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = {name: b"{}" for name in FRONTEND}
+            activate_site(root, first)
+            with patch("site_release.os.replace", side_effect=OSError("switch failed")):
+                with self.assertRaises(OSError):
+                    activate_site(root, {**first, "browser-demo.html": b"second"})
+            self.assertEqual((root / "current/browser-demo.html").read_bytes(), b"{}")
+
+    def test_native_restart_requires_matching_happ_and_network(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release, authorities = root / "release", root / "authorities"
+            happ = release / HAPP
+            happ.parent.mkdir(parents=True)
+            happ.write_bytes(b"test-only hApp")
+
+            def generate(*args, **kwargs):
+                (authorities / ".hc").touch()
+
+            with patch("deploy.subprocess.check_output", return_value="hc 0.7.0"), \
+                    patch("deploy.getpass", return_value="fixture"), \
+                    patch("deploy.subprocess.run", side_effect=generate) as run, \
+                    patch("deploy.os.umask"):
+                native_command("init-native", release, self.public, authorities)
+                native_command("run-native", release, self.public, authorities)
+                with self.assertRaisesRegex(ValueError, "different release bytes or endpoints"):
+                    native_command("run-native", release, {**self.public, "relay_url": "https://other.test"}, authorities)
+                happ.write_bytes(b"another test-only hApp")
+                with self.assertRaisesRegex(ValueError, "different release bytes or endpoints"):
+                    native_command("run-native", release, self.public, authorities)
+                self.assertEqual(run.call_count, 2)
 
     def test_secret_file_must_be_private(self):
         with TemporaryDirectory() as tmp:

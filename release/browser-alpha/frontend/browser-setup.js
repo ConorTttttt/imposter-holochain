@@ -19,13 +19,18 @@ function holoHash(value) {
 }
 
 async function fetchJSON(path) {
-  const response = await fetch(path, {cache:'no-store', redirect:'error'});
-  if (response.status === 404) return null;
-  if (!response.ok) throw Error('The operator’s setup files could not be loaded.');
-  return response.json();
+  try {
+    const response = await fetch(path, {cache:'no-store', redirect:'error'});
+    if (response.status === 404) return null;
+    if (response.ok) return await response.json();
+  } catch {
+    // Network and JSON failures use the same actionable setup message.
+  }
+  throw Error('The operator’s setup files could not be loaded. Refresh after the operator checks the release.');
 }
 
 async function connect() {
+  get('provision').hidden = true;
   if (!window.isSecureContext) throw Error('Open the operator’s HTTPS site.');
   for (let attempt = 0; attempt < 30 && !window.holochain?.isWebConductor; attempt++)
     await delay(150);
@@ -55,7 +60,12 @@ async function provision() {
       !/^uhC0k[A-Za-z0-9_-]{48}$/.test(release.dna_hash) ||
       !/^[0-9a-f]{64}$/.test(release.happ_bundle_sha256))
     throw Error('The operator’s release settings are missing or do not match this site.');
-  const gateway = new URL(settings.gateway_origin);
+  let gateway;
+  try {
+    gateway = new URL(settings.gateway_origin);
+  } catch {
+    throw Error('The operator must configure a secure HTTPS gateway.');
+  }
   if (gateway.protocol !== 'https:' || gateway.origin !== settings.gateway_origin)
     throw Error('The operator must configure a secure HTTPS gateway.');
   let info;
@@ -84,12 +94,15 @@ async function provision() {
       holoHash(info.cells[0][0]) !== release.dna_hash || holoHash(info.cells[0][1]) !== publicKey)
     throw Error('This profile already has a different or disabled game. Ask the operator which profile to use.');
   status('Waiting for secure gateway admission…');
+  let reachable = false;
   try {
     await client.configureNetwork({linkerUrl:gateway.origin});
     for (let attempt = 0; attempt < 40; attempt++) {
       const connection = await client.getConnectionStatus();
       const network = await client.getNetworkStatus();
-      if (connection.authenticated && connection.wsHealthy && network.hasSession) {
+      const expectedGateway = connection.linkerUrl === gateway.origin && network.linkerUrl === gateway.origin;
+      reachable ||= expectedGateway && (connection.httpHealthy || connection.wsHealthy);
+      if (expectedGateway && connection.authenticated && connection.wsHealthy && network.hasSession) {
         get('lobby').hidden = false;
         get('provision').textContent = 'Reconnect';
         status('Expected game DNA verified. Secure gateway session ready.');
@@ -98,8 +111,9 @@ async function provision() {
       await delay(350);
     }
   } catch {
-    throw Error('The gateway is unavailable. Check the operator’s HTTPS address and admission, then reconnect.');
+    throw Error('HWC could not connect to the gateway. Check the operator’s HTTPS address and reconnect.');
   }
+  if (!reachable) throw Error('The gateway is unreachable. Ask the operator to check HTTPS/WSS and reconnect.');
   throw Error('Gateway admission is pending. Ask the operator to admit your public key, then reconnect.');
 }
 
