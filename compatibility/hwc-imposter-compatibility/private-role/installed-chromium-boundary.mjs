@@ -39,6 +39,30 @@ try {
   assert.equal(result?.success,false,
     'popup extension page must not reach privileged role receiver');
   assert.equal(result?.error,'PRIVATE_ROLE_SENDER_REJECTED');
+  const signer=await page.evaluate(async()=> {
+    try {
+      return await chrome.runtime.sendMessage({
+        target:'background',type:'SIGN_REQUEST',
+        pubKey:Array(32).fill(0),data:Array(32).fill(0)
+      });
+    } catch(e) {return {success:false,error:String(e)};}
+  });
+  assert.equal(signer?.success,false,'popup must not reach Lair signing callback');
+  assert.equal(signer?.error,'EXTENSION_OFFSCREEN_SENDER_ONLY');
+  const native=await page.evaluate(async()=> {
+    try {
+      return await chrome.runtime.sendMessage({
+        target:'offscreen',type:'EXECUTE_ZOME_CALL',
+        requestId:'forged-popup',zomeCallRequest:{
+          zome:'game',fn:'host_role_opening',payload:[]
+        }
+      });
+    } catch(e) {return {success:false,error:String(e)};}
+  });
+  assert.notEqual(native?.success,true,
+    'popup must never execute host_role_opening through internal offscreen IPC');
+  console.log('PRIVILEGED_LAIR_SIGNER_POPUP_DENIED=PASS');
+  console.log('PRIVILEGED_NATIVE_EXECUTOR_POPUP_DENIED=PASS');
   console.log('GENUINE_CHROMIUM_INSTALLED_HWC_BACKGROUND=PASS');
   console.log('PRIVATE_ROLE_POPUP_SENDER_REJECTED=PASS');
   console.log('PAGE_OR_POPUP_EXPOSED_NATIVE_EXECUTOR=NO');
