@@ -235,4 +235,94 @@ mod tests {
         assert!(b64("AA==",16,4096).is_err());
         assert!(b64("not_base64",32,32).is_err());
     }
+
+    #[tokio::test]
+    async fn pending_revocation_drops_stale_role_and_keeps_third_identity() {
+        use crate::agent_proxy::AgentProxyManager;
+        use crate::auth::{AllowedAgent, AuthStore};
+        use crate::config::Configuration;
+        use crate::routes::kitsune::KitsuneState;
+        use std::collections::HashSet;
+        use std::sync::Arc;
+        use tokio::sync::mpsc;
+
+        let dna = DnaHash::from_raw_32(vec![5; 32]);
+        let a = AgentPubKey::from_raw_32(vec![27; 32]);
+        let b = AgentPubKey::from_raw_32(vec![28; 32]);
+        let c = AgentPubKey::from_raw_32(vec![29; 32]);
+        let auth = AuthStore::new();
+        for (agent, caps) in [
+            (a.clone(), vec![Capability::GameRoleDeliver]),
+            (b.clone(), vec![Capability::GameRoleRequest]),
+            (c.clone(), vec![Capability::GameRoleRequest]),
+        ] {
+            auth.add_agent(AllowedAgent {
+                agent_pubkey: agent, capabilities: caps.into_iter().collect::<HashSet<_>>(),
+                label: None,
+            }).await;
+        }
+        let old_a = auth.create_session(&a).await.unwrap();
+        let token_b = auth.create_session(&b).await.unwrap();
+        let token_c = auth.create_session(&c).await.unwrap();
+        for agent in [&a, &b, &c] {
+            auth.register_dna_for_agent(agent, &dna).await;
+        }
+        let proxy = AgentProxyManager::new();
+        let (recipient_tx, _recipient_rx) = mpsc::channel(8);
+        proxy.register(dna.clone(), b.clone(), recipient_tx.clone()).await;
+        let app = AppState {
+            configuration: Configuration::default(),
+            agent_proxy: proxy, gateway_kitsune: None,
+            kitsune_state: Arc::new(KitsuneState {
+                enabled: false, bootstrap_url: None, relay_url: None, kitsune: None,
+            }),
+            app_conn: None, temp_op_store: None, dht_query: None,
+            auth_store: Some(auth.clone()),
+        };
+        let now = now_ms().unwrap();
+        let env = RoleEnvelope {
+            version: 1, domain: DOMAIN.into(),
+            dna_hash: dna.to_string(), sender_agent: a.to_string(),
+            recipient_agent: b.to_string(),
+            role_commit: ActionHash::from_raw_32(vec![88; 32]).to_string(),
+            seat: 1, recipient_key_id: "11".repeat(16),
+            message_id: "22".repeat(16),
+            created_at_ms: now, expires_at_ms: now + 30_000,
+            in_reply_to: None, hpke_enc: "AA==".into(), ciphertext: "AA==".into(),
+        };
+        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Request).await);
+        let mut wrong_dna = env.clone();
+        wrong_dna.dna_hash = DnaHash::from_raw_32(vec![6;32]).to_string();
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&wrong_dna,RoleOperation::Delivery).await);
+        let mut wrong_recipient = env.clone();
+        wrong_recipient.recipient_agent = c.to_string();
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&wrong_recipient,RoleOperation::Delivery).await);
+
+        // Deterministic race: an in-flight private dispatch holds exactly the
+        // same gate as administrative revocation. No old lease survives release.
+        let hold = auth.role_dispatch_gate().lock_owned().await;
+        let revoker = {
+            let store = auth.clone();
+            let target = a.clone();
+            tokio::spawn(async move { store.remove_agent(&target).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!revoker.is_finished(), "revocation must serialize after the pending send");
+        drop(hold);
+        assert!(revoker.await.unwrap());
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
+        assert!(auth.validate_session(token_b.as_str()).await.is_some());
+        assert!(auth.validate_session(token_c.as_str()).await.is_some());
+
+        auth.add_agent(AllowedAgent {
+            agent_pubkey: a.clone(),
+            capabilities: HashSet::from([Capability::GameRoleDeliver]),
+            label: None,
+        }).await;
+        let fresh_a = auth.create_session(&a).await.unwrap();
+        auth.register_dna_for_agent(&a, &dna).await;
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
+        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,fresh_a.as_str(),&env,RoleOperation::Delivery).await);
+    }
 }
