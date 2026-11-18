@@ -130,6 +130,48 @@ jobs:
              }),process.env.H2HC_BASE_URL);
              await waitForSession(true);
            });
+          
+           await step('AGENT2_REAL_WEBSOCKET_DISCONNECT_INVALIDATES_SESSION',async()=>{
+             // Kill the actual authenticated H2HC WebSocket server process. Unlike
+             // endpoint reconfiguration this forces a real close of an existing WS.
+             const pid=Number(process.env.H2HC_SERVER_PID);
+             must(Number.isSafeInteger(pid)&&pid>1,'Missing live H2HC server PID');
+             process.kill(pid,'SIGTERM');
+             let offline=false;
+             for(let i=0;i<60;i++){
+               try{await fetch(process.env.H2HC_BASE_URL+'/health');}
+               catch{offline=true;break;}
+               await new Promise(r=>setTimeout(r,250));
+             }
+             must(offline,'The real H2HC server did not stop');
+             await waitForSession(false);
+             evidence.agent2_real_ws_disconnect='SERVER_PROCESS_TERMINATED_WS_CLOSED';
+           });
+           await step('AGENT2_REAL_WEBSOCKET_RECOVERY',async()=>{
+             // Start the identical pinned H2HC binary on the same address and keyfile.
+             // Do NOT reconfigure the extension endpoint; require its own WS reconnect
+             // and fresh signed challenge/registration to restore public hasSession.
+             const {spawn}=await import('node:child_process');
+             const output=fs.openSync(process.env.H2HC_SERVER_LOG,'a');
+             const linker=spawn(path.join(ROOT,'h2hc-binary/h2hc-linker-linux-x86_64'),
+               ['--address','127.0.0.1','--port','8090'],
+               {cwd:ROOT,env:{...process.env},stdio:['ignore',output,output]});
+             fs.closeSync(output);
+             linker.on('error',()=>{});
+             must(Number.isSafeInteger(linker.pid)&&linker.pid>1,
+               'Could not restart pinned H2HC process');
+             linker.unref();
+             process.on('exit',()=>{try{process.kill(linker.pid,'SIGTERM')}catch{}});
+             let online=false;
+             for(let i=0;i<120;i++){
+               try{const r=await fetch(process.env.H2HC_BASE_URL+'/health');
+                 if(r.ok){online=true;break;}}catch{}
+               await new Promise(r=>setTimeout(r,250));
+             }
+             must(online,'Pinned H2HC server did not restart');
+             await waitForSession(true);
+             evidence.agent2_ws_recovered='AUTOMATIC_FRESH_AUTH_WITHOUT_ENDPOINT_RECONFIGURATION';
+           });
            await step('AGENT2_FULL_CHROMIUM_RESTART_AND_FRESH_AUTH',async()=>{
              await context.close();
              context=await chromium.launchPersistentContext(PROFILE,{
@@ -267,6 +309,7 @@ jobs:
           export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
           RUST_LOG="h2hc_linker=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
           H2HC_PID=$!
+          export H2HC_SERVER_PID="$H2HC_PID"
           trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
           ok=0
           for i in $(seq 1 45); do
