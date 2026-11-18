@@ -5,6 +5,7 @@ import {attestKey} from './wire.mjs';
 import {attestInstalledCell} from './installed-cell.mjs';
 import {createRestrictedRoleService} from './trusted-receiver.mjs';
 import {encodeRoleOpening,verifyRoleOpening} from './merkle.mjs';
+import {publishInstalledRecipientKey} from './installed-native-enrollment.mjs';
 const utf8=s=>new TextEncoder().encode(s);
 const cat=(...a)=>{const o=new Uint8Array(a.reduce((n,x)=>n+x.length,0));let k=0;for(const x of a){o.set(x,k);k+=x.length;}return o;};
 const sha=async b=>new Uint8Array(await crypto.subtle.digest('SHA-256',b));
@@ -144,4 +145,35 @@ test('host fails closed on missing native recipient enrollment and unregistered 
  await assert.rejects(f.hostSvc.receiveFromSocket(f.bSession.sent[0]),/native recipient DNA or author/);
  f.enrollment.view.attestation.agent=f.b.agent;f.hostSession.revoke();
  await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/live registered/);
+});
+
+test('installed cell publishes real-signed public attestation via native zome and rechecks native Valid DHT action',async()=>{
+ const d=dna(28),id=await identity(),store=new Keys(),contextId='real-happ';
+ const manager={listContexts:async()=>[{id:contextId,enabled:true,agentPubKey:id.agent,dnas:[{hash:d}]}]};
+ let published=null;
+ const native={
+   publishSignedRecipientKey:async(ctx,entry)=>{
+     assert.equal(ctx,contextId);published=entry;
+     return {action:hash(29),attestation:entry};
+   },
+   lookupRecipientKey:async(ctx,options)=>{
+     assert.equal(ctx,contextId);assert.deepEqual(options.recipient,id.agent);
+     return {status:'observed',current_unproven:true,
+       view:{action:hash(29),attestation:published}};
+   }
+ };
+ const registered=await publishInstalledRecipientKey({contextId,dna:d,contextManager:manager,
+   lair:id.lair,store,native});
+ assert.equal(registered.epoch,1);
+ assert.equal(registered.observedCurrentUnproven,true);
+ assert.equal((await store.getCell(d,id.agent)).privateKey.extractable,false);
+ assert.equal(Object.hasOwn(published,'privateKey'),false);
+ const malicious={...native,lookupRecipientKey:async()=>({
+   status:'observed',current_unproven:true,
+   view:{action:hash(29),attestation:{...published,agent:(await identity()).agent}}
+ })};
+ await assert.rejects(publishInstalledRecipientKey({contextId,dna:d,contextManager:manager,
+   lair:id.lair,store,native:malicious}),/native recipient DNA or author mismatch/);
+ await assert.rejects(publishInstalledRecipientKey({contextId,dna:d,contextManager:manager,
+   lair:id.lair,store,native:{publishSignedRecipientKey:async()=>({action:hash(29)})}}),/zome unavailable/);
 });
