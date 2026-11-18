@@ -8,7 +8,17 @@
  * This function checks byte-level response consistency independently; it
  * does NOT confer native authority by itself or assert global DHT finality.
  */
-const asBytes=x=>x instanceof Uint8Array?x:Array.isArray(x)?Uint8Array.from(x):null;
+const asBytes=x=>{
+ if(x instanceof Uint8Array)return x;
+ if(Array.isArray(x))return x.every(n=>Number.isInteger(n)&&n>=0&&n<=255)?Uint8Array.from(x):null;
+ if(x&&typeof x==='object'){
+   const keys=Object.keys(x);
+   if(!keys.length||!keys.every((k,i)=>k===String(i)))return null;
+   const values=keys.map(k=>x[k]);
+   return values.every(n=>Number.isInteger(n)&&n>=0&&n<=255)?Uint8Array.from(values):null;
+ }
+ return null;
+};
 const equal=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((v,i)=>v===b[i]);
 const hash=(x,kind)=>{const v=asBytes(x),p={dna:[0x84,0x2d,0x24],agent:[0x84,0x20,0x24],action:[0x84,0x29,0x24]}[kind];if(!v||v.length!==39||!p.every((b,i)=>v[i]===b))throw Error('invalid native '+kind+' hash');return v;};
 const int=(n,min,max)=>Number.isSafeInteger(n)&&n>=min&&n<=max;
