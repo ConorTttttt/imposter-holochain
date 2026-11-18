@@ -121,3 +121,29 @@ test('version-1 key/replay rows survive version-2 trusted watermark upgrade',asy
  await assert.rejects(again.reserve(replay(d,a,agent(19),commit(20),1)),/replay/);
  again.close();
 });
+
+test('consecutive native key epochs and non-rewinding renewal windows are required',async()=>{
+ const name='agent2-role-renewal-'+Date.now(),store=await openRoleStore(name),d=dna(31);
+ const keySigner=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',keySigner.publicKey));
+ const agentId=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]);
+ const sign=async(_k,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',keySigner.privateKey,b));
+ const first=await store.rotateCell(d,agentId,1);
+ await assert.rejects(store.rotateCell(d,agentId,3),/skipped/);
+ const now=Date.now();
+ const a1=await attestKey({dna:d,agent:agentId,keyId:first.keyId,
+   publicKey:first.publicKey,epoch:1,sign,now,validForMs:40000});
+ await store.installCellAttestation(d,agentId,a1,{now});
+ const rollback=await attestKey({dna:d,agent:agentId,keyId:first.keyId,
+   publicKey:first.publicKey,epoch:1,sign,now:now+1000,validForMs:1000});
+ await assert.rejects(store.installCellAttestation(d,agentId,rollback,{now:now+1000}),/rollback/);
+ const remote1=await store.pinTrustedRecipient(d,agentId,a1,{now});
+ assert.equal(remote1,true);
+ await assert.rejects(store.pinTrustedRecipient(d,agentId,rollback,{now:now+1000}),/rollback/);
+ const a2=await attestKey({dna:d,agent:agentId,publicKey:first.publicKey,
+   epoch:3,sign,now});
+ await assert.rejects(store.pinTrustedRecipient(d,agentId,a2,{now}),/rollback/);
+ const newer=await store.rotateCell(d,agentId,2);
+ assert.equal(newer.epoch,2);
+ store.close();
+});
