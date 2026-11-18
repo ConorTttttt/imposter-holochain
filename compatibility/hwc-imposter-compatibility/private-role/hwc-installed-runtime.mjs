@@ -153,6 +153,7 @@ export function createInstalledHwcRoleRuntime({
     if(held.lease && held.lease!==lease) {
       // A new service has no old signed request/reply correlation.
       services.delete(cellKey(cell));
+      acceptedReceipts.delete(cellKey(cell));
       const next=await serviceFor(cell);
       next.lease=lease;
       await next.session.refresh();
@@ -166,6 +167,7 @@ export function createInstalledHwcRoleRuntime({
     services.clear();
     booting.clear();
     enrolled.clear();
+    acceptedReceipts.clear(); // no stale accepted role across revocation or reconnect
   }
   async function bootstrap(cell) {
     const key=cellKey(cell),prior=booting.get(key);
