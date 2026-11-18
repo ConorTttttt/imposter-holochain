@@ -72,7 +72,7 @@ probe = r"""
         return true;
       }
       const encodeCore = (value: Uint8Array) =>
-        btoa(String.fromCharCode(...value)).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+        btoa(String.fromCharCode(...value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       const now = BigInt(Date.now()) * 1000n;
       const request = {
         type: "sign_agent_info", request_id: id, agent_pubkey: message.agent,
@@ -82,7 +82,7 @@ probe = r"""
           createdAt: now.toString(),
           expiresAt: (now + 1200000000n).toString(),
           isTombstone: false,
-          url: linkerUrl.replace(/^http/, "ws").replace(/\\/$/, "") + "/ws",
+          url: linkerUrl.replace(/^http/, "ws").replace(/\/$/, "") + "/ws",
           storageArc: null
         }
       };
