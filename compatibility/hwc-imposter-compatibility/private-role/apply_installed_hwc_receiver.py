@@ -37,7 +37,6 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   private restrictedRoleRegistrations = new Set<string>();''',
 '''  private restrictedRoleLease: string | null = null;
   private restrictedRoleRegistrations = new Set<string>();
-  private authenticatedAgent: string | null = null;
   private restrictedRoleSessionChanged: (() => void) | null = null;''')
     edit(core, '''  getRestrictedRoleLease(): string | null {
     return this.isConnected() ? this.restrictedRoleLease : null;
