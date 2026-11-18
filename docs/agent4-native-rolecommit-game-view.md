@@ -223,20 +223,39 @@ repurposed for this **new** native game-boundary acceptance; the previous
 recipient-key accepted runs **44309180176** and **44309852341** are historical
 and are not retested as the new protocol boundary.
 
-The new `native_game_role_commit_boundary_*` tests run genuine 0.7
-SweetConductor cells, network synchronisation and a separately compiled
-forge-only coordinator against unchanged native integrity. They assert:
-real installed-DNA hash and lobby author, exact independently retrieved
-RoleCommit action, joined player signatures and canonical seats, no-signal
-commit/retry stability, one host opening verified against its root, and
-denials for guest host impersonation, wrong lobby/seat, stale action,
-mismatched join evidence and invalid native records. The workflow requires
-all `NATIVE_GAME_* = PASS` markers and prints the exact accepted
-`NATIVE_ROLE_COMMIT_ACTION`. Status and action hash must be copied from
-the finished CI log, **not invented in this document**.
+**PASS — independently confirmed native Holochain 0.7** in GitHub Actions
+[run 44320254863](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44320254863)
+on test commit `d93520f57c2f3fcb190ebf55a3c79d1dec4eb2d1` (unchanged
+coordinator since `83a08228e9430f342611fdd4bf73992783de2781`).
+The production and forge-test DNA builds passed. Two genuine 0.7
+SweetConductor tests passed, **2 passed; 0 failed**; the second used the
+forge-only coordinator against the **unchanged native integrity zome**.
+The native Valid host commitment was independently retrieved from the guest
+cell with exactly this **RoleCommit Create action hash**:
+
+```text
+uhCkk7gneBt_u4u9tNZcHTig9N2tWXfv-WK9j3_xobTO_Mm-RwwXa
+```
+
+Exact log evidence: `NATIVE_GAME_VALID_LOBBY_AND_JOINS=PASS`,
+`NATIVE_GAME_EXACT_COMMIT_INDEPENDENT_READ=PASS`,
+`NATIVE_GAME_NO_SIGNAL_COMMIT_AND_IDEMPOTENT_RETRY=PASS`,
+`NATIVE_GAME_WRONG_HOST_DENIED=PASS`,
+`NATIVE_GAME_WRONG_LOBBY_DENIED=PASS`,
+`NATIVE_GAME_WRONG_RECIPIENT_SEAT_DENIED=PASS`,
+`NATIVE_GAME_STALE_COMMIT_DENIED=PASS`,
+`NATIVE_GAME_MISMATCHED_JOIN_NATIVE_INVALID=PASS`, and
+`NATIVE_GAME_INVALID_RECORD_FAIL_CLOSED=PASS`. Native source-chain secrecy,
+response-shape and exact Merkle opening are tested in the genuine zome path.
+Evidence is retained in
+[artifact 14436071933](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44320254863/artifacts/14436071933).
+This is native-validated observed DHT state, *not global commitment finality*.
 
 The independent three-browser host/join/restart workflow is
-`.github/workflows/browser-poc-hwc-multiplayer.yml`. Browser lobby
+`.github/workflows/browser-poc-hwc-multiplayer.yml`. The rerun
+[44320189807](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44320189807)
+**PASS** on the same coordinator source with three separate browser/Lair
+identities, native DHT game convergence and restart recovery. Browser lobby
 regression passing does **not** imply encrypted role delivery passes.
 
 **Deployment state:** PR #4 **Draft**, secured HWC role transport **disabled**
