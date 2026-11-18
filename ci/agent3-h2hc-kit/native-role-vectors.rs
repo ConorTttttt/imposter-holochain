@@ -81,10 +81,18 @@ fn main() {
             assert!(verifying_key.verify(&bad_reply.signed_bytes(op).unwrap(), &signature).is_err(),
                 "signed reply reference cannot be mutated");
         }
-        assert!(verifying_key.verify(&env.signed_bytes(if op == RoleOperation::Request {
+        let opposite = if op == RoleOperation::Request {
             RoleOperation::Delivery
-        } else { RoleOperation::Request }).unwrap(), &signature).is_err(),
-            "operation must be cryptographically bound");
+        } else {
+            RoleOperation::Request
+        };
+        // A correlated delivery cannot even parse as a request; both parse
+        // rejection and cryptographic signature mismatch are valid denial.
+        let opposite_denied = match env.signed_bytes(opposite) {
+            Err(_) => true,
+            Ok(bytes) => verifying_key.verify(&bytes, &signature).is_err(),
+        };
+        assert!(opposite_denied, "operation must be cryptographically bound");
     }
     let attestations = file["key_attestations"].as_array().expect("signed key attestations");
     assert_eq!(attestations.len(), 2, "recipient A and recipient B keys");
