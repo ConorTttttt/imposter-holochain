@@ -162,3 +162,23 @@ is NOT global DHT finality. The browser must also implement protected role
 signing/enrollment, authenticated WS request/delivery, and same-cell durable
 replay; the staged patch does none of that yet. Do not count native-only
 acceptance or a queued H2HC ACK as an extension-decrypted role.
+
+## Agent 2 narrow privileged native coordinator adapter (extension-only module)
+
+`native-authority.mjs` implements only the four Agent 4 operations required
+by the existing service, via a supplied **local installed-cell HWC zomeCall**:
+`get_authoritative_game_view`, `host_role_opening`,
+`publish_signed_recipient_key_attestation`, `lookup_recipient_key`.
+Its `pinnedLobby(cell)` must be a **protected extension-owned action hash
+recorded from a native action**; it is never accepted from a page, signal or
+remote peer. The adapter observes the current RoleCommit from a native Valid
+query, then immediately re-queries with the exact action pinned and checks
+both observations for disagreement. Public `observed_only` is never
+promoted to global DHT finality. `trustedFloor` is the durable
+`store.getTrustedFloor` method, including revoked epochs after restart.
+
+**Integration boundary not yet crossed:** HWC's active service worker still
+has no private adapter instance or installed-cell-private WebSocket handler,
+and Agent 4's new branch/CI is still undergoing acceptance. The adapter's
+unit tests demonstrate strict calls only; they do not establish a native
+HWC/Lair recipient or browser decrypt result.

@@ -78,6 +78,14 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      await finished;
      return true;
    },
+   /** The epoch and key-ID floor MUST survive revocation and expiry.
+    * Native lookup cannot bypass this watermark after restart.
+    */
+   async getTrustedFloor(dna,agent){
+     const t=db.transaction('trusted','readonly');
+     const record=await req(t.objectStore('trusted').get(key({dna,agent})));
+     return record?{epoch:record.epoch,keyId:record.keyId,revoked:record.revoked===true}:null;
+   },
    /** Check validity afresh: an expired public attestation cannot be used to encrypt. */
    async getTrustedRecipient(dna,agent,{now=Date.now()}={}){
      const t=db.transaction('trusted','readonly'),record=await req(t.objectStore('trusted').get(key({dna,agent})));
