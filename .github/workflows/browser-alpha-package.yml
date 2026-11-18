@@ -1,10 +1,11 @@
 name: Verify browser alpha packaging
 on:
   push:
-    branches: [release/browser-alpha-rc1]
+    branches: [release/browser-alpha-rc1, followup/browser-alpha-operator]
     paths:
       - '.github/workflows/browser-alpha-package.yml'
       - 'release/browser-alpha/**'
+      - 'ci/alpha-operator/**'
       - 'ci/installed-role/browser-demo.patch'
       - 'compatibility/hwc-imposter-compatibility/**'
   workflow_dispatch:
@@ -82,7 +83,9 @@ jobs:
           seed=$(sh game/scripts/browser-poc-seed.sh "$host")
           out="$RUNNER_TEMP/alpha-ephemeral"
           bash release/browser-alpha/build.sh game hwc "$host" "$seed" gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 "$out"
-          python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" --identity EPHEMERAL_CI_ONLY
+          manifest_sha=$(sha256sum "$out/release-manifest.json" | cut -d ' ' -f 1)
+          python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" \
+            --identity EPHEMERAL_CI_ONLY --manifest-sha256 "$manifest_sha"
           (cd "$out" && sha256sum --check SHA256SUMS)
           # Check that deploy's default provenance gate rejects an otherwise intact CI package.
           if python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" >"$RUNNER_TEMP/nondeployable.log" 2>&1; then
@@ -99,10 +102,26 @@ jobs:
           PY
           cmp "$RUNNER_TEMP/extension-rebuild.zip" "$out/chromium-hwc.zip"
           echo "HWC archive reproduction and CI deployment denial PASS"
-          jq '{release_commit,pins,identity_provenance,external_network_acceptance,extension_version,artifacts,toolchain,game:{dna_hash:.game.dna_hash,happ_bundle_sha256:.game.happ_bundle_sha256}}' "$out/release-manifest.json" > "$RUNNER_TEMP/package-checks.json"
+          jq --arg sha "$manifest_sha" '{release_commit,pins,identity_provenance,external_network_acceptance,extension_version,artifacts,toolchain,release_manifest_sha256:$sha,game:{dna_hash:.game.dna_hash,happ_bundle_sha256:.game.happ_bundle_sha256}}' "$out/release-manifest.json" > "$RUNNER_TEMP/package-checks.json"
+      - name: Verify HTTPS/WSS rollback and durable gateway restart on loopback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/alpha-caddy"
+          mkdir "$tools"
+          file=caddy_2.10.2_linux_amd64.tar.gz
+          gh release download v2.10.2 -R caddyserver/caddy -D "$tools" -p "$file"
+          printf '%s  %s\n' 747df7ee74de188485157a383633a1a963fd9233b71fbb4a69ddcbcc589ce4e2cc82dacf5dbbe136cb51d17e14c59daeb5d9bc92487610b0f3b93680b2646546 "$tools/$file" | sha512sum --check
+          tar -xzf "$tools/$file" -C "$tools" caddy
+          python3 ci/alpha-operator/smoke.py "$RUNNER_TEMP/alpha-ephemeral" "$GITHUB_SHA" \
+            "$tools/caddy" "$RUNNER_TEMP/operator-checks.json"
       - name: Upload packaging evidence only
         uses: actions/upload-artifact@v4
         with:
           name: browser-alpha-packaging-verification-${{ github.run_id }}
-          path: ${{ runner.temp }}/package-checks.json
+          path: |
+            ${{ runner.temp }}/package-checks.json
+            ${{ runner.temp }}/operator-checks.json
           if-no-files-found: error

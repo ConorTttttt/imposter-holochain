@@ -1,7 +1,7 @@
 name: Integration - installed HWC encrypted role receipt
 on:
   push:
-    branches: [integration/installed-hwc-role-receipt, release/browser-alpha-rc1]
+    branches: [integration/installed-hwc-role-receipt, release/browser-alpha-rc1, followup/browser-alpha-operator]
     paths:
       - '.github/workflows/integration-installed-hwc-role.yml'
       - 'ci/installed-role/**'
@@ -211,7 +211,7 @@ jobs:
           export H2HC_LINKER_ADDRESS=127.0.0.1
           export H2HC_LINKER_PORT=8090
           export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/ephemeral-H2HC-identity.key"
-          if [[ "$GITHUB_REF_NAME" == release/browser-alpha-rc1 ]]; then
+          if [[ "$GITHUB_REF_NAME" == release/browser-alpha-rc1 || "$GITHUB_REF_NAME" == followup/browser-alpha-operator ]]; then
             export H2HC_LINKER_SESSION_STORE="sqlite://$RUNNER_TEMP/alpha-h2hc-sessions.db"
           fi
           export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
@@ -231,7 +231,7 @@ jobs:
           done
           test "$ok" = 1
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-native-authority-browser-bridge.mjs > "${RUNNER_TEMP}/installed-role-bridge.log" 2>&1
-          if [[ "$GITHUB_REF_NAME" == release/browser-alpha-rc1 ]]; then
+          if [[ "$GITHUB_REF_NAME" == release/browser-alpha-rc1 || "$GITHUB_REF_NAME" == followup/browser-alpha-operator ]]; then
             python3 - "$RUNNER_TEMP/alpha-h2hc-sessions.db" <<'PY'
           import json
           from pathlib import Path
