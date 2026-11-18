@@ -50,6 +50,10 @@ jobs:
           git -C hwc diff --check
           grep -Fq 'NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE' hwc/packages/extension/src/background/index.ts
           grep -Fq 'PRIVATE_ROLE_SENDER_REJECTED' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'PRIVILEGED_ROLE_OPERATION_DENIED' hwc/packages/extension/src/background/index.ts
+          grep -Fq '"host_role_opening"' hwc/packages/extension/src/background/index.ts
+          grep -Fq '"publish_signed_recipient_key_attestation"' hwc/packages/extension/src/background/index.ts
+          grep -Fq '"deal_roles"' hwc/packages/extension/src/background/index.ts
           grep -Fq 'this.hasRestrictedRoleRegistration(env.dna_hash, env.recipient_agent)' hwc/packages/core/src/network/websocket-service.ts
           grep -Fq 'this.restrictedRoleLease = crypto.randomUUID()' hwc/packages/core/src/network/websocket-service.ts
           grep -Fq 'this.restrictedRoleRegistrations.clear()' hwc/packages/core/src/network/websocket-service.ts
