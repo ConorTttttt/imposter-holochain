@@ -97,10 +97,15 @@ test('native-enrolled recipient watermark rejects rollback and same-epoch equivo
  await restarted.pinTrustedRecipient(d,a,att2,{now});
  await assert.rejects(restarted.pinTrustedRecipient(d,a,att1,{now}),/rollback/);
  await restarted.revokeTrustedRecipient(d,a);
+ assert.equal((await restarted.getTrustedFloor(d,a)).epoch,2);
+ assert.deepEqual((await restarted.getTrustedFloor(d,a)).keyId,att2.keyId);
+ assert.equal((await restarted.getTrustedFloor(d,a)).revoked,true);
  await assert.rejects(restarted.getTrustedRecipient(d,a,{now}),/no current/);
  await assert.rejects(restarted.pinTrustedRecipient(d,a,att2,{now}),/revoked epoch/);
  const att3=await attestKey({dna:d,agent:a,epoch:3,publicKey,sign,now});
  await restarted.pinTrustedRecipient(d,a,att3,{now});
+ assert.equal((await restarted.getTrustedFloor(d,a)).revoked,false);
+ assert.equal((await restarted.getTrustedFloor(d,a)).epoch,3);
  assert.equal((await restarted.getTrustedRecipient(d,a,{now})).epoch,3);
  await assert.rejects(restarted.getTrustedRecipient(d,a,{now:now+61000}),/expired/);
  restarted.close();
