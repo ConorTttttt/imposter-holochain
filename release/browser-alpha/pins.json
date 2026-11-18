@@ -1,6 +1,7 @@
 {
   "game_commit": "0f7b17592e682a7b7d77e9346528cba69a096cdc",
   "hwc_commit": "0c391226e78769d44ccb4661881ed8998b15f903",
+  "node_version": "v22.22.0",
   "gateway": {
     "source_commit": "9f5eb04b5be12e3e9e7fcc304bd905da1449ade9",
     "recipe_commit": "293563649f7fd18a6bc2e0d1426c31132bf2b8c7",

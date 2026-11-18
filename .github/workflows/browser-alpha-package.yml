@@ -84,6 +84,21 @@ jobs:
           bash release/browser-alpha/build.sh game hwc "$host" "$seed" gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 "$out"
           python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" --identity EPHEMERAL_CI_ONLY
           (cd "$out" && sha256sum --check SHA256SUMS)
+          # Check that deploy's default provenance gate rejects an otherwise intact CI package.
+          if python3 release/browser-alpha/package.py verify "$out" --release-commit "$GITHUB_SHA" >"$RUNNER_TEMP/nondeployable.log" 2>&1; then
+            echo "Ephemeral package unexpectedly accepted as an operator distribution" >&2
+            exit 1
+          fi
+          grep -Fq 'Release provenance differs' "$RUNNER_TEMP/nondeployable.log"
+          PYTHONDONTWRITEBYTECODE=1 python3 - "$RUNNER_TEMP/extension-rebuild.zip" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "release/browser-alpha")
+          from package import archive_extension
+          archive_extension(Path("hwc/packages/extension/dist-chrome"), Path(sys.argv[1]))
+          PY
+          cmp "$RUNNER_TEMP/extension-rebuild.zip" "$out/chromium-hwc.zip"
+          echo "HWC archive reproduction and CI deployment denial PASS"
           jq '{release_commit,pins,identity_provenance,external_network_acceptance,extension_version,artifacts,toolchain,game:{dna_hash:.game.dna_hash,happ_bundle_sha256:.game.happ_bundle_sha256}}' "$out/release-manifest.json" > "$RUNNER_TEMP/package-checks.json"
       - name: Upload packaging evidence only
         uses: actions/upload-artifact@v4

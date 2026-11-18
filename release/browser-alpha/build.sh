@@ -18,7 +18,7 @@ test -z "$(git -C "$repo" status --porcelain --untracked-files=no)"
 test -z "$(git -C "$game" status --porcelain)"
 test "$(git -C "$game" rev-parse HEAD)" = "$(jq -er .game_commit "$rc/pins.json")"
 test "$(git -C "$hwc" rev-parse HEAD)" = "$(jq -er .hwc_commit "$rc/pins.json")"
-[[ $(node --version) == v22.* ]]
+test "$(node --version)" = "$(jq -er .node_version "$rc/pins.json")"
 [[ "$seed" == "g1.$host."* ]]
 node "$game/scripts/browser-poc-lib.mjs" validate-seed "$seed"
 printf '%s  %s\n' "$(jq -er .gateway.sha256 "$rc/pins.json")" "$gateway" | sha256sum --check
@@ -29,6 +29,10 @@ git init --quiet "$scratch/hwc"
 git -C "$scratch/hwc" fetch --quiet --depth=1 "$hwc" "$(jq -er .hwc_commit "$rc/pins.json")"
 git -C "$scratch/hwc" switch --detach FETCH_HEAD
 bash "$rc/build-extension.sh" "$scratch/hwc"
+git init --quiet "$scratch/game"
+git -C "$scratch/game" fetch --quiet "$game" "$(jq -er .game_commit "$rc/pins.json")"
+git -C "$scratch/game" switch --detach FETCH_HEAD
+game=$scratch/game
 source_epoch=$(git -C "$game" show -s --format=%ct HEAD)
 native_identity=UNVERIFIED_OPERATOR_INPUT
 package_identity=OPERATOR_SUPPLIED_PUBLIC_INPUT

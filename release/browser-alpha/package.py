@@ -126,6 +126,8 @@ def verify(root, expected_commit, identity="OPERATOR_SUPPLIED_PUBLIC_INPUT"):
             and manifest["external_network_acceptance"] == "NOT EXECUTED", "Release provenance differs")
     require(manifest["artifacts"] == {item: digest(root / item) for item in sorted(FILES)},
             "Manifest artifact hashes differ")
+    require(manifest["toolchain"]["node"] == PINS["node_version"] and
+            manifest["toolchain"]["holochain"] == "0.7.0", "Build toolchain pin differs")
     require(digest(root / GATEWAY) == PINS["gateway"]["sha256"], "Gateway executable pin differs")
     require(check_extension(root / EXTENSION) == manifest["extension_version"], "Extension version differs")
     deployment = load(root / "frontend/deployment.json")
