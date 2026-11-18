@@ -7,7 +7,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {seal,openForCell} from './hpke.mjs';
 import {verifyKeyAttestation,internalsForTests,fromRoleFrame,toRoleFrame,WIRE_DOMAIN,HPKE_INFO} from './wire.mjs';
-const fixture=JSON.parse(readFileSync(new URL('./native-role-vectors.json',import.meta.url),'utf8'));
+import {nativeFixture as fixture} from './native-fixture.mjs';
 const hex=b=>Buffer.from(b).toString('hex');
 const unhex=s=>Uint8Array.from(Buffer.from(s,'hex'));
 const b64=s=>Uint8Array.from(Buffer.from(s,'base64'));
