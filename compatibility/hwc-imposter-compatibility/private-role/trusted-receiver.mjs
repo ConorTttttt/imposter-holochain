@@ -12,8 +12,10 @@
  * No adapter exists in the accepted HWC patch yet: fail closed, do NOT silently
  * promote this pure module to an accepted installed-cell runtime.
  */
-import {verifyKeyAttestation,makeRoleDelivery,receiveRoleDelivery,
-  fromRoleFrame,parseRoleFrame,toRoleFrame,internalsForTests} from './wire.mjs';
+import {verifyKeyAttestation,makeRoleRequest,makeRoleDelivery,receiveRoleDelivery,
+  parseRoleFrame,toRoleFrame,internalsForTests,HPKE_INFO} from './wire.mjs';
+import {openForCell} from './hpke.mjs';
+import {encodeAttestationBody,decodeAttestationBody} from './request-attestation.mjs';
 import {verifyRoleOpening,encodeRoleOpening} from './merkle.mjs';
 const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
 const full=(a,p)=>a instanceof Uint8Array&&a.length===39&&p.every((v,i)=>v===a[i]);
@@ -66,6 +68,10 @@ function requireDependencies(s){
 }
 export function createRestrictedRoleService(s){
  requireDependencies(s);
+ // Volatile request/reply correlation dies on restart or WS reauthentication.
+ // Durable replay IDs stay in the extension-only IndexedDB store.
+ const outboundRequests=new Map(),incomingRequests=new Map();
+ const key=(agent,commit,seat)=>[agent,commit].map(x=>Array.from(x,b=>b.toString(16).padStart(2,'0')).join('')).join(':')+':'+seat;
  const read=async()=>{
    const cell=cellOf(await s.installedCell());const lease=sessionLease(s.session,cell);
    const game=currentGame(await s.native.readCurrentGame(cell),cell);
@@ -83,56 +89,121 @@ export function createRestrictedRoleService(s){
    return s.store.getTrustedRecipient(cell.dna,recipient);
  }
  return Object.freeze({
-   /** Host-only send to ONE seat. No plaintext, capability, or role vector
-    * enters gateway logs, browser page, DHT or chrome.storage.
+   /** A seated recipient sends a LIVE signed, HPKE protected key attestation
+    * to the actual current host. Cold DHT discovery alone does not authorize
+    * sending a role. This request carries only PUBLIC key metadata.
     */
-   async sendRole({seat,role,roleSalt,path,inReplyTo=null}){
+   async requestRole({seat}){
+     const {cell,game,lease}=await read();
+     if(eq(cell.agent,game.lobby.host))throw Error('host cannot request its own role over relay');
+     currentSeat(game,cell.agent,seat);
+     const own=await s.store.getCell(cell.dna,cell.agent);
+     if(!own?.attestation||own.privateKey?.extractable!==false)
+       throw Error('Lair attestation and held private key required before requesting');
+     await verifyKeyAttestation(own.attestation,{dna:cell.dna,agent:cell.agent});
+     const hostAtt=await discover(cell,game.lobby.host,lease);
+     const request=await makeRoleRequest({dna:cell.dna,sender:cell.agent,
+       recipient:game.lobby.host,commit:game.commit.action,seat,
+       attestation:hostAtt,roleBytes:encodeAttestationBody(own.attestation),
+       sign:(pub,b)=>s.lair.signByPubKey(pub,b)});
+     unchanged(s.session,cell,lease);
+     if(typeof s.session?.sendRoleFrame!=='function')throw Error('restricted H2HC relay unavailable');
+     await s.session.sendRoleFrame(toRoleFrame(request));
+     unchanged(s.session,cell,lease);
+     outboundRequests.set(key(cell.agent,game.commit.action,seat),{
+       id:request.messageId,lease,expiresAt:request.expiresAt});
+     return {requestSent:true,roleAvailable:false};
+   },
+   /** Host can send ONLY after an authenticated, independently signed,
+    * current-round recipient key request was received on its live WS lease.
+    * Merely reading native DHT "Observed current_unproven" is insufficient.
+    */
+   async sendRole({seat,role,roleSalt,path}){
      const {cell,game,lease}=await read();
      if(!eq(cell.agent,game.lobby.host))throw Error('only the installed host can encrypt roles');
      const recipient=game.commit.seats[seat];
      currentSeat(game,recipient,seat);
+     const k=key(recipient,game.commit.action,seat),request=incomingRequests.get(k);
+     if(!request||request.lease!==lease||Date.now()>request.expiresAt)
+       throw Error('fresh signed recipient request required; DHT current is unproven');
      const payload=encodeRoleOpening(role,roleSalt,path);
      await verifyRoleOpening({payload,seat,root:game.commit.merkleRoot});
      const attestation=await discover(cell,recipient,lease);
+     if(!eq(attestation.keyId,request.attestation.keyId)||
+        !eq(attestation.publicKey,request.attestation.publicKey)||
+        attestation.epoch!==request.attestation.epoch)
+       throw Error('native enrollment differs from signed live recipient request');
      const packet=await makeRoleDelivery({dna:cell.dna,sender:cell.agent,recipient,
        commit:game.commit.action,seat,attestation,roleBytes:payload,
-       sign:(pub,b)=>s.lair.signByPubKey(pub,b),inReplyTo});
+       sign:(pub,b)=>s.lair.signByPubKey(pub,b),inReplyTo:request.id});
      unchanged(s.session,cell,lease);
      if(typeof s.session?.sendRoleFrame!=='function')throw Error('restricted H2HC relay unavailable');
      await s.session.sendRoleFrame(toRoleFrame(packet));
      unchanged(s.session,cell,lease);
-     return {queuedOnly:true}; // never a delivery, native commit or game success ACK
+     incomingRequests.delete(k);
+     return {queuedOnly:true};
    },
-   /** Only the private authenticated WS dispatch may call this function.
-    * Do NOT route a webpage command or public onMessage listener here.
-    * Signed role sender is verified independently of any claimed "from".
+   /** Exclusive WS callback: no public chrome.runtime/page relay to this API.
+    * Either a host-bound authenticated recipient key request OR a correlated,
+    * recipient-bound encrypted role delivery; never a generic WASM call.
     */
    async receiveFromSocket(json){
      const {cell,game,lease}=await read();
      if(typeof json!=='string')throw Error('role frame must come from authenticated WS parser');
      const packet=parseRoleFrame(json);
-     if(packet.operation!=='role_delivery_v1')throw Error('not a role delivery');
-     currentSeat(game,cell.agent,packet.seat);
-     if(!eq(packet.commit,game.commit.action)||!eq(packet.sender,game.lobby.host))
-       throw Error('wrong host or current RoleCommit');
+     if(!eq(packet.commit,game.commit.action)||!eq(packet.dna,cell.dna)||
+        !eq(packet.recipient,cell.agent))
+       throw Error('wrong recipient, DNA or current RoleCommit');
      if(!await internalsForTests.verify(packet.signature,packet.sender,
        internalsForTests.roleTranscript(packet)))
        throw Error('forged remote caller signature');
+     internalsForTests.fresh(packet,Date.now());
      unchanged(s.session,cell,lease);
      const held=await s.store.getCell(cell.dna,cell.agent);
      if(!held?.attestation||held.privateKey?.extractable!==false)
        throw Error('no current locally attested X25519 key');
+     await verifyKeyAttestation(held.attestation,{dna:cell.dna,agent:cell.agent});
+     if(!eq(held.keyId,packet.keyId)||held.epoch!==packet.keyEpoch)
+       throw Error('recipient key epoch or ID mismatch');
+     if(packet.operation==='role_request_v1'){
+       if(!eq(cell.agent,game.lobby.host))throw Error('nonhost cannot receive role requests');
+       currentSeat(game,packet.sender,packet.seat);
+       // Authoritative native DHT lookup cannot establish global newest epoch.
+       // The live role_request signature plus encrypted signed attestation
+       // closes that gap for this single requester and round only.
+       await s.store.reserve({dna:packet.dna,recipient:packet.recipient,
+         sender:packet.sender,commit:packet.commit,messageId:packet.messageId});
+       const body=await openForCell(held,packet.enc,packet.ciphertext,
+         internalsForTests.aadBytes(packet),HPKE_INFO);
+       const att=await decodeAttestationBody(body,{dna:cell.dna,agent:packet.sender});
+       const seen=await s.native.readKeyEnrollment(cell,packet.sender);
+       if(!eq(seen?.dna,cell.dna)||!eq(seen?.author,packet.sender)||
+          !eq(seen?.attestation?.keyId,att.keyId)||
+          !eq(seen?.attestation?.publicKey,att.publicKey)||
+          seen.attestation.epoch!==att.epoch)
+         throw Error('native enrollment differs from signed recipient request');
+       await s.store.pinTrustedRecipient(cell.dna,packet.sender,att);
+       unchanged(s.session,cell,lease);
+       incomingRequests.set(key(packet.sender,packet.commit,packet.seat),{
+         id:packet.messageId,lease,expiresAt:packet.expiresAt,attestation:att});
+       return {validatedRecipientRequest:true,coordinatorInvoked:false};
+     }
+     if(packet.operation!=='role_delivery_v1')throw Error('unsupported role operation');
+     currentSeat(game,cell.agent,packet.seat);
+     if(!eq(packet.sender,game.lobby.host))
+       throw Error('wrong current lobby host');
+     const replyKey=key(cell.agent,packet.commit,packet.seat);
+     const request=outboundRequests.get(replyKey);
+     if(!request||request.lease!==lease||Date.now()>request.expiresAt||
+        !packet.inReplyTo||!eq(request.id,packet.inReplyTo))
+       throw Error('unsolicited, stale or uncorrelated role delivery');
      const verifiedRemoteCaller={authenticated:true,agent:packet.sender,
        dna:cell.dna,operation:'role_delivery_v1'};
-     // This shim is built only after: authenticated WS session AND Lair
-     // signature AND authoritative native state; no user-controlled flag.
      const commitState={nativeValidated:true,host:game.lobby.host,
        action:game.commit.action,seats:game.commit.seats};
-     const expectedReplyTo=typeof s.pendingReplyId==='function'?
-       s.pendingReplyId(cell,game.commit.action):null;
      const plaintext=await receiveRoleDelivery(packet,{
        installedDna:cell.dna,localAgent:cell.agent,commitState,
-       verifiedRemoteCaller,cellKey:held,ledger:s.store,expectedReplyTo,
+       verifiedRemoteCaller,cellKey:held,ledger:s.store,expectedReplyTo:request.id,
        verifyRoleProof:async({plaintext:opening,seat:actual})=>{
          try{await verifyRoleOpening({payload:opening,seat:actual,
            root:game.commit.merkleRoot});return true;}catch{return false;}
@@ -140,6 +211,7 @@ export function createRestrictedRoleService(s){
      unchanged(s.session,cell,lease);
      const role=await verifyRoleOpening({payload:plaintext,seat:packet.seat,
        root:game.commit.merkleRoot});
+     outboundRequests.delete(replyKey);
      // SECURE EXTENSION-LOCAL RECEIVE ONLY: do not execute the coordinator
      // with local ChainAuthor as a substitute for verified remote provenance.
      return Object.freeze({role,seat:packet.seat,roleCommit:packet.commit,
