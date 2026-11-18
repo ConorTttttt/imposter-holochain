@@ -1,0 +1,130 @@
+name: Agent 3 - pinned cross-branch encrypted role preflight (NOT E2E)
+on:
+  push:
+    branches: [ci/agent3-h2hc-security-validation]
+    paths:
+      - '.github/workflows/agent3-role-e2e-integration.yml'
+  workflow_dispatch:
+    inputs:
+      require_encrypted_delivery:
+        description: Require the currently missing genuine trusted receiver
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  pinned-gateway-and-crypto:
+    name: Pinned gateway and Agent 2 crypto/Lair (NOT a role receipt)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: fbbe543fea22e6a6052a0cce7b527314ccd18940
+          path: agent2-kit
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 43943a45833f9d9262ad08427da29e5abdbfdf99
+          path: agent4-kit
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Verify independent exact source pins and unchanged HWC remote-signal rejection
+        run: |
+          set -euo pipefail
+          test "$(git -C agent2-kit rev-parse HEAD)" = fbbe543fea22e6a6052a0cce7b527314ccd18940
+          test "$(git -C agent4-kit rev-parse HEAD)" = 43943a45833f9d9262ad08427da29e5abdbfdf99
+          test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          test -s agent4-kit/crates/imposter-core/src/role_auth.rs
+          grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' agent2-kit/compatibility/hwc-imposter-compatibility/apply.py
+          mkdir -p acceptance-evidence "$RUNNER_TEMP/public-vector"
+          base64 -d ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64 | gzip -dc > "$RUNNER_TEMP/public-vector/agent3.json"
+          base64 -d agent2-kit/compatibility/hwc-imposter-compatibility/private-role/agent3-role-public-vectors-v1-candidate.json.gz.base64 | gzip -dc > "$RUNNER_TEMP/public-vector/agent2.json"
+          printf '%s  %s\n' 065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4 "$RUNNER_TEMP/public-vector/agent3.json" | sha256sum --check
+          cmp "$RUNNER_TEMP/public-vector/agent3.json" "$RUNNER_TEMP/public-vector/agent2.json"
+          echo 'REV2_CROSS_BRANCH_FIXTURE=PASS; TRUSTED_RECEIVER=NOT_TESTED'
+      - name: Verify gateway artifact identity, source and accepted run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 | jq -e '.id == 14428255589 and .expired == false and .name == "agent3-h2hc-p0-security-44304976936" and .workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+          gh api repos/ConorTttttt/imposter-holochain/actions/runs/44304976936 | jq -e '.conclusion == "success" and .head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          run-id: 44304976936
+          name: agent3-h2hc-p0-security-44304976936
+          github-token: ${{ github.token }}
+          path: gateway-artifact
+      - name: Verify actual executable, generated H2HC commit, native fixture and scope
+        run: |
+          set -euo pipefail
+          dir=gateway-artifact/role-gateway
+          (cd "$dir" && sha256sum --check SHA256SUMS)
+          printf '%s  %s\n' 8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f "$dir/h2hc-linker-linux-x86_64" | sha256sum --check
+          test "$(cat "$dir/h2hc-applied-source-commit.txt")" = 9f5eb04b5be12e3e9e7fcc304bd905da1449ade9
+          grep -Fxq 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' "$dir/build-provenance.txt"
+          grep -Fxq 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' "$dir/build-provenance.txt"
+          grep -Fxq 'ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED' "$dir/role-smoke-result.txt"
+          printf '%s  %s\n' 065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4 gateway-artifact/role-public-vectors.json | sha256sum --check
+          echo 'ROLE_GATEWAY_PINNED_BYTES=PASS; HWC_RECEIVER=NOT_TESTED'
+      - name: Agent 2 isolated transcript, HPKE, durable IndexedDB tests
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/idb"
+          printf '{"name":"idb-only","private":true}\n' > "$RUNNER_TEMP/idb/package.json"
+          npm install --prefix "$RUNNER_TEMP/idb" --no-save --ignore-scripts --package-lock=false --no-audit --no-fund fake-indexeddb@6.2.5
+          node --import "$RUNNER_TEMP/idb/node_modules/fake-indexeddb/auto/index.mjs" --test agent2-kit/compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
+      - name: Genuine pinned Lair fixture signing (NOT installed game cell)
+        timeout-minutes: 16
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc
+          npm run build --prefix hwc --workspace=@holo-host/lair
+          node agent2-kit/compatibility/hwc-imposter-compatibility/private-role/lair-signing-acceptance.mjs
+      - name: Explicitly publish only safe component-level preflight verdict
+        if: success()
+        run: |
+          mkdir -p acceptance-evidence
+          cat > acceptance-evidence/preflight.json <<'JSON'
+          {"scope":"GATEWAY_AND_ISOLATED_CRYPTO_ONLY","gateway_artifact_id":14428255589,"gateway_sha256":"8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f","native_fixture_sha256":"065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4","receiver_accepted":false,"role_e2e":"BLOCKED","contains_role_plaintext_or_private_keys":false}
+          JSON
+          echo '## Signed-role integration preflight' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Gateway binary, native vectors and Agent 2 genuine Lair fixture signing PASS only at their component boundary.' >> "$GITHUB_STEP_SUMMARY"
+          echo '**E2E BLOCKED**: no installed-cell native recipient-key discovery or trusted HWC receiver. Gateway role_queued_v1 is not receipt.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive only allowlisted non-secret preflight status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent3-role-cross-branch-preflight-${{ github.run_id }}
+          path: acceptance-evidence/preflight.json
+          retention-days: 14
+          if-no-files-found: ignore
+  strict-native-e2e:
+    needs: pinned-gateway-and-crypto
+    name: Genuine 3-browser delivery acceptance (explicitly blocked)
+    if: github.event_name == 'workflow_dispatch' && inputs.require_encrypted_delivery == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "::error::E2E_BLOCKED: Agent 4 native key attestation and Agent 2 installed-cell privileged receiver/live 3-Chromium test driver are unavailable. Never treat role_queued_v1 as receipt."
+          exit 1
