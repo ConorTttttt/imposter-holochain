@@ -32,7 +32,7 @@ s=s.replace('invalidPage.', 'guestCPage.')
 # Inspect the real production HWC source chain via a one-way loopback CI
 # read-only metadata collector; never export entry or CapGrant bodies.
 replace_once('const evidence={', 'const ciSnapshots=[];\nconst evidence={')
-replace_once("  const pathname=new URL(req.url,ORIGIN).pathname;", r"""  const pathname=new URL(req.url,ORIGIN).pathname;
+replace_once(" const pathname=new URL(req.url,ORIGIN).pathname;", r"""  const pathname=new URL(req.url,ORIGIN).pathname;
   if(pathname==='/__ci_source_chain'){
     const headers={'Access-Control-Allow-Origin':'*',
       'Access-Control-Allow-Headers':'Content-Type',
