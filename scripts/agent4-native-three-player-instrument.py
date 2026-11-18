@@ -97,7 +97,7 @@ replace_once('  const allP0Green=', r"""
       ns=await pg.evaluate(async()=>window.holochain.getNetworkStatus());
       const log=readGatewayLog();
       serverProof=log.includes('Auth OK for agent '+agent)&&
-        log.split(/\r?\n/).some(line=>line.includes('registered for DNA')&&
+        log.split(/\r?\n/).some(line=>line.includes('Browser agent joined kitsune2 space')&&
           line.includes(agent)&&line.includes(m.dna_hash));
       if(cs?.wsHealthy===true&&cs?.authenticated===true&&
          ns?.hasSession===true&&serverProof)break;
@@ -105,7 +105,9 @@ replace_once('  const allP0Green=', r"""
     }
     must(cs?.wsHealthy===true&&cs?.authenticated===true&&
       ns?.hasSession===true&&serverProof,
-      label+' missing own signed WS authentication/DNA registration or hasSession');
+      label+' missing own signed WS authentication/DNA registration or hasSession: '+
+      JSON.stringify({wsHealthy:cs?.wsHealthy===true,authenticated:cs?.authenticated===true,
+        hasSession:ns?.hasSession===true,serverProof}));
     evidence.three_session_proof??={};
     evidence.three_session_proof[label]={agent,authenticated:true,
       hasSession:true,server_signed_challenge:true,registered_dna:m.dna_hash};
