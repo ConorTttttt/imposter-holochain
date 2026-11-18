@@ -15,15 +15,15 @@ function bytes(e,operation){
  const ct=Buffer.from(e.ciphertext,'base64');
  return Buffer.concat([prefix,Buffer.from([operation==='role_request_v1'?1:2]),hash(e.dna_hash),
   hash(e.sender_agent),hash(e.recipient_agent),hash(e.role_commit),n16(e.seat),
-  Buffer.from(e.recipient_key_id,'hex'),Buffer.from(e.message_id,'hex'),
-  n64(e.created_at_ms),n64(e.expires_at_ms),Buffer.from([0]),
+  Buffer.from(e.recipient_key_id,'hex'),n64(e.recipient_key_epoch),Buffer.from(e.message_id,'hex'),
+  n64(e.created_at_ms),n64(e.expires_at_ms),e.in_reply_to===null?Buffer.from([0]):Buffer.concat([Buffer.from([1]),Buffer.from(e.in_reply_to,'hex')]),
   Buffer.from(e.hpke_enc,'base64'),n32(ct.length),ct]);
 }
 function frame(op,from,to,overrides={}){
  const now=Date.now();
  const e={version:1,domain:'imposter.h2hc.private-role.v1',dna_hash:f.dna,
    sender_agent:from.agent,recipient_agent:to.agent,role_commit:A.action_hash,
-   seat:1,recipient_key_id:'11111111111111111111111111111111',
+   seat:1,recipient_key_id:'11111111111111111111111111111111',recipient_key_epoch:1,
    message_id:randomBytes(16).toString('hex'),created_at_ms:now,expires_at_ms:now+30000,
    in_reply_to:null,hpke_enc:randomBytes(32).toString('base64'),
    ciphertext:randomBytes(64).toString('base64'),...overrides};
@@ -93,15 +93,24 @@ async function main(){
   b.send(req);
   assert.equal((await b.next(['role_queued_v1','error'])).type,'role_queued_v1');
   assert.equal((await a.next(['role_request_v1','error'])).type,'role_request_v1');
+  const reply=frame('role_delivery_v1',A,B,{in_reply_to:req.envelope.message_id});
+  a.send(reply);
+  assert.equal((await a.next(['role_queued_v1','error'])).type,'role_queued_v1');
+  assert.equal((await b.next(['role_delivery_v1','error'])).envelope.in_reply_to,req.envelope.message_id);
   for(const [peer,msg] of [
     [b,frame('role_delivery_v1',B,C)],
     [a,frame('role_request_v1',A,B)],
     [a,frame('role_delivery_v1',A,B,{dna_hash:f.other_dna})],
     [a,frame('role_delivery_v1',A,B,{sender_agent:C.agent})],
     [a,frame('role_delivery_v1',A,B,{expires_at_ms:Date.now()-1})],
+    [b,frame('role_request_v1',B,A,{in_reply_to:'77'.repeat(16)})],
+    [a,frame('role_delivery_v1',A,B,{recipient_key_epoch:0})],
+    [a,frame('role_delivery_v1',A,B,{recipient_key_epoch:Number.MAX_SAFE_INTEGER+1})],
   ]){
    peer.send(msg);assert.equal((await peer.next(['error','role_queued_v1'])).type,'error');
   }
+  const tamperedEpoch=frame('role_delivery_v1',A,B);tamperedEpoch.envelope.recipient_key_epoch=2;
+  a.send(tamperedEpoch);assert.equal((await a.next(['error','role_queued_v1'])).type,'error');
   const tamper=frame('role_delivery_v1',A,B);tamper.envelope.ciphertext='bad';
   a.send(tamper);assert.equal((await a.next(['error','role_queued_v1'])).type,'error');
   a.send({type:'role_delivery_v1',envelope:{...ok.envelope,ciphertext:'A'.repeat(15000)},signature:ok.signature});
