@@ -156,6 +156,7 @@ pub async fn queue_role(
     app: &AppState,
     socket_agent: Option<&AgentPubKey>,
     socket_token: Option<&str>,
+    socket_sender: &WsSender,
     registrations: &[(DnaHash, AgentPubKey)],
     envelope: RoleEnvelope,
     signature: String,
@@ -183,9 +184,11 @@ pub async fn queue_role(
     let message = match op {
         RoleOperation::Request => super::websocket::ServerMessage::RoleRequestV1 {
             envelope, signature, origin_token: token.to_string(),
+            origin_wire: socket_sender.clone(),
         },
         RoleOperation::Delivery => super::websocket::ServerMessage::RoleDeliveryV1 {
             envelope, signature, origin_token: token.to_string(),
+            origin_wire: socket_sender.clone(),
         },
     };
     if !app.agent_proxy.send_signal(&verified.dna, &verified.recipient, message).await {
@@ -199,6 +202,7 @@ pub async fn can_dispatch(
     recipient_token: &str,
     recipient_wire: &WsSender,
     origin_token: &str,
+    origin_wire: &WsSender,
     envelope: &RoleEnvelope,
     op: RoleOperation,
 ) -> bool {
@@ -214,7 +218,8 @@ pub async fn can_dispatch(
         || !origin.has_dna(&dna) || !target.has_dna(&dna)
         || !origin.has_capability(op.capability())
         || !store.is_agent_allowed(&sender).await || !store.is_agent_allowed(&recipient).await
-        || !app.agent_proxy.is_current_sender(&dna, &recipient, recipient_wire).await {
+        || !app.agent_proxy.is_current_sender(&dna, &recipient, recipient_wire).await
+        || !app.agent_proxy.is_current_sender(&dna, &sender, origin_wire).await { 
         return false;
     }
     now_ms().is_ok_and(|ms| ms < envelope.expires_at_ms)
@@ -270,6 +275,8 @@ mod tests {
         let proxy = AgentProxyManager::new();
         let (recipient_tx, _recipient_rx) = mpsc::channel(8);
         proxy.register(dna.clone(), b.clone(), recipient_tx.clone()).await;
+        let (origin_tx, _origin_rx) = mpsc::channel(8);
+        proxy.register(dna.clone(), a.clone(), origin_tx.clone()).await;
         let app = AppState {
             configuration: Configuration::default(),
             agent_proxy: proxy, gateway_kitsune: None,
@@ -290,14 +297,14 @@ mod tests {
             created_at_ms: now, expires_at_ms: now + 30_000,
             in_reply_to: None, hpke_enc: "AA==".into(), ciphertext: "AA==".into(),
         };
-        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
-        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Request).await);
+        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&env,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&env,RoleOperation::Request).await);
         let mut wrong_dna = env.clone();
         wrong_dna.dna_hash = DnaHash::from_raw_32(vec![6;32]).to_string();
-        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&wrong_dna,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&wrong_dna,RoleOperation::Delivery).await);
         let mut wrong_recipient = env.clone();
         wrong_recipient.recipient_agent = c.to_string();
-        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&wrong_recipient,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&wrong_recipient,RoleOperation::Delivery).await);
 
         // Deterministic race: an in-flight private dispatch holds exactly the
         // same gate as administrative revocation. No old lease survives release.
@@ -311,7 +318,7 @@ mod tests {
         assert!(!revoker.is_finished(), "revocation must serialize after the pending send");
         drop(hold);
         assert!(revoker.await.unwrap());
-        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&env,RoleOperation::Delivery).await);
         assert!(auth.validate_session(token_b.as_str()).await.is_some());
         assert!(auth.validate_session(token_c.as_str()).await.is_some());
 
@@ -322,7 +329,7 @@ mod tests {
         }).await;
         let fresh_a = auth.create_session(&a).await.unwrap();
         auth.register_dna_for_agent(&a, &dna).await;
-        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&env,RoleOperation::Delivery).await);
-        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,fresh_a.as_str(),&env,RoleOperation::Delivery).await);
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&env,RoleOperation::Delivery).await);
+        assert!(can_dispatch(&app,token_b.as_str(),&recipient_tx,fresh_a.as_str(),&origin_tx,&env,RoleOperation::Delivery).await);
     }
 }
