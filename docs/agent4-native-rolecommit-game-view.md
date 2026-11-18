@@ -1,7 +1,9 @@
 # Agent 4 — Native RoleCommit boundary (provisional HWC v1 contract)
 
 **18 November 2026.** Branch `feature/browser-compatibility-harness`, PR #4 **Draft**.
-Agent 2 confirmation of the exact receiver schema and independent encrypted
+Agent 2 has given **conditional field-level approval** of this exact v1
+schema on [Draft PR #4](https://github.com/ConorTttttt/imposter-holochain/pull/4#issuecomment-6981151436),
+but durable recipient-side RoleCommit identity and real installed-HWC encrypted
 role-delivery acceptance are **outstanding**. This native boundary must not
 be represented as an HWC secure private-role transport release.
 
@@ -150,14 +152,14 @@ this result to a webpage, a content script, a generic HTTP route, arbitrary
 The existing host `deal_roles` returns a host-only full-vector legacy
 response for desktop compatibility; do not invoke that API from HWC.
 
-## Agent 2 `trusted-receiver.mjs` mapping — pending Agent 2 review
+## Agent 2 `trusted-receiver.mjs` mapping — v1 schema conditionally approved, receiver pending
 
 The predecessor Agent 2 receiver at source
 `d9abab04559cb059e0de6c3499ed1915943fe74b` assumed
 `lobby.round`, `commit.round`, `state.currentRound`, and page-shaped
 `active` flags. **Agent 2 has since staged** `native-state.mjs`,
 `native-authority.mjs`, and a revised `trusted-receiver.mjs` in Draft PR #5
-at `eb29b618880a0c4a4c2d071f92809c2f79c4c51d`. Those files now
+at `c5cf6730b04e09a97d79b7bb2381d8a797158e5a`. Those files now
 consume these exact v1 fields and host-private opening calls, as documented
 in PR #5's Agent 2 checkpoint. They remain **deny-only / not installed in
 real HWC role delivery**. These are mandatory receiver-integration rules
@@ -215,6 +217,58 @@ global latest-commit finality, authenticate HWC's own extension compartment,
 confirm possession of X25519 private keys, or deliver a role. Those remain
 distinct integration gates. Agent 2 must explicitly agree the precise field
 names and types before describing the adapter as accepted.
+
+
+## Pinned cross-branch schema fixture (contract coverage, not installed-HWC E2E)
+
+Agent 2 explicitly accepted the **names, field types and omission of invented
+round values** at [PR #4 comment 6981151436](https://github.com/ConorTttttt/imposter-holochain/pull/4#issuecomment-6981151436).
+No change is required to the native v1 zome response or the original
+game integrity rules. Approval to *interpret the schema* is **not** approval
+to activate the privileged receiver.
+
+Added `scripts/agent4-rolecommit-v1-contract.test.mjs`, executed by
+`.github/workflows/agent4-recipient-key-native.yml` using immutable Agent 2
+source **`c5cf6730b04e09a97d79b7bb2381d8a797158e5a`**:
+`native-state.mjs`, `native-authority.mjs`, and `merkle.mjs`. The test
+fails on any Rust public struct field/type drift; feeds the actual round-free
+v1 *response layout* through Agent 2's validator with HoloHashes encoded
+as byte arrays (39-byte hash kind/type prefix), canonical sorted agents,
+non-positional join witnesses, exact action and DNA identity, active phase,
+and missing/incorrect hash/seat/root negatives. It checks the adapter's
+native discovery → exact-action requery and host-opening call, and exercises
+the native `RoleProof` serde **number-array representation** (16-byte
+`role_salt`, six 32-byte siblings) converted to the strict 209-byte
+JavaScript opening and checked against a real computed Merkle root.
+
+**Scope limitation:** this is a pinned cross-language contract *fixture*,
+not a captured real native MessagePack result, an installed-cell executor,
+a persistent protected commitment pin, or an encrypted end-to-end role
+delivery. Its fixture performs proof normalization explicitly; Agent 2's
+production host adapter must still perform it before encryption. CI evidence
+must be reported for the new head separately from the already passing native
+Holochain `44320254863` and three-browser `44320189807` baseline.
+
+### Remaining Agent 2 receiver acceptance gates
+
+* The exact native Valid `role_commit_action` must be selected only after
+  protected installed-cell/Lobby binding and then **persisted across requests
+  and browser restarts**, scoped to installed DNA, Lobby and host; any
+  substitution, corruption, stale or ambiguous observed state must fail closed.
+  A new game requires explicit independent rebinding; the page may never reset
+  or reassign the pin.
+* Normalize and validate role, per-seat `RoleProof.role_salt` and all path
+  siblings *inside the privileged native adapter*. Preserve sender/recipient
+  identity, current phase, network seed, full canonical signed join evidence,
+  Merkle root and exact commitment through role request and delivery.
+* Call only the trusted installed-cell native executor and host-only private
+  opening, never expose plaintext to page/content script/generic messages.
+  Never infer finality from `observed_only`, nor X25519 key freshness from
+  `current_unproven`. Keep fresh signed recipient confirmation, lease
+  revocation, durable epoch floor and replay protections.
+* Independently pass real installed HWC Host/Guest B/Guest C encrypted
+  receipt, wrong-recipient exclusion, restart/replay and revoked-session
+  tests before enabling the role transport.
 
 ## Genuine native acceptance and evidence
 
