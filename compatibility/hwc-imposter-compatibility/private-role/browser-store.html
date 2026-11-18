@@ -1,6 +1,7 @@
 <!doctype html><meta charset="utf-8"><body>LOADING</body><script type="module">
 import {openRoleStore} from './store.mjs';
-import {seal,openForCell} from './hpke.mjs';
+import {seal,openForCell,createRecipientKey,rawPublicKey} from './hpke.mjs';
+import {attestKey} from './wire.mjs';
 const dna=new Uint8Array([0x84,0x2d,0x24,...new Array(36).fill(1)]);
 const agent=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(2)]);
 const sender=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(3)]);
@@ -12,6 +13,17 @@ try{
  if(phase==='register'){
   const cell=await store.rotateCell(dna,agent,1);
   await store.reserve({dna,recipient:agent,sender,commit,messageId});
+  // Real browser WebCrypto signing and separate non-extractable X25519 key.
+  // Public signed enrollment is pinned in EXTENSION-ORIGIN IDB, never the
+  // shared page localStorage. This is not a genuine installed HWC Lair cell.
+  const signer=await crypto.subtle.generateKey('Ed25519',false,['sign','verify']);
+  const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signer.publicKey));
+  const remoteAgent=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]);
+  const remote=await createRecipientKey();
+  const att=await attestKey({dna,agent:remoteAgent,epoch:1,
+    publicKey:await rawPublicKey(remote.publicKey),now:Date.now(),
+    sign:async(_pub,transcript)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signer.privateKey,transcript))});
+  await store.pinTrustedRecipient(dna,remoteAgent,att);
   document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:cell.epoch,nonextractable:!cell.privateKey.extractable});
  }else{
   const cell=await store.getCell(dna,agent);
@@ -26,9 +38,25 @@ try{
   let rotationDenied=false;
   try{await store.rotateCell(dna,agent,1);}catch{rotationDenied=true;}
   if(!rotationDenied)throw Error('same-epoch rotation succeeded');
+  // Re-open a distinct trusted-recipient watermark stored by the first
+  // Chromium process. Signature is verified anew without the signer secret.
+  const openedDB=indexedDB.open('real-chromium-role-test-v1',2);
+  const db=await new Promise((ok,fail)=>{openedDB.onsuccess=()=>ok(openedDB.result);openedDB.onerror=()=>fail(openedDB.error);});
+  const tx=db.transaction('trusted','readonly');
+  const allReq=tx.objectStore('trusted').getAll();
+  const pinned=await new Promise((ok,fail)=>{allReq.onsuccess=()=>ok(allReq.result);allReq.onerror=()=>fail(allReq.error);});
+  db.close();
+  if(pinned.length!==1||pinned[0].epoch!==1||pinned[0].revoked)throw Error('trusted recipient missing after Chromium restart');
+  const previous=pinned[0].attestation;
+  const verified=await store.getTrustedRecipient(dna,previous.agent);
+  if(verified.epoch!==1)throw Error('trusted epoch was lost');
+  await store.revokeTrustedRecipient(dna,previous.agent);
+  let revokedKeyDenied=false;
+  try{await store.getTrustedRecipient(dna,previous.agent);}catch{revokedKeyDenied=true;}
+  if(!revokedKeyDenied)throw Error('revoked trusted key accepted after restart');
   const newCell=await store.rotateCell(dna,agent,2);
   if(newCell.epoch!==2||newCell.privateKey.extractable)throw Error('rotation key insecure');
-  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:newCell.epoch,replayDenied,rotationDenied,nonextractable:!newCell.privateKey.extractable});
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:newCell.epoch,replayDenied,rotationDenied,revokedKeyDenied,nonextractable:!newCell.privateKey.extractable});
  }
  store.close();
 }catch(e){document.body.textContent=JSON.stringify({status:'FAIL',phase:location.search,error:String(e)});}
