@@ -188,6 +188,20 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
     }
 
     if (message.type === "CONFIGURE_NETWORK") {''')
+    # Prevent an untrusted content script from submitting Lair sign requests
+    # directly into ChromeOffscreenExecutor. This is a separate HWC-owned
+    # signing boundary, not another remote gameplay operation.
+    edit("packages/extension/src/background/chrome-offscreen-executor.ts",
+'''      (rawMessage: any, _sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void) => {
+        if (rawMessage?.target !== "background") return false;''',
+'''      (rawMessage: any, sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void) => {
+        if (rawMessage?.target !== "background") return false;
+        if (["SIGN_REQUEST","REMOTE_SIGNAL","WS_STATE_CHANGE","OFFSCREEN_READY"].includes(rawMessage.type) &&
+            (sender.id !== chrome.runtime.id || sender.tab !== undefined ||
+             sender.url !== chrome.runtime.getURL("offscreen/offscreen.html"))) {
+          sendResponse({success:false,error:"EXTENSION_OFFSCREEN_SENDER_ONLY"});
+          return false;
+        }''')
     background="packages/extension/src/background/index.ts"
     edit(background, '''import { encodeHashToBase64, type AgentPubKey, type CellId } from "@holochain/client";''',
 '''import { encodeHashToBase64, hashFrom32AndType, HoloHashType, type AgentPubKey, type CellId } from "@holochain/client";
@@ -232,7 +246,7 @@ function getInstalledRoleRuntime(): any {
     nativeZomeCall: async ({contextId,cellId,zome,fn,payload,provenance}: any) => {
       if (zome!=="game" || ![
         "get_authoritative_game_view","host_role_opening",
-        "publish_signed_recipient_key_attestation","lookup_recipient_key"
+        "publish_signed_recipient_key_attestation","lookup_recipient_key","commit_roles_only"
       ].includes(fn)) throw new Error("private native function not allowlisted");
       const ctx = await happContextManager.getContext(contextId);
       const a=toUint8Array(ctx?.agentPubKey || []),d=toUint8Array(ctx?.dnas?.[0]?.hash || []);
