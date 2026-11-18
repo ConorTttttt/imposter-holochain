@@ -71,7 +71,14 @@ function socket(info) {
             waiter = { candidates, ok: (m) => { clearTimeout(timer); ok(m); } };
           });
         },
-        close() { if (!closed) ws.close(); }
+        close() { if (!closed) ws.close(); },
+        waitClosed(ms = 8000) {
+          if (closed) return Promise.resolve();
+          return new Promise((ok,bad) => {
+            const timer = setTimeout(() => bad(new Error('revoked WebSocket was not closed')), ms);
+            ws.addEventListener('close', () => { clearTimeout(timer); ok(); }, {once:true});
+          });
+        }
       };
       resolve(peer);
     });
@@ -192,6 +199,65 @@ async function main() {
     const unreg = await authA.peer.next(['unregistered','error'],30000);
     assert.equal(unreg.type,'unregistered');
     record('owned-unregister',{result:'PASS'});
+
+    // Two fully authenticated, simultaneously connected sockets for A.
+    // B stays independently authenticated and must not be disconnected.
+    const authA2 = await login(a);
+    try {
+      await register(authA2.peer,fixture.dna,a.agent,'registered');
+      const readPath='/dht/'+fixture.dna+'/record/'+a.action_hash;
+      const beforeA1=await http(readPath,{headers:tokenHeader(authA.token)});
+      const beforeA2=await http(readPath,{headers:tokenHeader(authA2.token)});
+      const beforeB=await http(readPath,{headers:tokenHeader(authB.token)});
+      assert.equal(beforeA1.status,200,'A1 valid bearer before revoke');
+      assert.equal(beforeA2.status,200,'A2 valid bearer before revoke');
+      assert.equal(beforeB.status,200,'B valid bearer before revoke');
+
+      const disconnectA1=authA.peer.waitClosed();
+      const disconnectA2=authA2.peer.waitClosed();
+      assert.equal((await admin('DELETE','/admin/agents',
+        {agent_pubkey:a.agent})).status,204);
+      await Promise.all([disconnectA1,disconnectA2]);
+      record('revoke-all-active-websockets',{
+        result:'PASS',agent:'A',active_connections_closed:2,unrelated_agent:'B'
+      });
+      for (const oldToken of [authA.token,authA2.token]) {
+        assert.equal((await http(readPath,{headers:tokenHeader(oldToken)})).status,401,
+          'old bearer must reject protected read');
+        assert.equal((await getOp(publishPath,oldToken,a.op)).status,401,
+          'old bearer must reject protected write');
+      }
+      assert.equal((await http(readPath,{headers:tokenHeader(authB.token)})).status,200);
+      authB.peer.send({type:'ping'});
+      assert.equal((await authB.peer.next(['pong','auth_error','error'])).type,'pong');
+      record('revoked-http-bearers-and-unrelated-agent',{
+        result:'PASS',old_bearers_denied:2,read_status:401,write_status:401,
+        unrelated_http_status:200,unrelated_ws_heartbeat:'pong'
+      });
+
+      const rejectedA=await socket(a);
+      try {
+        rejectedA.send({type:'auth',agent_pubkey:a.agent});
+        assert.equal((await rejectedA.next(['auth_challenge','auth_error'])).type,'auth_error');
+      } finally { rejectedA.close(); }
+      assert.equal((await admin('POST','/admin/agents',{
+        agent_pubkey:a.agent,capabilities:['dht_read','dht_write','k2'],
+        label:'synthetic-reauthorized-A'
+      })).status,204);
+      const authA3=await login(a);
+      try {
+        await register(authA3.peer,fixture.dna,a.agent,'registered');
+        assert.equal((await http(readPath,{headers:tokenHeader(authA3.token)})).status,200);
+        for (const oldToken of [authA.token,authA2.token]) {
+          assert.equal((await http(readPath,{headers:tokenHeader(oldToken)})).status,401,
+            'revoked bearers must NOT revive after reallowlisting');
+        }
+      } finally { authA3.peer.close(); }
+      record('deny-until-reauthorized-and-fresh-signed-auth',{
+        result:'PASS',revoked_authorization:'denied',
+        fresh_signed_auth:'accepted',old_bearers_still_rejected:2
+      });
+    } finally { authA2.peer.close(); }
   } finally {
     authA.peer.close();
     authB.peer.close();
