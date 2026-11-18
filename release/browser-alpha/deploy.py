@@ -10,7 +10,9 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
+import ssl
 import stat
 import subprocess
 from urllib.parse import urlsplit
@@ -23,6 +25,7 @@ PUBLIC = {"frontend_origin", "gateway_origin", "bootstrap_url", "relay_url"}
 PRIVATE = {"static_root", "gateway_identity_file", "gateway_session_db",
            "admin_secret_file", "native_authority_root"}
 CI_BOOTSTRAP = "dev-test-bootstrap2.holochain.org"
+STATE_FILES = ("gateway_identity_file", "gateway_session_db")
 
 
 def endpoint(value, *, origin=False):
@@ -39,7 +42,8 @@ def endpoint(value, *, origin=False):
     except ValueError:
         require(re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", host) and not host.endswith(".localhost")
                 and all(not part.startswith("-") and not part.endswith("-") for part in host.split("."))
-                and host != CI_BOOTSTRAP, "Expected an operator HTTPS hostname")
+                and host != CI_BOOTSTRAP and not host.endswith(".iroh-canary.iroh.link"),
+                "Expected an operator HTTPS hostname")
     else:
         require(not address.is_loopback and not address.is_unspecified and not address.is_link_local,
                 "Loopback, unspecified and link-local HTTPS endpoints are outside this deployment recipe")
@@ -50,10 +54,16 @@ def endpoint(value, *, origin=False):
     return value
 
 
-def configuration(public, private):
-    require(set(public) == PUBLIC and set(private) == PRIVATE, "Configuration fields differ from the templates")
+def public_configuration(public):
+    require(set(public) == PUBLIC, "Public configuration fields differ from the template")
     clean = {name: endpoint(value, origin=name.endswith("_origin")) for name, value in public.items()}
     require(clean["frontend_origin"] != clean["gateway_origin"], "Use distinct frontend and gateway origins")
+    return clean
+
+
+def configuration(public, private):
+    clean = public_configuration(public)
+    require(set(private) == PRIVATE, "Private configuration fields differ from the template")
     paths = {}
     for name, value in private.items():
         require(isinstance(value, str) and re.fullmatch(r"/[A-Za-z0-9_./-]+", value),
@@ -61,6 +71,7 @@ def configuration(public, private):
         p = Path(value)
         require(str(p) == value and ".." not in p.parts and p != Path("/"),
                 "Use canonical non-root operator paths")
+        require(not p.is_symlink(), "Operator paths must not be symlinks")
         resolved = p.resolve()
         require(re.fullmatch(r"/[A-Za-z0-9_./-]+", str(resolved)), "Resolved operator path contains unsupported characters")
         paths[name] = resolved
@@ -114,17 +125,38 @@ def verify_private_config_location(static, *files):
 
 def admin_secret(path):
     with open(path, "r", opener=lambda name, flags: os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)) as stream:
-        mode = os.fstat(stream.fileno()).st_mode
-        require(stat.S_ISREG(mode) and not mode & 0o077, "Restrict the gateway secret file to its owner")
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077,
+                "Restrict the gateway secret file to the gateway account")
         value = stream.read().strip()
     require(re.fullmatch(r"[0-9a-f]{64}", value), "Expected a 32-byte hex gateway admin secret")
     return value
 
 
+def private_state(path, *, directory=False):
+    require(path.exists() or path.is_symlink(), "Create the required private service state path")
+    info = path.stat(follow_symlinks=False)
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    require(expected(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077,
+            "Use persistent private state owned by the service account")
+    require(os.access(path, os.R_OK | os.W_OK | (os.X_OK if directory else 0)),
+            "The service account must be able to read and write its state")
+
+
+def gateway_state(paths, *, running=False):
+    for key in STATE_FILES:
+        private_state(paths[key].parent, directory=True)
+        if running or paths[key].exists() or paths[key].is_symlink():
+            private_state(paths[key])
+    for suffix in ("-wal", "-shm"):
+        sidecar = paths["gateway_session_db"].with_name(paths["gateway_session_db"].name + suffix)
+        if sidecar.exists() or sidecar.is_symlink():
+            private_state(sidecar)
+
+
 def gateway_environment(public, paths):
     secret = admin_secret(paths["admin_secret_file"])
-    for key in ("gateway_identity_file", "gateway_session_db"):
-        require(paths[key].parent.is_dir(), "Create the protected gateway state directory first")
+    gateway_state(paths)
     env = {k: v for k, v in os.environ.items() if not k.startswith("H2HC_LINKER_")}
     env.update(
         H2HC_LINKER_ADDRESS="127.0.0.1", H2HC_LINKER_PORT="8090",
@@ -158,13 +190,26 @@ def admission_status(path, agent):
     return {"allowed": bool(allowed), "active_sessions": sessions}
 
 
+def role_capabilities(role):
+    return ["dht_read", "dht_write", "k2", "game_role_deliver" if role == "host" else "game_role_request"]
+
+
+def admission_check(path, host, guests):
+    require(len(guests) == 2 and len({host, *guests}) == 3, "Supply two different guest keys and the release host")
+    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5) as db:
+        for agent, role in zip([host, *guests], ("host", "guest", "guest"), strict=True):
+            check_agent(agent)
+            row = db.execute("select capabilities from allowed_agents where agent_pubkey = ?", (agent,)).fetchone()
+            require(row is not None and sorted(json.loads(row[0])) == sorted(role_capabilities(role)),
+                    f"Missing or incorrect gateway admission for {role} {agent}")
+
+
 def change_admission(method, agent, role, host, secret_file):
     check_agent(agent)
     body = {"agent_pubkey": agent}
     if method == "POST":
         require((role == "host") == (agent == host), "Host admission differs from the host-bound hApp")
-        body["capabilities"] = ["dht_read", "dht_write", "k2",
-                                "game_role_deliver" if role == "host" else "game_role_request"]
+        body["capabilities"] = role_capabilities(role)
     connection = http.client.HTTPConnection("127.0.0.1", 8090, timeout=10)
     try:
         connection.request(method, "/admin/agents", json.dumps(body), {
@@ -204,12 +249,14 @@ def native_command(operation, release, public, root):
     }
     if operation == "init-native":
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_state(root, directory=True)
         require(not any(root.iterdir()), "Native authority state already exists")
         args = ["generate", "--app-id", "imposter-native-authority", "--num-sandboxes", "2",
                 "--root", str(root), "--directories", "conductor-a,conductor-b", "--in-process-lair",
                 str((release / HAPP).resolve()), "network", "--bootstrap", public["bootstrap_url"],
                 "--target-arc-factor", "1", "quic", public["relay_url"]]
     else:
+        private_state(root, directory=True)
         require((root / ".hc").is_file(), "Initialize the two native authorities first")
         require(binding.is_file() and not binding.is_symlink() and load(binding) == config,
                 "Native authorities were initialized for different release bytes or endpoints")
@@ -238,6 +285,37 @@ def https_request(origin, path, headers=None):
     except (OSError, http.client.HTTPException):
         connection.close()
         raise
+
+
+def operator_address(value, field):
+    url = urlsplit(value)
+    host = url.hostname
+    require(host not in {"example.com", "example.net", "example.org"}
+            and not host.endswith((".test", ".example", ".invalid", ".example.com", ".example.net", ".example.org")),
+            f"Configure the intended operator endpoint for {field}")
+    port = url.port or 443
+    for _, _, _, _, address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        ip = ipaddress.ip_address(address[0])
+        if ip.version == 6:
+            ip = ip.ipv4_mapped or ip
+        require(not (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast),
+                f"{field} must resolve to an operator endpoint reachable over the network")
+    return host, port
+
+
+def network_check(public):
+    tls = ssl.create_default_context()
+    for name in ("bootstrap_url", "relay_url"):
+        host, port = operator_address(public[name], name)
+        with socket.create_connection((host, port), timeout=10) as connection:
+            with tls.wrap_socket(connection, server_hostname=host):
+                print(f"{name} DNS, TCP and trusted TLS PASS")
+
+
+def external_preflight(public, release):
+    for name in ("frontend_origin", "gateway_origin"):
+        operator_address(public[name], name)
+    remote_preflight(public, release)
 
 
 def remote_preflight(public, release):
@@ -272,13 +350,13 @@ def remote_preflight(public, release):
     finally:
         connection.close()
     print("HTTPS assets, gateway health, admin isolation and WSS upgrade PASS")
-    print("External three-player acceptance NOT EXECUTED")
 
 
 def main():
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["check", "render-proxy", "bootstrap-site", "publish", "rollback",
-                                              "preflight", "gateway", "admit", "revoke", "admission-status",
+    parser.add_argument("operation", choices=["check", "network-check", "render-proxy", "bootstrap-site",
+                                              "publish", "rollback", "preflight", "gateway", "gateway-check",
+                                              "admit", "revoke", "admission-status", "admission-check",
                                               "init-native", "run-native", "native-status"])
     parser.add_argument("--public", type=Path, required=True)
     parser.add_argument("--operator", type=Path, required=True)
@@ -286,7 +364,9 @@ def main():
     parser.add_argument("--release-commit")
     parser.add_argument("--manifest-sha256", help="Independently recorded release manifest checksum")
     parser.add_argument("--agent")
+    parser.add_argument("--guest", action="append", default=[])
     parser.add_argument("--role", choices=["host", "guest"])
+    parser.add_argument("--json", action="store_true", help="Emit public authority identities in native-status")
     args = parser.parse_args()
     try:
         public, paths = configuration(load(args.public), load(args.operator))
@@ -295,6 +375,9 @@ def main():
         if args.operation == "check":
             print("Strict URL and filesystem separation checks PASS")
             return
+        if args.operation == "network-check":
+            network_check(public)
+            return
         if args.operation == "render-proxy":
             print(proxy_config(public, paths), end="")
             return
@@ -302,7 +385,8 @@ def main():
             version = activate_site(root, {name: (HERE / "frontend" / name).read_bytes() for name in SETUP})
             print(f"Bootstrap snapshot active {version}")
             return
-        require(args.release and args.release_commit, "This operation requires a verified release and source commit")
+        require(args.release and args.release_commit and args.manifest_sha256,
+                "Supply the release, source commit and independently recorded manifest SHA-256")
         release = args.release.resolve()
         require(not release.is_relative_to(root) and not root.is_relative_to(release),
                 "Serve the dedicated static root rather than the distribution directory")
@@ -311,15 +395,21 @@ def main():
             version = activate_site(root, release_files(release, public), rollback=args.operation == "rollback")
             print(f"Static release snapshot active {version}")
         if args.operation == "preflight":
-            remote_preflight(public, release)
+            external_preflight(public, release)
         if args.operation == "gateway":
             run_gateway(release, public, paths)
+        if args.operation == "gateway-check":
+            gateway_environment(public, paths)
+            print("Private persistent gateway paths and admin secret format PASS")
         if args.operation in ("init-native", "run-native"):
             native_command(args.operation, release, public, paths["native_authority_root"])
         if args.operation == "native-status":
             dna = manifest["game"]["dna_hash"]
-            authority_cells(dna)
-            print(f"Two separate local native authorities reported installed DNA {dna}")
+            agents = authority_cells(dna)
+            if args.json:
+                print(json.dumps({"dna": dna, "authorities": agents}))
+            else:
+                print(f"Two separate local native authorities reported installed DNA {dna}")
         if args.operation in ("admit", "revoke"):
             require(args.agent and (args.operation == "revoke" or args.role), "Specify the public agent and admission role")
             change_admission("POST" if args.operation == "admit" else "DELETE",
@@ -328,6 +418,10 @@ def main():
         if args.operation == "admission-status":
             require(args.agent, "Specify the public agent to audit")
             print(json.dumps(admission_status(paths["gateway_session_db"], args.agent)))
+        if args.operation == "admission-check":
+            gateway_state(paths, running=True)
+            admission_check(paths["gateway_session_db"], manifest["game"]["host_agent_pub_key"], args.guest)
+            print("Persistent gateway state and three exact player admission capabilities PASS")
     except ValidationError as error:
         parser.exit(1, f"Browser alpha deployment command failed. {error}\n")
     except (ValueError, KeyError, TypeError, OSError, BadZipFile, sqlite3.Error,

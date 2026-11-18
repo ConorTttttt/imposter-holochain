@@ -15,7 +15,7 @@ import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "release/browser-alpha"))
-from deploy import (admission_status, change_admission, configuration, gateway_environment,
+from deploy import (admission_status, change_admission, configuration, gateway_environment, gateway_state,
                     https_request, proxy_config, release_files, remote_preflight)
 from package import GATEWAY, SETUP, digest, verify
 from site_release import activate_site
@@ -47,7 +47,7 @@ def wait_for(port, process):
 def service(command, port, root, env):
     # Logs and all gateway material stay in the private TemporaryDirectory.
     with (root / f"{port}.local.log").open("wb") as log:
-        child = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=log)
+        child = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=log, umask=0o077)
         try:
             wait_for(port, child)
             yield
@@ -142,6 +142,7 @@ def smoke(release, commit, caddy, report):
                 local_gateway_health()
                 remote_preflight(public, release)
                 change_admission("POST", host, "host", host, secret_path)
+                gateway_state(paths, running=True)
                 assert admission_status(db, host) == {"allowed": True, "active_sessions": 0}
                 identity_before = digest(paths["gateway_identity_file"])
                 candidate = activate_site(site, release_files(updated, public))

@@ -1,7 +1,7 @@
 name: Integration - installed HWC encrypted role receipt
 on:
   push:
-    branches: [integration/installed-hwc-role-receipt, release/browser-alpha-rc1, followup/browser-alpha-operator]
+    branches: [integration/installed-hwc-role-receipt, release/browser-alpha-rc1, followup/browser-alpha-operator, followup/browser-alpha-final-acceptance]
     paths:
       - '.github/workflows/integration-installed-hwc-role.yml'
       - 'ci/installed-role/**'
@@ -72,9 +72,17 @@ jobs:
           echo 'ARTIFACT_ID=14428255589' > runtime-evidence/h2hc-provenance.txt
           echo 'ARTIFACT_RUN=44304976936' >> runtime-evidence/h2hc-provenance.txt
           echo 'SOURCE_H2HC=9f5eb04b5be12e3e9e7fcc304bd905da1449ade9' >> runtime-evidence/h2hc-provenance.txt
+          echo 'SOURCE_IMPOSTER=293563649f7fd18a6bc2e0d1426c31132bf2b8c7' >> runtime-evidence/h2hc-provenance.txt
           echo 'ARTIFACT_ARCHIVE_COMMIT=81ddc627cdac30d1af42ea67bc803a570ad93925' >> runtime-evidence/h2hc-provenance.txt
           echo 'H2HC_BINARY_SHA256=8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f' >> runtime-evidence/h2hc-provenance.txt
           echo 'GATEWAY_PINNED_BINARY=PASS; SIGNED_BYTES_AND_HPKE_FORMAT=UNCHANGED'
+
+      - name: Set up Node 22 for actual patched HWC
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
 
       - name: Build corrected HWC Chrome extension and typecheck runtime workspaces
         shell: bash

@@ -1,9 +1,13 @@
 from pathlib import Path
+import json
+import socket
+import sqlite3
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from deploy import admin_secret, browser_config, configuration, native_command, proxy_config
+from deploy import (admin_secret, admission_check, browser_config, configuration, gateway_state,
+                    native_command, operator_address, proxy_config, role_capabilities)
 from package import EXTENSION, HAPP, archive_extension, check_extension, verify_public_bytes
 from site_release import FRONTEND, activate_site
 
@@ -116,6 +120,48 @@ class DeploymentTests(TestCase):
                 admin_secret(path)
             path.chmod(0o600)
             self.assertEqual(len(admin_secret(path)), 64)
+
+    def test_external_check_rejects_example_and_loopback_operators(self):
+        with self.assertRaisesRegex(ValueError, "intended operator"):
+            operator_address("https://game.example.test", "frontend_origin")
+        mapped = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 443, 0, 0))]
+        with patch("deploy.socket.getaddrinfo", return_value=mapped):
+            with self.assertRaisesRegex(ValueError, "reachable over the network"):
+                operator_address("https://local-fixture.imposter.invalidater", "frontend_origin")
+
+    def test_gateway_rejects_loose_state_permissions_and_symlinks(self):
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            identity, db = directory / "key", directory / "session"
+            state = {"gateway_identity_file": identity, "gateway_session_db": db}
+            gateway_state(state)
+            for path in (identity, db):
+                path.touch(mode=0o600)
+            gateway_state(state, running=True)
+            db.chmod(0o640)
+            with self.assertRaisesRegex(ValueError, "private state"):
+                gateway_state(state, running=True)
+            db.unlink()
+            db.symlink_to(identity)
+            with self.assertRaisesRegex(ValueError, "private state"):
+                gateway_state(state, running=True)
+
+    def test_admission_requires_three_exact_distinct_capability_rows(self):
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "admission"
+            host, guest_b, guest_c = ("uhCAk" + letter * 48 for letter in "ABC")
+            with sqlite3.connect(db) as conn:
+                conn.execute("CREATE TABLE allowed_agents(agent_pubkey TEXT PRIMARY KEY, capabilities TEXT)")
+                for agent, role in ((host, "host"), (guest_b, "guest"), (guest_c, "guest")):
+                    conn.execute("INSERT INTO allowed_agents VALUES (?, ?)", (agent, json.dumps(role_capabilities(role))))
+            admission_check(db, host, [guest_b, guest_c])
+            with self.assertRaisesRegex(ValueError, "two different guest keys"):
+                admission_check(db, host, [guest_b, guest_b])
+            with sqlite3.connect(db) as conn:
+                conn.execute("UPDATE allowed_agents SET capabilities=? WHERE agent_pubkey=?",
+                             (json.dumps(role_capabilities("host")), guest_b))
+            with self.assertRaisesRegex(ValueError, "incorrect gateway admission"):
+                admission_check(db, host, [guest_b, guest_c])
 
 
 class ArchiveTests(TestCase):

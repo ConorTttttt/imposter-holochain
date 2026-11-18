@@ -351,6 +351,9 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
           await page.locator('#complete-task').isEnabled()) return page;
     }
   }, 'No verified crew profile could play the shared console');
+  await crew.evaluate(() => window.addEventListener('imposter:action', event => {
+    if (event.detail.kind === 'task') window.ciPublicTaskAction = event.detail.record.action;
+  }));
   await crew.locator('#complete-task').click();
   for (const page of pages) {
     await page.waitForFunction(() =>
@@ -358,6 +361,8 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
       document.querySelector('#task-progress')?.textContent === 'Task completions: 1/1',
     null, {timeout:120000});
   }
+  evidence.taskAction = hash(await crew.evaluate(() => window.ciPublicTaskAction));
+  assert.match(evidence.taskAction, /^uhCkk/);
   evidence.nativeCrewWinAndSharedTaskProgress = true;
   save();
 }

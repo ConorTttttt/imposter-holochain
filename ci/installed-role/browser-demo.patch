@@ -91,7 +91,7 @@ index 59248cf..b16b952 100644
 @@ -182,0 +217,2 @@ async function refresh(){
 +  if(state.is_host&&state.phase==='playing'&&state.tasks_done>=state.task_target)
 +   await client.callZome({zome_name:'game',fn_name:'try_finish',payload:null});
-@@ -183,0 +220,21 @@ async function refresh(){
+@@ -183,0 +220,23 @@ async function refresh(){
 + finally{refreshing=false;}
 +}
 +async function roundAction(kind){
@@ -108,11 +108,13 @@ index 59248cf..b16b952 100644
 +    await client.callZome({zome_name:'game',fn_name:'publish_tasks',payload:[demoTask]});
 +   message('Round started.');
 +  }else{
-+   await client.callZome({zome_name:'game',fn_name:'complete_task',payload:demoTask.id});
++   const record=await client.callZome({zome_name:'game',fn_name:'complete_task',payload:demoTask.id});
++   const action=record.signed_action.hashed.hash;
++   window.dispatchEvent(new CustomEvent('imposter:action',{detail:{kind,record:{action}}}));
 +   message('Task complete.');
 +  }
 + }catch(e){message(errorText(e),true);}
 + finally{busy=false;updateButtons();await refresh();}
-@@ -202,0 +260,2 @@ join.addEventListener('click',()=>void act('join'));
+@@ -202,0 +262,2 @@ join.addEventListener('click',()=>void act('join'));
 +start.addEventListener('click',()=>void roundAction('start'));
 +task.addEventListener('click',()=>void roundAction('task'));

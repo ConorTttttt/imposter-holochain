@@ -7,9 +7,11 @@ if [[ $# != 6 ]]; then
 fi
 rc=$(cd "$(dirname "$0")" && pwd)
 fail(){ echo "Browser alpha build: $*" >&2; exit 1; }
-for tool in git jq node npm npx nix python3 realpath sha256sum; do
+for tool in git jq node npm npx nix python3 realpath sha256sum uname; do
   command -v "$tool" >/dev/null || fail "install $tool before building"
 done
+[[ $(uname -sm) == 'Linux x86_64' ]] || fail 'build on Linux x86-64 for the pinned gateway'
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || fail 'use Python 3.11 or later'
 repo=$(git -C "$rc" rev-parse --show-toplevel)
 game=$(cd "$1" && pwd)
 hwc=$(cd "$2" && pwd)
