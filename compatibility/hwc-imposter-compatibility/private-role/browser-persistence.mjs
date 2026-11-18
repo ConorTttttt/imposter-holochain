@@ -20,7 +20,7 @@ await new Promise((ok,fail)=>{server.once('error',fail);server.listen(0,'127.0.0
 const port=server.address().port;
 const profile=await mkdtemp(join(tmpdir(),'agent2-role-key-browser-'));
 try{
-  for(const phase of ['register','restart']){
+  for(const phase of ['register','restart','revoked-restart']){
     // Two independent Chromium processes reuse one persisted disk profile.
     const ctx=await chromium.launchPersistentContext(profile,{headless:true,args:['--no-sandbox']});
     try{
@@ -30,6 +30,11 @@ try{
       const result=JSON.parse(await page.locator('body').textContent());
       assert.equal(result.status,'PASS',phase+' browser stage failed');
       assert.equal(result.nonextractable,true);
+      if(phase==='revoked-restart'){
+        assert.equal(result.revokedFloorRetained,true);
+        assert.equal(result.replayDenied,true);
+        assert.equal(result.epoch,2);
+      }
       if(phase==='restart'){
         assert.equal(result.replayDenied,true);
         assert.equal(result.rotationDenied,true);
@@ -41,4 +46,5 @@ try{
   console.log('CHROMIUM_ROLE_KEYSTORE_TWO_PROCESS_RESTART_PASS');
   console.log('CHROMIUM_NON_EXTRACTABLE_KEY_REPLAY_ROTATION_PASS');
   console.log('CHROMIUM_PERSISTED_SIGNED_RECIPIENT_EPOCH_REVOCATION_PASS');
+  console.log('CHROMIUM_PERSISTED_REVOKED_EPOCH_FLOOR_THREE_PROCESS_PASS');
 } finally {await new Promise(ok=>server.close(ok));await rm(profile,{recursive:true,force:true});}

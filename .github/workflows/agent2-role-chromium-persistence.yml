@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           npm ci --prefix hwc
           (cd hwc && npx playwright install --with-deps chromium)
-      - name: Persist non-extractable cell key across two genuine Chromium processes
+      - name: Persist non-extractable key, replay and revoked epoch across three Chromium processes
         shell: bash
         run: |
           set -euo pipefail

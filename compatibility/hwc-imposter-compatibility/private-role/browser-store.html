@@ -10,7 +10,30 @@ const messageId=new Uint8Array(16).fill(5);
 try{
  const store=await openRoleStore('real-chromium-role-test-v1');
  const phase=new URLSearchParams(location.search).get('phase');
- if(phase==='register'){
+ if(phase==='revoked-restart'){
+  // Third *physical Chromium process*: revoked recipient watermark must
+  // survive an additional process exit, never resurrect a stale DHT key.
+  const openedDB=indexedDB.open('real-chromium-role-test-v1',2);
+  const db=await new Promise((ok,fail)=>{openedDB.onsuccess=()=>ok(openedDB.result);openedDB.onerror=()=>fail(openedDB.error);});
+  const tx=db.transaction('trusted','readonly'),request=tx.objectStore('trusted').getAll();
+  const all=await new Promise((ok,fail)=>{request.onsuccess=()=>ok(request.result);request.onerror=()=>fail(request.error);});
+  db.close();
+  if(all.length!==1||all[0].epoch!==1||!all[0].revoked)throw Error('revoked native epoch floor lost');
+  const remote=all[0].attestation.agent;
+  const floor=await store.getTrustedFloor(dna,remote);
+  const revokedFloorRetained=floor?.revoked===true&&floor.epoch===1&&
+    floor.keyId.every((v,i)=>v===all[0].keyId[i]);
+  if(!revokedFloorRetained)throw Error('revoked epoch/key ID not durable');
+  try{await store.getTrustedRecipient(dna,remote);throw Error('revoked recipient became active');}
+  catch(e){if(String(e).includes('became active'))throw e;}
+  let replayDenied=false;
+  try{await store.reserve({dna,recipient:agent,sender,commit,messageId});}catch{replayDenied=true;}
+  if(!replayDenied)throw Error('old replay accepted after second restart');
+  const local=await store.getCell(dna,agent);
+  if(local?.epoch!==2||local.privateKey?.extractable!==false)throw Error('rotated cell lost');
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:2,
+    nonextractable:true,replayDenied,revokedFloorRetained});
+ }else if(phase==='register'){
   const cell=await store.rotateCell(dna,agent,1);
   await store.reserve({dna,recipient:agent,sender,commit,messageId});
   // Real browser WebCrypto signing and separate non-extractable X25519 key.
@@ -54,6 +77,10 @@ try{
   let revokedKeyDenied=false;
   try{await store.getTrustedRecipient(dna,previous.agent);}catch{revokedKeyDenied=true;}
   if(!revokedKeyDenied)throw Error('revoked trusted key accepted after restart');
+  const floor=await store.getTrustedFloor(dna,previous.agent);
+  if(floor?.epoch!==1||!floor.revoked||
+     !floor.keyId.every((v,i)=>v===previous.keyId[i]))
+    throw Error('revocation discarded the epoch/key ID floor');
   const newCell=await store.rotateCell(dna,agent,2);
   if(newCell.epoch!==2||newCell.privateKey.extractable)throw Error('rotation key insecure');
   document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:newCell.epoch,replayDenied,rotationDenied,revokedKeyDenied,nonextractable:!newCell.privateKey.extractable});
