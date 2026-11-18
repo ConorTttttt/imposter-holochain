@@ -51,7 +51,9 @@ function currentSeat(game,agent,seat){
 }
 function requireDependencies(s){
  if(typeof s?.installedCell!=='function'||typeof s?.native?.readCurrentGame!=='function'||
-    typeof s?.native?.readKeyEnrollment!=='function'||typeof s?.lair?.signByPubKey!=='function'||
+    typeof s?.native?.readKeyEnrollment!=='function'||
+    typeof s?.native?.readHostRoleOpening!=='function'||
+    typeof s?.lair?.signByPubKey!=='function'||
     typeof s?.store?.getCell!=='function'||typeof s?.store?.reserve!=='function'||
     typeof s?.store?.getTrustedRecipient!=='function'||typeof s?.store?.pinTrustedRecipient!=='function')
    throw Error('native HWC authority or private keystore not installed');
@@ -110,7 +112,7 @@ export function createRestrictedRoleService(s){
     * current-round recipient key request was received on its live WS lease.
     * Merely reading native DHT "Observed current_unproven" is insufficient.
     */
-   async sendRole({seat,role,roleSalt,path}){
+   async sendRole({seat}){
      const {cell,game,lease}=await read();
      if(!eq(cell.agent,game.lobby.host))throw Error('only the installed host can encrypt roles');
      const recipient=game.commit.seats[seat];
@@ -121,8 +123,20 @@ export function createRestrictedRoleService(s){
      // Consume before asynchronous crypto/network operations: concurrent
      // sendRole calls must not reuse one live signed recipient request.
      incomingRequests.delete(k);
-     const payload=encodeRoleOpening(role,roleSalt,path);
+     // Only the host's native private SealedRoles source chain may produce
+     // the leaf. Never take role, salt, path or host identity from a page,
+     // gateway, or arbitrary extension message.
+     const opening=await s.native.readHostRoleOpening(cell,{
+       expected_lobby:game.lobby.action,expected_role_commit:game.commit.action,
+       expected_recipient:recipient,expected_seat:seat,
+     });
+     if(!eq(opening?.role_commit,game.commit.action)||
+        !eq(opening?.recipient,recipient)||opening?.seat!==seat)
+       throw Error('native private opening does not match current committed seat');
+     const payload=encodeRoleOpening(opening.role,opening.proof?.role_salt,
+       opening.proof?.path);
      await verifyRoleOpening({payload,seat,root:game.commit.merkleRoot});
+     unchanged(s.session,cell,lease);
      const attestation=await discover(cell,recipient,lease);
      if(!eq(attestation.keyId,request.attestation.keyId)||
         !eq(attestation.publicKey,request.attestation.publicKey)||

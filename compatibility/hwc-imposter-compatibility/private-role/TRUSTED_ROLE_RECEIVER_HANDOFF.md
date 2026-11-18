@@ -139,3 +139,26 @@ records and canonical PlayerJoin records, conflict absence, and consistent
 native Valid result. Agent 4 has not yet supplied this reader, so the HWC
 handler remains deny-only. Signed published enrollment action hash and
 lookup action hash must now agree byte-for-byte before success.
+
+## Agent 4 native RoleCommit v1 observed contract (newly available)
+
+Agent 4's current Draft PR #4 adds `game::get_authoritative_game_view` response
+`{schema_version:1,dna,network_seed,host,lobby_action,lobby,role_commit_action,
+merkle_root,seats:[{seat,agent,join_action,display_name}],phase,observed_only:true}`
+and host-only `game::host_role_opening({expected_lobby,expected_role_commit,
+expected_recipient,expected_seat})`, returning one `{role_commit,recipient,seat,
+role,proof:{role_salt,path}}`. The `native-state.mjs` validator maps these
+**actual fields** to the restricted service and checks the bound action, seated
+host/guest identity, sorted seat order, native join action hashes, Merkle root
+and active phase. `sendRole({seat})` no longer takes a proposed private role
+from its caller: it requires the privileged native single-seat opening and
+revalidates that opening against the native root *after* a live signed request.
+
+**Still disabled in HWC:** the privileged executor adapter must pin the actual
+native Lobby/RoleCommit action hashes (from genuine installed-cell actions),
+call Agent 4's exact query from the installed cell, and use its native Valid
+result without arbitrary page-supplied hashes. Agent 4's `observed_only:true`
+is NOT global DHT finality. The browser must also implement protected role
+signing/enrollment, authenticated WS request/delivery, and same-cell durable
+replay; the staged patch does none of that yet. Do not count native-only
+acceptance or a queued H2HC ACK as an extension-decrypted role.
