@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {internalsForTests,fromRoleFrame,WIRE_DOMAIN} from './wire.mjs';
-const fixture=JSON.parse(readFileSync(new URL('./native-role-vectors.json',import.meta.url),'utf8'));
+import {nativeFixture as fixture} from './native-fixture.mjs';
 const hex=x=>Buffer.from(x).toString('hex');
 test('native Holochain 0.7 fixed request and delivery transcripts, including optional reply',()=>{
  for(const c of fixture.cases){
