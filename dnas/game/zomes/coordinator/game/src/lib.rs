@@ -316,8 +316,7 @@ fn unique_host_seal(lobby: &ActionHash) -> ExternResult<Option<SealedRoles>> {
 /// Host only. Creates or recovers EXACTLY ONE local RoleCommit. A missing
 /// public index is repaired using the original action hash. No network role
 /// delivery is attempted: HWC's generic remote-signal route stays disabled.
-#[hdk_extern]
-pub fn commit_roles_only(_: ()) -> ExternResult<DealResult> {
+fn ensure_host_role_commit() -> ExternResult<DealResult> {
     let indexed = strict_native_game_index()?;
     let (lobby_hash, host, lobby) = unique_native_lobby(&indexed)?;
     if me()? != host {
@@ -425,12 +424,26 @@ pub fn commit_roles_only(_: ()) -> ExternResult<DealResult> {
     Ok(DealResult { role_commit: action, seats, roles: sealed.roles })
 }
 
+/// Public result contains no private vector: only the actual RoleCommit
+/// action identity and its canonical seats. The secret is source-chain private.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CommitOnlyResult {
+    pub role_commit: ActionHash,
+    pub seats: Vec<AgentPubKey>,
+}
+
+#[hdk_extern]
+pub fn commit_roles_only(_: ()) -> ExternResult<CommitOnlyResult> {
+    let dealt = ensure_host_role_commit()?;
+    Ok(CommitOnlyResult { role_commit: dealt.role_commit, seats: dealt.seats })
+}
+
 /// Desktop-compatible legacy delivery: the commitment is now idempotently
 /// created/recovered independently of signal delivery. Failed remote signals
 /// may be retried but can NEVER cause a second local RoleCommit.
 #[hdk_extern]
 pub fn deal_roles(_: ()) -> ExternResult<DealResult> {
-    let dealt = commit_roles_only(())?;
+    let dealt = ensure_host_role_commit()?;
     let (_, rc) = find_role_commit()?.ok_or_else(|| wasm_error!(
         WasmErrorInner::Guest("new role commitment not indexed yet".into())
     ))?;
