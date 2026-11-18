@@ -170,12 +170,16 @@ test('installed cell publishes real-signed public attestation via native zome an
  const native={
    publishSignedRecipientKey:async(ctx,entry)=>{
      assert.equal(ctx,contextId);published=entry;
-     return {action:hash(29),attestation:entry};
+     // Native serde over the HWC executor returns arrays, not necessarily
+     // Uint8Array objects. Must match the locally held Lair signature.
+     return {action:Array.from(hash(29)),attestation:Object.fromEntries(
+       Object.entries(entry).map(([k,v])=>[k,v instanceof Uint8Array?Array.from(v):v]))};
    },
    lookupRecipientKey:async(ctx,options)=>{
      assert.equal(ctx,contextId);assert.deepEqual(options.recipient,id.agent);
      return {status:'observed',current_unproven:true,
-       view:{action:hash(29),attestation:published}};
+       view:{action:Array.from(hash(29)),attestation:Object.fromEntries(
+         Object.entries(published).map(([k,v])=>[k,v instanceof Uint8Array?Array.from(v):v]))}};
    }
  };
  const registered=await publishInstalledRecipientKey({contextId,dna:d,contextManager:manager,
