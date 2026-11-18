@@ -63,9 +63,9 @@ changed = changed.replace(anchor, probe + anchor, 1)
 offscreen.write_text(changed)
 
 src = bridge.read_text()
-begin = "           await step('AGENT2_SERVER_SIDE_AGENT_SESSION_REVOCATION',async()=>{"
-after_delete = "           await step('AGENT2_REVOKED_BROWSER_SESSION_INVALIDATES',async()=>{"
-end = "           record('AGENT2_TRUE_TOKEN_EXPIRY','NOT RUN',"
+begin = "await step('AGENT2_SERVER_SIDE_AGENT_SESSION_REVOCATION',async()=>{"
+after_delete = "await step('AGENT2_REVOKED_BROWSER_SESSION_INVALIDATES',async()=>{"
+end = "record('AGENT2_TRUE_TOKEN_EXPIRY','NOT RUN',"
 for a in (begin, after_delete, end):
     assert src.count(a) == 1, "Bridge injection anchor drift: " + a
 
