@@ -42,7 +42,11 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   // private HWC receiver. No generic remote signal or zome execution.
   | { type: "role_request_v1" | "role_delivery_v1"; envelope: unknown; signature: string }''')
     edit(core, '''  private signalCallback: SignalCallback | null = null;''', '''  private signalCallback: SignalCallback | null = null;
-  private restrictedRoleCallback: ((frame: string) => void) | null = null;''')
+  private restrictedRoleCallback: ((frame: string, lease: string) => void) | null = null;
+  // Generated ONLY after successful signed WS auth, invalidated on any close.
+  // A registration becomes trusted only after an actual server 'registered' ACK.
+  private restrictedRoleLease: string | null = null;
+  private restrictedRoleRegistrations = new Set<string>();''')
     edit(core, '''  onSignal(callback: SignalCallback): void {
     this.signalCallback = callback;
   }''', '''  onSignal(callback: SignalCallback): void {
@@ -50,9 +54,68 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   }
 
   /** Extension offscreen-only wiring. Never an API available to pages. */
-  onRestrictedRole(callback: (frame: string) => void): void {
+  onRestrictedRole(callback: (frame: string, lease: string) => void): void {
     this.restrictedRoleCallback = callback;
+  }
+
+  getRestrictedRoleLease(): string | null {
+    return this.isConnected() ? this.restrictedRoleLease : null;
+  }
+
+  hasRestrictedRoleRegistration(dna: string, agent: string): boolean {
+    return this.isConnected() &&
+      this.restrictedRoleRegistrations.has(dna + ':' + agent);
+  }
+
+  // This is NOT a generic websocket send, remote zome call or public API.
+  // The extension-only role service must supply an independently Lair-signed
+  // restricted envelope and its exact currently acknowledged source cell.
+  sendRestrictedRole(frame: {
+    type: "role_request_v1" | "role_delivery_v1";
+    envelope: { dna_hash: string; sender_agent: string };
+    signature: string;
+  }): void {
+    if (!frame || !this.getRestrictedRoleLease() ||
+        !this.hasRestrictedRoleRegistration(
+          frame.envelope?.dna_hash, frame.envelope?.sender_agent) ||
+        typeof frame.signature !== "string") {
+      throw new Error("signed registered role sender required");
+    }
+    const raw = JSON.stringify(frame);
+    if (new TextEncoder().encode(raw).length > 8192) {
+      throw new Error("restricted role frame too large");
+    }
+    this.send(frame);
   }''')
+    edit(core, '''        case "registered":
+          log.debug(`Agent registered: ${message.agent_pubkey} for ${message.dna_hash}`);
+          break;''', '''        case "registered":
+          log.debug(`Agent registered: ${message.agent_pubkey} for ${message.dna_hash}`);
+          if (this.isConnected() && this.registrations.some(r =>
+              r.dna_hash === message.dna_hash &&
+              r.agent_pubkey === message.agent_pubkey)) {
+            this.restrictedRoleRegistrations.add(message.dna_hash + ':' + message.agent_pubkey);
+          }
+          break;''')
+    edit(core, '''        case "unregistered":
+          log.debug(`Agent unregistered: ${message.agent_pubkey} for ${message.dna_hash}`);
+          break;''', '''        case "unregistered":
+          log.debug(`Agent unregistered: ${message.agent_pubkey} for ${message.dna_hash}`);
+          this.restrictedRoleRegistrations.delete(message.dna_hash + ':' + message.agent_pubkey);
+          break;''')
+    edit(core, '''    this.authenticated = true;
+    this.pendingAuthAgent = null;''', '''    this.authenticated = true;
+    this.pendingAuthAgent = null;
+    this.restrictedRoleRegistrations.clear();
+    this.restrictedRoleLease = crypto.randomUUID();''')
+    edit(core, '''    this.authenticated = false;
+    this.failedAuthAgents.clear();
+    this.lastPeerCount = undefined;''', '''    this.authenticated = false;
+    this.restrictedRoleLease = null;
+    this.restrictedRoleRegistrations.clear();
+    this.failedAuthAgents.clear();
+    this.lastPeerCount = undefined;''')
+
     edit(core, '''        case "signal":
           this.handleSignal(message);
           break;''', '''        case "signal":
@@ -61,12 +124,17 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
 
         case "role_request_v1":
         case "role_delivery_v1": {
-          // Only the authenticated, currently connected H2HC socket can
-          // deliver these frames; never accept a page-supplied trust bit.
           const raw = typeof event.data === "string" ? event.data : "";
+          // A server-signed auth session + confirmed destination registration
+          // are prerequisites. Never rely on the initial queued registration
+          // intent, message claims, a browser tab or a gateway ACK.
+          const env = message.envelope as { dna_hash?: unknown; recipient_agent?: unknown } | undefined;
           if (raw && new TextEncoder().encode(raw).length <= 8192 &&
-              this.isConnected() && this.restrictedRoleCallback) {
-            this.restrictedRoleCallback(raw);
+              typeof env?.dna_hash === "string" &&
+              typeof env?.recipient_agent === "string" &&
+              this.hasRestrictedRoleRegistration(env.dna_hash, env.recipient_agent) &&
+              this.restrictedRoleLease && this.restrictedRoleCallback) {
+            this.restrictedRoleCallback(raw, this.restrictedRoleLease);
           }
           break;
         }''')
@@ -76,12 +144,13 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   wsService.onStateChange((state: ConnectionState) => {''', '''  // Restricted ciphertext-only relay to background. No role material,
   // bearer, verifiedRemoteCaller or nativeValidated flag is accepted here.
   // Background rechecks the browser-supplied sender metadata.
-  wsService.onRestrictedRole((frame: string) => {
+  wsService.onRestrictedRole((frame: string, lease: string) => {
     if (!wsService?.isAuthenticated() || !wsService?.isConnected()) return;
     chrome.runtime.sendMessage({
       target: "background",
       type: "PRIVATE_ROLE_FRAME",
       frame,
+      lease,
     }).catch(() => {
       // Delivery fails closed; never log a ciphertext or private payload.
     });
@@ -104,13 +173,14 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
 // This intentionally does NOT invoke executeZomeCall or call_info() and
 // never substitutes the local ChainAuthor for a remote caller.
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
-  const msg = raw as { target?: string; type?: string; frame?: unknown };
+  const msg = raw as { target?: string; type?: string; frame?: unknown; lease?: unknown };
   if (msg?.target !== "background" || msg.type !== "PRIVATE_ROLE_FRAME") return false;
   const offscreenUrl = chrome.runtime.getURL("offscreen/offscreen.html");
   if (typeof __BROWSER__ === "undefined" || __BROWSER__ !== "chrome" ||
       sender.id !== chrome.runtime.id || sender.tab !== undefined ||
       sender.url !== offscreenUrl ||
-      typeof msg.frame !== "string" ||
+      typeof msg.frame !== "string" || typeof msg.lease !== "string" ||
+      msg.lease.length < 16 || msg.lease.length > 128 ||
       new TextEncoder().encode(msg.frame).length > 8192) {
     sendResponse({ success: false, error: "PRIVATE_ROLE_SENDER_REJECTED" });
     return false;
@@ -145,7 +215,7 @@ def main() -> None:
     if args.write:
         for path, _, text in changes:
             path.write_text(text, encoding="utf-8")
-    print(f"AGENT2_STAGED_DENY_ONLY_HWC_PATCH={'WRITE' if args.write else 'CHECK'}"
+    print(f"AGENT2_STAGED_RESTRICTED_WS_LEASE_DENY_ONLY_HWC_PATCH={'WRITE' if args.write else 'CHECK'}"
           f"; source_files={len(changes)}; patch_bytes={len(patch.encode())}")
     print("NATIVE_ROLE_RECEIVER=DISABLED; REMOTE_COORDINATOR=DISABLED")
 

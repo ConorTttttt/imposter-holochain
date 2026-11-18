@@ -1,4 +1,4 @@
-name: Agent 2 — staged HWC restricted-role frame handler (DENY ONLY)
+name: Agent 2 — authenticated restricted WS lease stage (DENY ONLY)
 
 on:
   push:
@@ -49,9 +49,12 @@ jobs:
           git -C hwc diff --check
           grep -Fq 'NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE' hwc/packages/extension/src/background/index.ts
           grep -Fq 'PRIVATE_ROLE_SENDER_REJECTED' hwc/packages/extension/src/background/index.ts
-          grep -Fq 'this.isConnected() && this.restrictedRoleCallback' hwc/packages/core/src/network/websocket-service.ts
+          grep -Fq 'this.hasRestrictedRoleRegistration(env.dna_hash, env.recipient_agent)' hwc/packages/core/src/network/websocket-service.ts
+          grep -Fq 'this.restrictedRoleLease = crypto.randomUUID()' hwc/packages/core/src/network/websocket-service.ts
+          grep -Fq 'this.restrictedRoleRegistrations.clear()' hwc/packages/core/src/network/websocket-service.ts
+          grep -Fq 'typeof msg.lease !== "string"' hwc/packages/extension/src/background/index.ts
           grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' hwc/packages/extension/src/background/index.ts
-          echo 'HWC_RESTRICTED_ROLE_RECEIVE=DENY_ONLY; REMOTE_WASM_EXECUTION=DISABLED'
+          echo 'HWC_AUTHENTICATED_ROLE_WS_LEASE=STAGED; HWC_RESTRICTED_ROLE_RECEIVE=DENY_ONLY; REMOTE_WASM_EXECUTION=DISABLED'
       - name: Install pinned HWC dependencies
         run: npm ci --prefix hwc
       - name: Typecheck modified core and extension
@@ -72,7 +75,7 @@ jobs:
           npm run build:firefox --workspace @hwc/extension
       - name: Evidence boundaries (not an E2E receiver acceptance)
         run: |
-          echo 'HWC_RESTRICTED_WS_FRAME_PARSE_AND_PRIVILEGED_SENDER_CHECK=BUILD_PASS'
+          echo 'HWC_RESTRICTED_WS_REGISTRATION_AND_LEASE_CHECK=BUILD_PASS'
           echo 'HWC_NATIVE_STATE_BRIDGE=NOT_INSTALLED'
           echo 'HWC_ROLE_DECRYPTION=NOT_TESTED'
           echo 'HWC_COORDINATOR_REMOTE_PROVENANCE=DISABLED'
