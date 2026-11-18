@@ -2,6 +2,8 @@
 
 The supported alpha is a three-player browser lobby, confidential role delivery, one **Align Engine Output** task and the native crew-win result. The operator supplies a real host HWC public key, chooses the final frontend origin and admits the three player identities. Each player uses a persistent Chromium profile.
 
+See the [release decision and remaining dependencies](browser-alpha-readiness.md) before an operator-hosted attempt.
+
 ## Source and test evidence
 
 The operator follow-up starts from RC1 `0b58e5a9cd45636cd19a5b845be93a9a0b42170d`. The release consumes the game at `0f7b17592e682a7b7d77e9346528cba69a096cdc`, applies the reviewed UI overlay to that checkout, and builds the stock HWC extension from `0c391226e78769d44ccb4661881ed8998b15f903` plus the integration patches. The gateway is the accepted revision-2 executable from artifact `14428255589`, applied source `9f5eb04b5be12e3e9e7fcc304bd905da1449ade9` and build recipe `293563649f7fd18a6bc2e0d1426c31132bf2b8c7`. [Pin file](../release/browser-alpha/pins.json) · [Gateway provenance](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304976936/artifacts/14428255589)
@@ -48,16 +50,24 @@ These values come from the `EPHEMERAL_CI_ONLY` verification build at `da2696f357
 - [ ] Build with the retained host key and seed. Keep the release commit, manifest SHA-256, hApp digest and DNA hash in the operator’s release record.
 - [ ] Publish a complete static snapshot and start the validated TLS proxy, gateway and two native authorities.
 - [ ] Pass HTTPS/WSS preflight and native DNA inspection. Confirm both authorities have full storage arcs.
-- [ ] Admit the host and two guests, share the [player installation guide](browser-alpha-player.md), and record the ten acceptance results below.
+- [ ] Admit the host and two guests, share the [player installation guide](browser-alpha-player.md), and record the [ten acceptance results](browser-alpha-acceptance.md).
 - [ ] Retain the previous published package and verify a static rollback with the same origins and exact hApp before inviting testers.
 
 ## Operator build and deployment
 
 ### 1. Choose the final origin and build HWC
 
-Use Linux x86-64 with Git, Bash, GNU coreutils, Python 3.11+, Node.js 22.22.0 with npm, jq, Nix, OpenSSL and the GitHub CLI. The committed flake selects Holochain 0.7.0. Allow the documented Holochain CI binary cache on the operator host if desired. Obtain Caddy or an equivalent HTTPS reverse proxy. Reserve a stable frontend origin and a distinct gateway origin, two persistent native authorities with the same Kitsune bootstrap and relay as the gateway, and a private operator state directory. Static hosting can serve the frontend root paths. The gateway and conductors run on operator infrastructure.
+Use Linux x86-64 with Git, Bash, GNU coreutils, Python 3.11+, Node.js 22.22.0 with npm, jq, Nix and OpenSSL. Install `ss` from `iproute2` on the service host to inspect listener bindings. The committed flake selects Holochain 0.7.0. Allow the documented Holochain CI binary cache on the operator host if desired. Obtain Caddy or an equivalent HTTPS reverse proxy. Reserve a stable frontend origin and a distinct gateway origin, two persistent native authorities with the same Kitsune bootstrap and relay as the gateway, and a private operator state directory. Static hosting can serve the frontend root paths. The gateway and conductors run on operator infrastructure.
 
-From a clean clone of the [operator follow-up branch](https://github.com/ConorTttttt/imposter-holochain/tree/followup/browser-alpha-operator), select the release commit and set two new checkout paths. The explicit fetch also works when the release branch was cloned by itself.
+Clone `followup/browser-alpha-final-acceptance` with `git clone --single-branch --branch followup/browser-alpha-final-acceptance https://github.com/ConorTttttt/imposter-holochain.git`. In the clone, select the reviewed release commit and set two new checkout paths. Run the tool check first and proceed when all tools are available. [Operator follow-up branch](https://github.com/ConorTttttt/imposter-holochain/tree/followup/browser-alpha-final-acceptance)
+
+```bash
+(
+  for tool in git bash python3 node npm npx jq nix openssl realpath sha256sum; do
+    command -v "$tool" >/dev/null || { printf 'Missing required tool %s\n' "$tool" >&2; exit 1; }
+  done
+)
+```
 
 ```bash
 rc="$PWD/release/browser-alpha"
@@ -72,6 +82,7 @@ git clone https://github.com/Holo-Host/holo-web-conductor.git "$hwc"
 git -C "$hwc" switch --detach "$(jq -er .hwc_commit "$rc/pins.json")"
 test "$(git -C "$game" rev-parse HEAD)" = "$(jq -er .game_commit "$rc/pins.json")"
 test "$(git -C "$hwc" rev-parse HEAD)" = "$(jq -er .hwc_commit "$rc/pins.json")"
+(cd "$game" && nix --extra-experimental-features 'nix-command flakes' develop --no-write-lock-file --command hc --version)
 bash "$rc/build-extension.sh" "$hwc"
 ```
 
@@ -79,7 +90,7 @@ In Chromium, use **Load unpacked** with `$hwc/packages/extension/dist-chrome`. K
 
 ### 2. Bootstrap the host identity
 
-Copy `public.example.json` and `operator.example.json` from the release directory to an operator-only configuration directory. Fill in the actual HTTPS URLs, a new managed static root and the private state paths. Enter frontend and gateway as canonical HTTPS origins without trailing slashes. Give Caddy read and traverse permissions on the public static tree. Give the operator write access to that tree and keep backend paths under the service accounts. Generate the gateway administration secret on the gateway machine and assign a file readable only by the gateway account. Keep this file outside the checkout, artifact directory and served root. After setting the configuration variables below, generate the secret as the account that owns the private gateway directory.
+Copy `public.example.json` and `operator.example.json` from the release directory to an operator-only configuration directory. Fill in the actual HTTPS URLs, a new managed static root and the private state paths. Enter frontend and gateway as canonical HTTPS origins without trailing slashes. Give Caddy read and traverse permissions on the public static tree. Give the operator write access to that tree and keep backend paths under the service accounts. Generate the gateway administration secret on the gateway machine and assign a file readable only by the gateway account. Keep this file outside the checkout, artifact directory and served root. After setting the configuration variables below, generate the secret once as the account that owns the private gateway directory. For an existing installation, retain its secret and state. Run `network-check` from both service hosts when the authority and gateway run on different machines. It checks DNS, TCP and trusted TLS. Confirm bootstrap registration, relay connectivity and storage arcs through the native service logs and browser round.
 
 ```bash
 public_config=/absolute/path/to/public.json
@@ -87,8 +98,12 @@ operator_config=/absolute/path/to/operator.json
 admin_secret_file="$(jq -er .admin_secret_file "$operator_config")"
 settings=(--public "$public_config" --operator "$operator_config")
 proxy_file="$(dirname "$operator_config")/Caddyfile"
+identity_file="$(jq -er .gateway_identity_file "$operator_config")"
+session_db="$(jq -er .gateway_session_db "$operator_config")"
+(umask 077; mkdir -p "$(dirname "$admin_secret_file")" "$(dirname "$identity_file")" "$(dirname "$session_db")")
 (umask 077; set -o noclobber; openssl rand -hex 32 > "$admin_secret_file")
 python3 "$rc/deploy.py" check "${settings[@]}"
+python3 "$rc/deploy.py" network-check "${settings[@]}"
 python3 "$rc/deploy.py" bootstrap-site "${settings[@]}"
 python3 "$rc/deploy.py" render-proxy "${settings[@]}" > "$proxy_file"
 caddy validate --config "$proxy_file" --adapter caddyfile
@@ -100,14 +115,15 @@ Open `/browser-setup.html` on the final HTTPS frontend in the retained host prof
 
 ### 3. Build and verify the distribution
 
-Fetch artifact `14428255589` from run `44304976936` and retain the executable in operator-controlled storage. The artifact has a retention date of 2 December 2026. The build requires the executable SHA-256 in `pins.json`.
+Recover the exact gateway from Git archive commit `81ddc627cdac30d1af42ea67bc803a570ad93925`. The archive job checked the original Actions ZIP metadata, recipe, source and executable, then compared the recovered bytes against the accepted binary. The Git copy contains the gzip executable and public provenance only. Recovery pins the Git commit and verifies the executable SHA-256 again. [Archive commit](https://github.com/ConorTttttt/imposter-holochain/commit/81ddc627cdac30d1af42ea67bc803a570ad93925) · [Archival run](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44366369591)
 
 ```bash
-gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 \
-  | jq -e '.workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7" and (.expired | not)'
-gh run download 44304976936 -R ConorTttttt/imposter-holochain \
-  -n agent3-h2hc-p0-security-44304976936 -D gateway-artifact
-gateway="$PWD/gateway-artifact/role-gateway/h2hc-linker-linux-x86_64"
+storage=/absolute/path/to/operator-artifact-storage
+# The storage directory must exist. Use new names for the archive and restored binary.
+python3 "$rc/gateway_archive.py" fetch "$storage/gateway-14428255589"
+gateway="$storage/h2hc-linker-linux-x86_64"
+python3 "$rc/gateway_archive.py" restore "$storage/gateway-14428255589" "$gateway"
+sha256sum "$gateway"
 read -r -p 'Public key from the retained host profile: ' host
 seed="$(sh "$game/scripts/browser-poc-seed.sh" "$host")"
 out=/absolute/path/to/new-rc1-directory
@@ -119,17 +135,18 @@ python3 "$rc/package.py" verify "$out" --release-commit "$release_commit" \
 (cd "$out" && sha256sum --check SHA256SUMS)
 ```
 
-Retain the source commit, host public key, seed, manifest and checksum list with the operator records. Keep the same seed to reproduce this hApp in a clean build. The build uses the pinned Nix and npm inputs, recomputes the native DNA hash, and compares the native DNA bytes with the DNA embedded in the hApp. It emits `chromium-hwc.zip`, the site assets, the pinned gateway and verified DNA in `backend/`, the config templates, and `release-manifest.json` with `SHA256SUMS`. The manifest records an operator-supplied **public** identity. Confirm custody by reconnecting from the actual host profile. Record the manifest SHA-256 alongside the release commit in trusted operator records and share the expected extension checksum with testers. When verifying an archive received from another machine, use the independently recorded checksum. Guests can unpack `chromium-hwc.zip` to a stable local directory and load it in their own profile. The established host can retain the original verified unpacked build and location.
+Back up the two-file gateway archive to operator-controlled durable storage. A clean copy of `restore` can recover it offline. The original Actions artifact expires on 2 December 2026. Retain the source commit, host public key, seed, manifest and checksum list with the operator records. Keep the same seed to reproduce this hApp in a clean build. The build uses the pinned Nix and npm inputs, recomputes the native DNA hash, and compares the native DNA bytes with the DNA embedded in the hApp. It emits `chromium-hwc.zip`, the site assets, the pinned gateway and verified DNA in `backend/`, the config templates, and `release-manifest.json` with `SHA256SUMS`. The manifest records an operator-supplied **public** identity. Confirm custody by reconnecting from the actual host profile. Record the manifest SHA-256 alongside the release commit in trusted operator records and share the expected extension checksum with testers. When verifying an archive received from another machine, use the independently recorded checksum. Guests can unpack `chromium-hwc.zip` to a stable local directory and load it in their own profile. The established host can retain the original verified unpacked build and location.
 
 ### 4. Publish and start services
 
 ```bash
 distribution=(--release "$out" --release-commit "$release_commit" --manifest-sha256 "$manifest_sha")
+python3 "$rc/deploy.py" gateway-check "${settings[@]}" "${distribution[@]}"
 python3 "$rc/deploy.py" publish "${settings[@]}" "${distribution[@]}"
 python3 "$rc/deploy.py" gateway "${settings[@]}" "${distribution[@]}"
 ```
 
-Start the gateway command in a separate service session under the account that owns the persistent gateway key and SQLite session directory. Create the private state directories before starting it. Keep both directories private. The script turns off insecure development and local-authority fallbacks and takes the admin credential from the configured private file.
+Start the gateway command in a separate service session under the account that owns the persistent gateway key and SQLite session directory. The gateway account must own the state directories with mode `0700` and any existing gateway identity, database and SQLite sidecars with mode `0600`. Use persistent local storage and give the Caddy account access to the separate static tree. The launch command sets a private umask. The script turns off insecure development and local-authority fallbacks and takes the admin credential from the configured private file.
 
 Run the two native authorities from the pinned game checkout. `init-native` installs the exact packaged hApp into both authorities and binds their state directory to its digest and the bootstrap/relay configuration. Retain that directory and Lair passphrase on the authority host. Start `run-native` in its own service session, then query both authorities from another shell.
 
@@ -151,9 +168,10 @@ read -r -p 'Guest C public key: ' guest_c
 python3 "$rc/deploy.py" admit "${settings[@]}" "${distribution[@]}" --role host --agent "$host"
 python3 "$rc/deploy.py" admit "${settings[@]}" "${distribution[@]}" --role guest --agent "$guest_b"
 python3 "$rc/deploy.py" admit "${settings[@]}" "${distribution[@]}" --role guest --agent "$guest_c"
+python3 "$rc/deploy.py" admission-check "${settings[@]}" "${distribution[@]}" --guest "$guest_b" --guest "$guest_c"
 ```
 
-Run admission locally on the gateway host as the account that can read the private gateway secret file. The host receives delivery capability and the two guests receive request capability. The preflight verifies real TLS, served asset bytes, the public admin denial and WSS upgrade. Full acceptance requires the player round below.
+Run admission locally on the gateway host as the account that can read the private gateway secret file. The host receives delivery capability and the two guests receive request capability. The preflight verifies DNS, trusted TLS, served asset bytes, the public admin denial and WSS upgrade. Run it from a machine on the intended tester network. Keep private gateway and authority state on their service hosts. `admission-check` verifies the exact account capabilities in SQLite. Browser authentication is the first acceptance gate.
 
 ### 5. Play, recover and revoke
 
@@ -192,53 +210,10 @@ Use the original trusted release record for both inputs. Refresh the three brows
 | Authority restart fails | Check the pinned `hc` version, matching hApp digest and local binding, port ownership and the retained Lair passphrase. |
 | Static rollback refuses a release | Verify the prior manifest SHA and publish history. The previous snapshot must share the original origins and exact hApp digest. |
 
-## External operator acceptance record
+## External acceptance
 
-**Status for the intended operator network is NOT EXECUTED.** Record each result with UTC time, release commit, manifest SHA-256 and public action identifiers. Keep role values, key material, session tokens and operator credentials off the shared record.
-
-| Gate | Evidence to collect on the intended HTTPS/WSS network | Status |
-| --- | --- | --- |
-| Three independent authenticated profiles | Three distinct public HWC keys and a healthy signed session for each profile on the configured gateway. | NOT EXECUTED |
-| Native-valid lobby and joins | Exact public lobby and join actions with corresponding valid native DHT evidence. Use the [native CI audit](../ci/installed-role/acceptance.mjs) as the reference. | NOT EXECUTED |
-| Host starts the round | Exact native RoleCommit and Playing phase, with the same commitment across profiles. | NOT EXECUTED |
-| Both guests decrypt their own role | Both pages show a verified own role. In each extension worker, record the public commitment from `HWC_EXTENSION_LOCAL_ENCRYPTED_ROLE_RECEIPT_VERIFIED`. | NOT EXECUTED |
-| Guest C isolation | In Guest C’s profile a cross-recipient `get_verified_browser_role` request with Guest B’s public key is denied by `PRIVATE_ROLE_ORIGIN_OR_PAYLOAD_DENIED`, while normal own-role retrieval succeeds. | NOT EXECUTED |
-| Align Engine Output | A crewmate submits the single supported task and shared progress reaches 1/1. | NOT EXECUTED |
-| Shared crew victory | All three profiles show **Ended · Crew wins** for the same round. | NOT EXECUTED |
-| Chromium restart | Close and reopen one retained profile before the task. Verify its public key, DNA, seat and recoverable round state. | NOT EXECUTED |
-| Revocation | Run `revoke` while the guest is connected. Confirm HWC loses the session and `admission-status` reports `allowed: false` and zero active sessions. | NOT EXECUTED |
-| Fresh reauthorization | Close the revoked profile. Re-admit it, confirm zero active sessions, then reopen and reconnect. Verify authenticated status and a new active session. | NOT EXECUTED |
-
-For the public action record, attach this listener in each game tab before creating the lobby. It logs only the action kind and its public hash. Preserve the resulting create, join and start identifiers with the acceptance results.
-
-```js
-window.addEventListener('imposter:action', ({detail: {kind, record}}) => {
-  const value = kind === 'start' ? record.role_commit : record.signed_action?.hashed?.hash;
-  const bytes = value?.length === undefined ? Object.values(value ?? {}) : value;
-  if (bytes.length !== 39) return;
-  const base64 = btoa(String.fromCharCode(...bytes));
-  console.info(kind, 'u' + base64.replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, ''));
-});
-```
-
-For the cross-recipient probe, use Guest C’s browser console on the approved game origin, replacing the placeholder with Guest B’s public key. Record only the denial.
-
-```js
-await window.holochain.callZome({
-  zome_name: 'game',
-  fn_name: 'get_verified_browser_role',
-  payload: {recipient: 'GUEST_B_PUBLIC_KEY'},
-});
-```
-
-For each authority, run `hc client call --port 33555 dump-op-timings "$dna_hash" --limit 2000` from the pinned Nix shell, then repeat on port `33557`. Set `dna_hash` to the verified manifest’s `game.dna_hash`. The pinned CI action-to-op diagnostic shows how to reconstruct op hashes from the public signed Create action using the pinned HWC hashing code. Match those hashes to authority rows with valid status, local validation and an integration timestamp. Keep local authority logs and unrelated DHT data outside the shared record. [Exact-action diagnostic](https://github.com/ConorTttttt/imposter-holochain/blob/f49b0dfcc9f8b86a3e2abcd48e6c13375c347ed5/ci/agent3-h2hc-kit/instrument_exact_lobby_op.py)
-
-Run the status check on the gateway host with the same configuration and verified release arguments. `active_sessions` counts credentials in the gateway store. Corroborate the live WSS connection in the browser setup page.
-
-```bash
-python3 "$rc/deploy.py" admission-status "${settings[@]}" "${distribution[@]}" --agent "$guest_b"
-```
+The intended operator network remains **NOT EXECUTED**. Follow the [ten-gate acceptance runbook](browser-alpha-acceptance.md) to initialize and verify the release-bound observation record. Preserve each result with its UTC time, public identities and exact public action hashes. The CI reports above cover their own environments.
 
 ## Supported gameplay
 
-RC1 supports three Chromium/HWC players, lobby creation and joining, one round, verified private host and guest roles, **Align Engine Output**, a shared native crew victory, and reattachment to the same player profile. The alpha leaves full-map play, additional tasks, killing, sabotage, meetings, voting, desktop interoperability and general public matchmaking outside the supported game.
+RC1 supports three Chromium/HWC players, lobby creation and joining, one round, verified private host and guest roles, **Align Engine Output**, a shared native crew victory, and reattachment to the same player profile. The native game publishes the role reveal at the end of the round. Keep role values out of operator evidence. The alpha leaves full-map play, additional tasks, killing, sabotage, meetings, voting, desktop interoperability and general public matchmaking outside the supported game.

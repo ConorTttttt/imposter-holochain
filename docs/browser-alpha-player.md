@@ -8,4 +8,4 @@
 
 If HWC is missing after reload, use the profile that loaded the extension. If admission is pending, confirm the public key with the operator and select **Reconnect**. If the page reports a different installed game or a checksum mismatch, share the exact error and return to the correct site and profile. For browser restart, reopen the same Chromium profile and the same setup link.
 
-Share the public player key and setup errors with the operator. Keep your role and Chromium profile data private.
+Share your public player key and the setup page’s error text with the operator. Keep your role, Chromium profile data and browser diagnostics private. During acceptance, keep the same profile and extension directory across restart and wait for the operator’s instructions before reconnecting after revocation.
