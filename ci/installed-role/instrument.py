@@ -63,6 +63,7 @@ Object.defineProperty(globalThis, "__imposterTryRoleCiphertext", {
       const message = error instanceof Error ? error.message : "";
       if (message === "forged remote caller signature") return "bad-signature";
       if (message === "no unique enabled installed HWC game cell") return "wrong-recipient-cell";
+      if (message === "wrong recipient, DNA or current RoleCommit") return "wrong-commitment";
       if (message === "unsolicited, stale or uncorrelated role delivery") return "uncorrelated";
       if (message === "stale or invalid role timestamp") return "expired";
       return "rejected";

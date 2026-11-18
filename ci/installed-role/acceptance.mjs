@@ -74,6 +74,8 @@ async function verifyRevocation(profile, page, agent) {
   const admin = process.env.H2HC_LINKER_ADMIN_SECRET;
   assert(linker && admin, 'Ephemeral gateway administration is required');
   const worker = await extensionWorker(profile);
+  const priorReceipt = await worker.evaluate(() => globalThis.__imposterRoleCiphertext());
+  assert(priorReceipt, 'Guest C had no genuine pre-revocation receipt');
   const pause = command => worker.evaluate(cmd => globalThis.__imposterPauseRoleDelivery(cmd), command);
   const configure = url => page.evaluate(linkerUrl =>
     window.holochain.configureNetwork({linkerUrl}), url);
@@ -114,6 +116,10 @@ async function verifyRevocation(profile, page, agent) {
     'Reauthorization missed the live stale-message window');
   await until(async () => await tryCiphertext(profile, pending.frame) === 'uncorrelated',
     'The resumed session did not reject the stale request correlation', 12000);
+  await until(async () => {
+    const frame = await worker.evaluate(() => globalThis.__imposterRoleCiphertext());
+    return frame && frame !== pending.frame && frame !== priorReceipt;
+  }, 'Reauthorization did not produce a fresh ciphertext receipt');
   await page.waitForFunction(() => document.querySelector('#my-role')?.textContent
     ?.startsWith('Your verified role:'), null, {timeout:120000});
 }
@@ -224,6 +230,12 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
     assert.equal(result, expected);
   };
   await deny('wrongRecipient', profiles[2], frame, 'wrong-recipient-cell');
+  // The foreign DNA was built and installed in the first passing run, 44340415458.
+  const foreignDNA = 'uhC0k10az8nyUQCFlZlXLVXTut2TsMWqcqIlfZn7Kkd58dQz2NzUI';
+  assert.notEqual(dna, foreignDNA);
+  const tampered = envelope => JSON.stringify({...delivery, envelope:{...delivery.envelope, ...envelope}});
+  await deny('wrongDNA', profiles[1], tampered({dna_hash:foreignDNA}), 'wrong-recipient-cell');
+  await deny('wrongRoleCommit', profiles[1], tampered({role_commit:joinB}), 'wrong-commitment');
   const signature = (delivery.signature[0] === 'A' ? 'B' : 'A') + delivery.signature.slice(1);
   await deny('forgedHostSignature', profiles[1], JSON.stringify({...delivery, signature}), 'bad-signature');
   await deny('duplicate', profiles[1], frame, 'uncorrelated');

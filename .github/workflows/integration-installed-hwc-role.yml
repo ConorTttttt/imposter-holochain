@@ -152,6 +152,10 @@ jobs:
             max-jobs = 2
             cores = 2
 
+      - name: Reject privileged requests from the installed extension popup
+        working-directory: hwc
+        run: node ../integration/compatibility/hwc-imposter-compatibility/private-role/installed-chromium-boundary.mjs
+
       - name: Resolve exactly pinned Imposter native Holochain build tooling
         shell: bash
         timeout-minutes: 28
