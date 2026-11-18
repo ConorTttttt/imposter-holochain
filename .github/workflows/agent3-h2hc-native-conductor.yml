@@ -130,11 +130,11 @@ jobs:
             npm run build:chrome --workspace @hwc/extension
             # Test-only bundle of the original pinned HWC hashOp/hashAction implementation,
             # not a modification to HWC, Imposter's WASM, or its native validators.
-            npx esbuild packages/core/src/hash/index.ts --bundle --platform=node --format=esm --outfile=../runtime-evidence/hwc-op-hash-native.mjs
+            npx esbuild packages/core/src/hash/index.ts --bundle --platform=node --format=cjs --outfile=../runtime-evidence/hwc-op-hash-native.cjs
           ) 2>&1 | tee runtime-evidence/hwc-build.log
           test -s hwc/packages/extension/dist-chrome/manifest.json
           test -s hwc/packages/extension/dist-chrome/background/index.js
-          node -e "import('./runtime-evidence/hwc-op-hash-native.mjs').then(m=>{if(typeof m.hashOp!=='function'||typeof m.hashAction!=='function')process.exit(1)})"
+          node -e "import('./runtime-evidence/hwc-op-hash-native.cjs').then(m=>{const n=m.default||m;if(typeof n.hashOp!=='function'||typeof n.hashAction!=='function')process.exit(1)})"
 
       - name: Install pinned native hc-spin 0.700.0 from Imposter package lock
         shell: bash
