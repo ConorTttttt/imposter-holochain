@@ -127,13 +127,152 @@ jobs:
           path: acceptance-evidence/preflight.json
           retention-days: 14
           if-no-files-found: ignore
+  native-recipient-attestation:
+    name: Two native 0.7 conductors - signed key enrollment and DHT attestation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 64983e13f849b342aff391add08911970de0c32a
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert exact native recipient-key source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 64983e13f849b342aff391add08911970de0c32a
+          grep -Fq 'current_unproven: true' dnas/game/zomes/coordinator/game/src/recipient_keys.rs
+          grep -Fq 'IMPOSTER-H2HC-ROLE-KEY' dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+      - name: Compile real game WASM and original key-attestation transcript
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          nix -L develop --no-write-lock-file --command bash -euo pipefail -c '
+            cargo build --locked --release --target wasm32-unknown-unknown -p game_integrity -p game
+            hc dna pack dnas/game/workdir
+            test -s dnas/game/workdir/game.dna
+            cargo test --locked -p game_integrity recipient_keys::tests -- --nocapture
+          '
+      - name: Independent native signing, lookup, rotation and rejected foreign author
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          nix -L develop --no-write-lock-file --command cargo test --locked -p game_tests --test full_round recipient_key_native_two_conductors_attest_discover_and_rotate -- --nocapture > "$RUNNER_TEMP/native-enrollment.log" 2>&1 || {
+            echo "::error::Native enrollment two-conductor test failed"
+            exit 1
+          }
+          for gate in RECIPIENT_ATTESTATION_NATIVE_VALID RECIPIENT_ATTESTATION_HOST_LOOKUP RECIPIENT_ATTESTATION_IMPERSONATION_DENIED RECIPIENT_ATTESTATION_STALE_FLOOR_DENIED; do
+            grep -Fq "$gate=PASS" "$RUNNER_TEMP/native-enrollment.log"
+          done
+          grep -Fq 'RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN' "$RUNNER_TEMP/native-enrollment.log"
+          mkdir -p acceptance-evidence
+          echo '{"scope":"NATIVE_TWO_CONDUCTOR_PUBLIC_ENROLLMENT","source":"64983e13f849b342aff391add08911970de0c32a","native_validation":"PASS","attested_lookup":"PASS","foreign_agent_denial":"PASS","stale_floor_denial":"PASS","global_latest_key":"UNPROVEN","browser_receipt":"BLOCKED"}' > acceptance-evidence/native.json
+          echo 'NATIVE_RECIPIENT_ENROLLMENT=PASS; GLOBAL_FRESHNESS=UNPROVEN'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent3-role-native-attestation-${{ github.run_id }}
+          path: acceptance-evidence/native.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  installed-hwc-staging:
+    name: Installed HWC Chrome build with restricted role-handler DENY ONLY
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: d9abab04559cb059e0de6c3499ed1915943fe74b
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Assert immutable HWC security patch and deny-only installed receiver
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d9abab04559cb059e0de6c3499ed1915943fe74b
+          test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --write
+          grep -Fq NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE hwc/packages/extension/src/background/index.ts
+          grep -Fq PRIVATE_ROLE_SENDER_REJECTED hwc/packages/extension/src/background/index.ts
+          grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'Unauthenticated remote provenance' hwc/packages/core/src/ribosome/index.ts
+          git -C hwc diff --check
+      - name: Typecheck HWC runtime and build real Chrome extension
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc
+          (cd hwc &&
+            npx tsc -p packages/shared/tsconfig.json &&
+            npx tsc -p packages/lair/tsconfig.json &&
+            npx tsc -p packages/core/tsconfig.json &&
+            npx tsc --noEmit -p packages/extension/tsconfig.json &&
+            npm run build:chrome --workspace @hwc/extension)
+          test -s hwc/packages/extension/dist-chrome/manifest.json
+          test -s hwc/packages/extension/dist-chrome/background/index.js
+          mkdir -p acceptance-evidence
+          echo '{"scope":"REAL_HWC_CHROME_BUILD","agent2_source":"d9abab04559cb059e0de6c3499ed1915943fe74b","restricted_role_frames":"PASS_DENY_ONLY","trusted_native_role_bridge":"BLOCKED","generic_remote_calls":"DISABLED"}' > acceptance-evidence/hwc.json
+          echo 'REAL_HWC_RESTRICTED_ROLE_FRAME_BUILD=PASS_DENY_ONLY; TRUSTED_ROLE_BRIDGE=BLOCKED'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent3-role-hwc-staging-${{ github.run_id }}
+          path: acceptance-evidence/hwc.json
+          retention-days: 14
+          if-no-files-found: ignore
+
   strict-native-e2e:
-    needs: pinned-gateway-and-crypto
-    name: Genuine 3-browser delivery acceptance (explicitly blocked)
-    if: github.event_name == 'workflow_dispatch' && inputs.require_encrypted_delivery == true
+    needs: [pinned-gateway-and-crypto, native-recipient-attestation, installed-hwc-staging]
+    if: always()
+    name: Genuine installed HWC role receipt (strict, BLOCKED is CI failure)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: |
-          echo "::error::E2E_BLOCKED: Agent 4 native key attestation and Agent 2 installed-cell privileged receiver/live 3-Chromium test driver are unavailable. Never treat role_queued_v1 as receipt."
+      - name: Strictly reject missing installed role receipt and key freshness
+        env:
+          GATEWAY_CRYPTO: ${{ needs.pinned-gateway-and-crypto.result }}
+          NATIVE_ENROLLMENT: ${{ needs.native-recipient-attestation.result }}
+          HWC_STAGING: ${{ needs.installed-hwc-staging.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p acceptance-evidence
+          echo '{"scope":"THREE_INSTALLED_HWC_ROLE_ACCEPTANCE","status":"BLOCKED","gateway_queued_is_receipt":false,"guest_b_accepted":false,"guest_c_denial_executed":false,"durable_replay_executed":false,"fresh_key_confirmed":false,"native_round_authority_installed":false,"private_material_archived":false}' > acceptance-evidence/strict.json
+          echo "COMPONENT_STATUS: gateway=$GATEWAY_CRYPTO; native=$NATIVE_ENROLLMENT; hwc=$HWC_STAGING"
+          echo "::error::E2E_BLOCKED: Agent 2 HWC adapter intentionally returns NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE. Agent 4 DHT view is current_unproven:true. No installed-cell role receipt or native current-round bridge exists at the pinned source revisions."
+          echo 'role_queued_v1 is NOT a guest result; refusing synthetic PASS.'
           exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent3-role-strict-e2e-${{ github.run_id }}
+          path: acceptance-evidence/strict.json
+          retention-days: 14
+          if-no-files-found: ignore
