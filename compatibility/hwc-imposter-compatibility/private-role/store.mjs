@@ -1,6 +1,7 @@
 /** Extension-origin-only IndexedDB: per-(exact DNA, Lair agent) key and replay ledger.
  * No clearing on revocation, restart or reauthorization. */
 import {createRecipientKey,rawPublicKey} from './hpke.mjs';
+import {verifyKeyAttestation} from './wire.mjs';
 const hex=a=>{if(!(a instanceof Uint8Array))throw Error('byte array required');return Array.from(a,b=>b.toString(16).padStart(2,'0')).join('');};
 const hash=(a,label)=>{if(!(a instanceof Uint8Array)||a.length!==39)throw Error(label+' must be full 39-byte hash');return hex(a);};
 const key=x=>`${hash(x.dna,'dna')}:${hash(x.agent,'agent')}`;
@@ -30,6 +31,22 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      s.put(value);
      await finished;
      return value;
+   },
+   /** Persist actual Lair-signed attestation only for the currently held
+    * private key and exact installed cell. Rotation invalidates older attestations.
+    * Does not publish, expose secrets, or establish remote-key discovery.
+    */
+   async installCellAttestation(dna,agent,attestation,{now=Date.now()}={}){
+     await verifyKeyAttestation(attestation,{dna,agent,now});
+     const cell=key({dna,agent});
+     const t=db.transaction('cells','readwrite',{durability:'strict'}),finished=done(t);
+     const s=t.objectStore('cells'),stored=await req(s.get(cell));
+     const equal=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
+     if(!stored||stored.epoch!==attestation.epoch||!equal(stored.keyId,attestation.keyId)||!equal(stored.publicKey,attestation.publicKey)||!stored.privateKey||stored.privateKey.extractable){
+       t.abort();try{await finished;}catch{}throw Error('signed attestation does not match current non-extractable cell key');
+     }
+     s.put({...stored,attestation});await finished;
+     return true;
    },
    async reserve({dna,recipient,sender,commit,messageId}){
      if(!(messageId instanceof Uint8Array)||messageId.length!==16)throw Error('invalid replay message id');
