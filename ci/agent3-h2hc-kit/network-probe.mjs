@@ -185,9 +185,27 @@ async function main() {
     assert.equal(wrongAuthor.body.queued,0);
     assert.equal(wrongAuthor.body.failed,1);
     record('forged-and-wrong-author-rejected',{result:'PASS'});
-    authA.peer.send({type:'send_remote_signal',dna_hash:fixture.dna,signals:[]});
-    assert.equal((await authA.peer.next(['error','signal'])).type,'error');
-    record('remote-signals-disabled',{result:'PASS'});
+    // Targeted private-role NEGATIVE contract. A signed H2HC session is not
+    // authority to fetch another seat's role or invoke a remote zome call.
+    // Positive encrypted role delivery is intentionally NOT implemented here.
+    const legacyRoleRoute = '/api/' + fixture.dna + '/game/provide_role';
+    for (const token of [authA.token, authB.token]) {
+      assert.equal((await http(legacyRoleRoute, {headers:tokenHeader(token)})).status, 404,
+        'no authenticated legacy role read');
+      assert.equal((await http(legacyRoleRoute, {
+        method:'POST',
+        headers:{...tokenHeader(token), 'content-type':'application/json'},
+        body:'{}'
+      })).status, 404, 'no authenticated legacy remote role call');
+    }
+    record('private-role-legacy-remote-reads-denied',{
+      result:'PASS',agents_checked:2,methods:['GET','POST'],status:404
+    });
+    for (const conn of [authA, authB]) {
+      conn.peer.send({type:'send_remote_signal',dna_hash:fixture.dna,signals:[]});
+      assert.equal((await conn.peer.next(['error','signal'])).type,'error');
+    }
+    record('remote-signals-disabled',{result:'PASS',agents_checked:2});
     // This is NOT a native authority proof: null and timeout are NOT acceptance.
     const get = await http('/dht/' + fixture.dna + '/record/' + a.action_hash,
       {headers:tokenHeader(authA.token)});
