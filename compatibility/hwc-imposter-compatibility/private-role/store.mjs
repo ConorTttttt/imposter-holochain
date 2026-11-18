@@ -9,12 +9,59 @@ const req=p=>new Promise((resolve,reject)=>{p.onsuccess=()=>resolve(p.result);p.
 const done=t=>new Promise((resolve,reject)=>{t.oncomplete=resolve;t.onabort=()=>reject(t.error??Error('IndexedDB transaction aborted'));t.onerror=()=>reject(t.error??Error('IndexedDB transaction failed'));});
 export async function openRoleStore(name='hwc-imposter-private-role-v1'){
  if(typeof indexedDB==='undefined')throw Error('IndexedDB unavailable; private role transport disabled');
- const connection=indexedDB.open(name,2);
- connection.onupgradeneeded=()=>{const d=connection.result;if(!d.objectStoreNames.contains('cells'))d.createObjectStore('cells',{keyPath:'cell'});if(!d.objectStoreNames.contains('replay'))d.createObjectStore('replay',{keyPath:'id'});if(!d.objectStoreNames.contains('trusted'))d.createObjectStore('trusted',{keyPath:'cell'});};
+ const connection=indexedDB.open(name,3);
+ connection.onupgradeneeded=()=>{const d=connection.result;if(!d.objectStoreNames.contains('cells'))d.createObjectStore('cells',{keyPath:'cell'});if(!d.objectStoreNames.contains('replay'))d.createObjectStore('replay',{keyPath:'id'});if(!d.objectStoreNames.contains('trusted'))d.createObjectStore('trusted',{keyPath:'cell'});if(!d.objectStoreNames.contains('pins'))d.createObjectStore('pins',{keyPath:'cell'});};
  const db=await req(connection);
  db.onversionchange=()=>db.close();
  return {
    close(){db.close();},
+   /** Only privileged native action results may be passed here. An untrusted
+    * caller's URL, lobby code, network signal, or truthy validation flag
+    * does not authorize creating this irreversible action pin.
+    */
+   async pinNativeLobby(dna,agent,lobby){
+     const id=key({dna,agent});
+     if(!(lobby instanceof Uint8Array)||lobby.length!==39||
+       lobby[0]!==0x84||lobby[1]!==0x29||lobby[2]!==0x24)
+       throw Error('native Lobby action must be a 39-byte ActionHash');
+     const t=db.transaction('pins','readwrite',{durability:'strict'}),finished=done(t);
+     const s=t.objectStore('pins'),prior=await req(s.get(id));
+     if(prior && hex(prior.lobby)!==hex(lobby)){
+       t.abort();try{await finished;}catch{}
+       throw Error('protected Lobby action changed');
+     }
+     s.put({...prior,cell:id,lobby});await finished;
+     return true;
+   },
+   async getPinnedLobby(dna,agent){
+     const t=db.transaction('pins','readonly'),v=await req(t.objectStore('pins').get(key({dna,agent})));
+     return v?.lobby??null;
+   },
+   /** First stable native Valid RoleCommit observation becomes a durable,
+    * irreversible per-cell pin. An already committed round cannot silently
+    * switch to a different observed DHT candidate after Chromium restart.
+    */
+   async pinTrustedRoleCommit(dna,agent,lobby,commit){
+     const id=key({dna,agent});
+     if(!(lobby instanceof Uint8Array)||lobby.length!==39||
+       lobby[0]!==0x84||lobby[1]!==0x29||lobby[2]!==0x24||
+       !(commit instanceof Uint8Array)||commit.length!==39||
+       commit[0]!==0x84||commit[1]!==0x29||commit[2]!==0x24)
+       throw Error('invalid native action identity');
+     const t=db.transaction('pins','readwrite',{durability:'strict'}),finished=done(t);
+     const s=t.objectStore('pins'),prior=await req(s.get(id));
+     if(!prior?.lobby||hex(prior.lobby)!==hex(lobby)||
+       (prior.roleCommit && hex(prior.roleCommit)!==hex(commit))){
+       t.abort();try{await finished;}catch{}
+       throw Error('protected Lobby or RoleCommit action changed or missing');
+     }
+     s.put({...prior,roleCommit:commit});await finished;
+     return true;
+   },
+   async getPinnedRoleCommit(dna,agent){
+     const t=db.transaction('pins','readonly'),v=await req(t.objectStore('pins').get(key({dna,agent})));
+     return v?.roleCommit??null;
+   },
    async getCell(dna,agent){const t=db.transaction('cells','readonly'),v=await req(t.objectStore('cells').get(key({dna,agent})));return v??null;},
    async rotateCell(dna,agent,epoch){
      if(!Number.isSafeInteger(epoch)||epoch<1)throw Error('invalid epoch');
