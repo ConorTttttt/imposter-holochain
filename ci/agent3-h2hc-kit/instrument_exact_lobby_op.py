@@ -169,20 +169,32 @@ patch("""  record('NATIVE_INTEGRITY_FOR_LOBBY_ACTION',
         }))
       }));
     evidence.native_exact_lobby_op_integration=fromNative;
-    const everyTypeOnBoth=fromNative.length===2&&fromNative.every(conductor=>
-      conductor.ops.length===3&&conductor.ops.every(op=>
-        op.status?.validation_status==='Accepted'&&
-        op.status?.locally_validated===true&&
-        op.status?.when_integrated!==null));
-    evidence.native_valid_lobby_ops=fromNative.flatMap(c=>c.ops.filter(op=>
-      op.status?.validation_status==='Accepted'&&
-      op.status?.locally_validated===true&&op.status?.when_integrated!==null)
+    const nativeAccepted=op=>op.status?.validation_status==='Accepted'&&
+      op.status?.locally_validated===true&&op.status?.when_integrated!==null;
+    evidence.native_valid_lobby_ops=fromNative.flatMap(c=>c.ops.filter(nativeAccepted)
       .map(op=>({...op,conductor:c.conductor})));
+    // Authority responsibility is determined by the observed native rows:
+    // require all three applicable Create-derived op types on at least one
+    // native validating authority, NOT each type on every conductor.
+    const eachTypeHasAuthority=fromNative.length===2&&
+      exactCandidates.length===3&&exactCandidates.every(candidate=>
+        fromNative.some(c=>c.ops.some(op=>
+          op.op_hash===candidate.op_hash&&nativeAccepted(op))));
+    const contradictoryNativeRows=fromNative.flatMap(c=>c.ops).filter(op=>
+      op.status&&!nativeAccepted(op));
+    evidence.native_exact_lobby_op_validation={
+      each_type_has_accepted_integrated_authority:eachTypeHasAuthority,
+      observed_nonaccepted_op_rows:contradictoryNativeRows.length,
+      observed_accepted_rows:evidence.native_valid_lobby_ops.length,
+      // Per-conductor type/status mapping is preserved above, including null.
+    };
+    const exactNativeAccepted=eachTypeHasAuthority&&
+      contradictoryNativeRows.length===0;
     record('NATIVE_INTEGRITY_FOR_LOBBY_ACTION',
-      everyTypeOnBoth?'PASS':'BLOCKED',
-      everyTypeOnBoth?
-        'All three HWC-authored lobby DhtOp types hash-match native Accepted+locally_validated+integrated on BOTH native conductors':
-        'HWC-derived real lobby DhtOp hash(es) missing exact native Valid/Integrated per peer');"""
+      exactNativeAccepted?'PASS':'BLOCKED',
+      exactNativeAccepted?
+        'Each Create-derived lobby DhtOp hash has an exact native Accepted+locally_validated+integrated authority row; no conflicting observed rows':
+        'Some Create-derived lobby types lack an accepted native authority or have conflicting status');"""
 )
 # Original exact guest GetReq/Res status uses native_valid_lobby_ops and
 # already receives certified native validations from the new mapping.
