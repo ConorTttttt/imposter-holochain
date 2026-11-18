@@ -7,6 +7,9 @@ on:
       - 'ci/agent3-h2hc-kit/runtime-fixtures.rs'
       - 'ci/agent3-h2hc-kit/network-probe.mjs'
       - 'ci/agent3-h2hc-kit/apply_revocation_patch.py'
+      - 'ci/agent3-h2hc-kit/apply_private_role_relay.py'
+      - 'ci/agent3-h2hc-kit/private_role.rs'
+      - 'ci/agent3-h2hc-kit/network-role-probe.mjs'
       - 'ci/agent3-h2hc-kit/secure.env.example'
       - 'ci/agent3-h2hc-kit/RUNTIME_RUNBOOK.md'
   workflow_dispatch:
@@ -138,6 +141,18 @@ jobs:
           git diff --check
 
 
+      - name: Apply restricted role relay, format and pin the exact generated Rust tree
+        run: |
+          set -euo pipefail
+          python3 ci/agent3-h2hc-kit/apply_private_role_relay.py --repo "$RUNNER_TEMP/h2hc"
+          cd "$RUNNER_TEMP/h2hc"
+          cargo fmt
+          git add src
+          git diff --cached --check
+          git commit -m "security: bounded opaque role-request and role-delivery relay"
+          echo "Private relay H2HC SHA: $(git rev-parse HEAD)"
+          git status --porcelain
+
       - name: Install Node 22 for real WebSocket client
         uses: actions/setup-node@v4
         with:
@@ -212,13 +227,14 @@ jobs:
           if test "$ready" -ne 1; then tail -90 "$RUNNER_TEMP/h2hc-server.log"; exit 1; fi
           echo "PASS: real H2HC binary started with authentication and fallback disabled"
           node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/network-probe.mjs" | tee "$RUNNER_TEMP/h2hc-network-probe.log"
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/network-role-probe.mjs" | tee "$RUNNER_TEMP/h2hc-role-probe.log"
 
       - name: Collect runtime evidence without private test keys
         if: always()
         run: |
           set -euo pipefail
           mkdir -p ci-evidence/runtime
-          for entry in h2hc-build.log h2hc-server.log h2hc-network-probe.log startup-no-auth.log startup-unsafe-fallback.log; do
+          for entry in h2hc-build.log h2hc-server.log h2hc-network-probe.log h2hc-role-probe.log startup-no-auth.log startup-unsafe-fallback.log; do
             if test -f "$RUNNER_TEMP/$entry"; then cp "$RUNNER_TEMP/$entry" "ci-evidence/runtime/$entry"; fi
           done
           # DO NOT upload $RUNNER_TEMP/agent3-runtime-fixtures.json or the H2HC secret or identity key.
