@@ -9,6 +9,7 @@ on:
       - 'ci/agent3-h2hc-kit/instrument_negative_validation.py'
       - 'ci/agent3-h2hc-kit/instrument_native_admin.py'
       - 'ci/agent3-h2hc-kit/instrument_exact_lobby_op.py'
+      - 'ci/agent3-h2hc-kit/fixtures/**'
       - 'ci/agent3-h2hc-kit/audit_native_dht.py'
   workflow_dispatch:
 
