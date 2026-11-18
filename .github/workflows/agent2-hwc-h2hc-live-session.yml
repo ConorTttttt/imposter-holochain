@@ -82,6 +82,92 @@ jobs:
             "   must(net?.hasSession===true, 'HWC did not reflect live H2HC auth session in public status');\n"
             "   must(!Object.hasOwn(net,'sessionToken')&&!Object.hasOwn(net,'token'), 'Bearer leaked into status API');\n"
             +old,1)
+          # Extend the live browser run without changing the accepted HWC patch.
+          # This is a real Chromium process restart plus controlled endpoint
+          # disruption; endpoint disruption is NOT a measured H2HC token expiry.
+          lifecycle = r"""
+ // Agent2 lifecycle acceptance (ephemeral Lair profile; no bearer is read).
+ const lifecycleStatus = async () => page.evaluate(async () => ({
+   connection: await window.holochain.getConnectionStatus(),
+   network: await window.holochain.getNetworkStatus()
+ }));
+ const assertPublicStatus = (s, expected) => {
+   must(s.network?.hasSession === expected,
+     'Live HWC session reporting disagrees with expected state: ' + expected);
+   const publicData = JSON.stringify(s);
+   must(!/sessionToken|accessToken|refreshToken|bearer|authorization/i.test(publicData),
+     'Credential-shaped field exposed through public HWC status');
+ };
+ const waitForSession = async expected => {
+   let last;
+   for (let i=0;i<100;i++) {
+     last=await lifecycleStatus();
+     if (last.network?.hasSession===expected &&
+         (expected!==true || last.connection?.authenticated===true)) {
+       assertPublicStatus(last,expected);
+       return;
+     }
+     await new Promise(r=>setTimeout(r,500));
+   }
+   throw Error('Timed out waiting for HWC session transition to '+expected+
+     '; observed only booleans '+JSON.stringify({
+       authenticated:last?.connection?.authenticated,
+       hasSession:last?.network?.hasSession,
+       wsHealthy:last?.connection?.wsHealthy
+     }));
+ };
+ await step('AGENT2_CONTROLLED_ENDPOINT_LOSS_INVALIDATES_SESSION',async()=>{
+   // Deliberately changes the configured endpoint: not an expired bearer test.
+   await page.evaluate(async()=>window.holochain.configureNetwork({
+     linkerUrl:'http://127.0.0.1:1'
+   }));
+   await waitForSession(false);
+   evidence.agent2_endpoint_loss='SIMULATED_ENDPOINT_DISRUPTION_NOT_TOKEN_EXPIRY';
+ });
+ await step('AGENT2_LIVE_REAUTHENTICATION',async()=>{
+   await page.evaluate(async(url)=>window.holochain.configureNetwork({
+     linkerUrl:url
+   }),process.env.H2HC_BASE_URL);
+   await waitForSession(true);
+ });
+ await step('AGENT2_FULL_CHROMIUM_RESTART_AND_FRESH_AUTH',async()=>{
+   await context.close();
+   context=await chromium.launchPersistentContext(PROFILE,{
+     headless:false,viewport:{width:1100,height:800},
+     args:['--disable-extensions-except='+ext,'--load-extension='+ext,
+       '--no-first-run','--disable-default-apps','--no-sandbox',
+       '--disable-dev-shm-usage']
+   });
+   page=context.pages()[0]||await context.newPage();
+   await page.goto(ORIGIN,{waitUntil:'domcontentloaded'});
+   await page.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),
+     {timeout:45000});
+   const after=await page.evaluate(async()=>{
+     const hc=window.holochain;
+     await hc.connect();
+     const k=new Uint8Array(hc.myPubKey||[]);
+     return 'u'+btoa(String.fromCharCode(...k)).replace(/\+/g,'-')
+       .replace(/\//g,'_').replace(/=+$/,'');
+   });
+   must(after===host,'Lair identity changed on real Chromium process restart');
+   await page.evaluate(async(url)=>window.holochain.configureNetwork({
+     linkerUrl:url
+   }),process.env.H2HC_BASE_URL);
+   await waitForSession(true);
+   evidence.agent2_chromium_restart='REAL_PROCESS_RELAUNCH_SAME_EPHEMERAL_PROFILE';
+ });
+ record('AGENT2_TRUE_TOKEN_EXPIRY','NOT RUN',
+   'No tested H2HC short-TTL or server-side token revocation control');
+ record('AGENT2_TWO_INDEPENDENT_LAIR_SESSIONS','NOT RUN',
+   'Requires distinct authorized second profile and cross-bearer rejection');
+ record('AGENT2_FOREIGN_DNA_BROWSER_SIGNING','NOT RUN',
+   'Source-level negative tests passed; live browser negative not yet exercised');
+ """
+          anchor=" record('UNAUTHORIZED_GUEST_REJECTED','NOT RUN','Separate independent guest profile and integrity rejection needed');"
+          assert code.count(anchor)==1, 'Lifecycle insertion point changed'
+          code=code.replace(' const page=context.pages()[0]||await context.newPage();',
+                            ' let page=context.pages()[0]||await context.newPage();',1)
+          code=code.replace(anchor,lifecycle+'\n'+anchor,1)
           bridge.write_text(code)
           PY
           mkdir -p runtime-evidence
