@@ -330,3 +330,26 @@ Use only a later full-green run with signed epoch for this candidate.
 - **No receiver acceptance claimed.** Node independent decryption used deterministic fixture X25519 keys, *not* the live HWC extension or Lair signer; no native coordinator role leaf/proof test, durable browser replay, or real guest denial has run against this revision.
 
 Agent 2 can extract with GitHub Actions artifact download (no auth credentials in fixture), then import the JSON as a test fixture in its `private-role` suite. Any change to signed bytes or normative fields requires a newly regenerated artifact and fresh written approval by both agents.
+
+
+### Durable repository copy of the same fixture
+
+A byte-exact copy of the successful JSON (SHA256
+`065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`)
+is committed as
+`ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64`.
+It is gzip-compressed, RFC4648 base64 text only to keep the repository copy
+compact. It is *not a secret, a bearer or a deployable key*. Decode with:
+
+```bash
+base64 --decode ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64 | gzip -dc > role-public-vectors.json
+echo '065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4  role-public-vectors.json' | sha256sum -c -
+node ci/agent3-h2hc-kit/verify-role-vectors.mjs ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64
+```
+
+Or use the Node test importer directly:
+`JSON.parse(gunzipSync(Buffer.from(readFileSync(path,'utf8').replace(/\\s/g,''),'base64')).toString('utf8'))`
+(with `gunzipSync` from `node:zlib`). CI compares the *exact decoded
+bytes* of this committed fixture to newly generated native-Holochain/Python
+vectors and verifies both representations. A new fixture implies a new
+contract-review cycle, not an implicit v1 freeze.
