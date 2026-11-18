@@ -7,6 +7,8 @@ on:
       - 'ci/agent3-h2hc-kit/apply_revocation_patch.py'
       - 'ci/agent3-h2hc-kit/apply_private_role_relay.py'
       - 'ci/agent3-h2hc-kit/private_role.rs'
+      - 'ci/agent3-h2hc-kit/native-role-vectors.rs'
+      - 'ci/agent3-h2hc-kit/generate_role_vectors.py'
       - 'ci/agent3-h2hc-kit/network-role-probe.mjs'
   workflow_dispatch:
 
@@ -166,6 +168,22 @@ jobs:
         run: |
           set -o pipefail
           cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee "$RUNNER_TEMP/h2hc-clippy.log"
+
+      - name: Generate deterministic RFC9180 HPKE vectors and verify with native Holochain 0.7 Rust
+        working-directory: ${{ runner.temp }}/h2hc
+        run: |
+          set -euo pipefail
+          mkdir -p examples "$GITHUB_WORKSPACE/ci-evidence"
+          cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/native-role-vectors.rs" examples/agent3_role_vectors.rs
+          cargo fmt --check
+          cargo run --locked --example agent3_role_vectors -- --hashes > "$RUNNER_TEMP/role-public-hashes.json"
+          python3 -m venv "$RUNNER_TEMP/role-vector-venv"
+          "$RUNNER_TEMP/role-vector-venv/bin/pip" install -q cryptography==46.0.4
+          "$RUNNER_TEMP/role-vector-venv/bin/python" "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/generate_role_vectors.py" "$RUNNER_TEMP/role-public-hashes.json" "$RUNNER_TEMP/role-public-vectors.json"
+          cargo run --locked --example agent3_role_vectors -- "$RUNNER_TEMP/role-public-vectors.json"
+          cargo clippy --locked --example agent3_role_vectors -- -D warnings
+          cp "$RUNNER_TEMP/role-public-vectors.json" "$GITHUB_WORKSPACE/ci-evidence/role-public-vectors.json"
+          echo "HPKE_ROLE_VECTORS=PASS"
 
       - name: Collect source commits and final Git diff
         if: always()
