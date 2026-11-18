@@ -16,7 +16,7 @@ const sha=b=>createHash('sha256').update(b).digest('hex');
 const clear=new TextEncoder().encode('synthetic-not-a-game-role');
 const standardFrame=c=>({type:c.operation,envelope:{
  version:1,domain:WIRE_DOMAIN,dna_hash:fixture.dna,sender_agent:fixture[c.sender],recipient_agent:fixture[c.recipient],
- role_commit:fixture.commit,seat:1,recipient_key_id:'11'.repeat(16),message_id:c.message_id,
+ role_commit:fixture.commit,seat:1,recipient_key_id:c.key_id,recipient_key_epoch:c.epoch,message_id:c.message_id,
  created_at_ms:1700000000000,expires_at_ms:1700000030000,in_reply_to:c.in_reply_to,
  hpke_enc:c.enc,ciphertext:c.ciphertext},signature:c.signature});
 const pkcs8=(prefix,seed)=>Buffer.concat([Buffer.from(prefix,'hex'),Buffer.alloc(32,seed)]);
@@ -46,21 +46,22 @@ test('both native Holochain role request/delivery preimages, AAD, and exact Ed25
   assert.equal(await internalsForTests.verify(packet.signature,packet.sender,internalsForTests.roleTranscript(changed)),false,'operation substitution accepted');
   assert.equal(await internalsForTests.verify(new Uint8Array(64),packet.sender,internalsForTests.roleTranscript(packet)),false);
   assert.notEqual(sha(internalsForTests.roleTranscript({...packet,seat:2})),sha(internalsForTests.roleTranscript(packet)));
+  assert.equal(await internalsForTests.verify(packet.signature,packet.sender,internalsForTests.roleTranscript({...packet,keyEpoch:packet.keyEpoch+1})),false,'signed recipient epoch substitution accepted');
   assert.throws(()=>fromRoleFrame({...standardFrame(c),envelope:{...standardFrame(c).envelope,dna_hash:fixture.guest}}),/dna HoloHash prefix/);
   assert.throws(()=>fromRoleFrame({...standardFrame(c),envelope:{...standardFrame(c).envelope,domain:'imposter-hwc/v1'}}),/domain/);
  }
 });
 test('two native Holochain signed recipient-key attestations, epoch/DNA/expiry rejection',async()=>{
  for(const a of fixture.attestations){
-  const att={dna:fromHash(fixture.dna),agent:fromHash(fixture[a.agent]),keyId:new Uint8Array(16).fill(0x11),
-   publicKey:b64(a.recipientPublicKey),epoch:1,notBefore:1699999000000,notAfter:1700000099999,signature:b64(a.signature)};
+  const att={dna:fromHash(fixture.dna),agent:fromHash(fixture[a.agent]),keyId:Uint8Array.from(Buffer.from(a.key_id,'hex')),
+   publicKey:b64(a.recipientPublicKey),epoch:a.epoch,notBefore:1699999000000,notAfter:1700000099999,signature:b64(a.signature)};
   assert.equal(hex(internalsForTests.keyTranscript(att)),a.signed_bytes_hex,'key field order');
   assert.equal(await verifyKeyAttestation(att,{dna:att.dna,agent:att.agent,now:1700000000000}),true,'native attestation Ed25519');
   await assert.rejects(verifyKeyAttestation(att,{dna:att.dna,agent:att.agent,now:Date.now()}),/expired/);
-  await assert.rejects(verifyKeyAttestation(att,{dna:att.dna,agent:att.agent,minEpoch:2,now:1700000000000}),/old key epoch/);
+  await assert.rejects(verifyKeyAttestation(att,{dna:att.dna,agent:att.agent,minEpoch:a.epoch+1,now:1700000000000}),/old key epoch/);
   await assert.rejects(verifyKeyAttestation(att,{dna:fromHash(fixture.dna),agent:fromHash(fixture[a.agent==='host'?'guest':'host']),now:1700000000000}),/wrong attested cell/);
   await assert.rejects(verifyKeyAttestation({...att,publicKey:Uint8Array.from(att.publicKey,(v,i)=>i===0?v^1:v)},{dna:att.dna,agent:att.agent,now:1700000000000}),/forged/);
-  await assert.rejects(verifyKeyAttestation({...att,epoch:2},{dna:att.dna,agent:att.agent,now:1700000000000}),/forged/);
+  await assert.rejects(verifyKeyAttestation({...att,epoch:a.epoch+1},{dna:att.dna,agent:att.agent,now:1700000000000}),/forged/);
  }
 });
 test('byte-for-byte native HPKE encapsulation, ciphertext, plaintext and AAD',async()=>{
@@ -89,6 +90,8 @@ test('wire limits, timestamp windows and malformed reply/IDs fail closed',()=>{
  assert.throws(()=>fromRoleFrame({...f,envelope:{...f.envelope,hpke_enc:f.envelope.hpke_enc.replace(/=$/,'A')}}),/base64|enc length/);
  assert.throws(()=>fromRoleFrame({...f,envelope:{...f.envelope,in_reply_to:'bad'}}),/in_reply_to/);
  assert.throws(()=>fromRoleFrame({...f,envelope:{...f.envelope,seat:65536}}),/u16/);
+ assert.throws(()=>fromRoleFrame({...f,envelope:{...f.envelope,recipient_key_epoch:0}}),/epoch/);
+ assert.throws(()=>fromRoleFrame({...f,envelope:{...f.envelope,recipient_key_epoch:Number.MAX_SAFE_INTEGER+1}}),/epoch/);
  assert.throws(()=>internalsForTests.fresh({...valid,expiresAt:valid.createdAt+60001},valid.createdAt),/stale/);
  assert.throws(()=>internalsForTests.fresh({...valid,createdAt:valid.createdAt+30001},valid.createdAt),/stale/);
  assert.throws(()=>internalsForTests.fresh(valid,Date.now()),/stale/,'historical fixture must not be live');
