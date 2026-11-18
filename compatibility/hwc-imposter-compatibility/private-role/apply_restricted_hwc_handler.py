@@ -93,7 +93,8 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
           log.debug(`Agent registered: ${message.agent_pubkey} for ${message.dna_hash}`);
           if (this.isConnected() && this.registrations.some(r =>
               r.dna_hash === message.dna_hash &&
-              r.agent_pubkey === message.agent_pubkey)) {
+              r.agent_pubkey === message.agent_pubkey) &&
+              this.authenticatedAgent === message.agent_pubkey) {
             this.restrictedRoleRegistrations.add(message.dna_hash + ':' + message.agent_pubkey);
           }
           break;''')
@@ -104,13 +105,19 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
           this.restrictedRoleRegistrations.delete(message.dna_hash + ':' + message.agent_pubkey);
           break;''')
     edit(core, '''    this.authenticated = true;
+    this.authenticatedAgent = this.pendingAuthAgent;
     this.pendingAuthAgent = null;''', '''    this.authenticated = true;
+    this.authenticatedAgent = this.pendingAuthAgent;
     this.pendingAuthAgent = null;
     this.restrictedRoleRegistrations.clear();
     this.restrictedRoleLease = crypto.randomUUID();''')
     edit(core, '''    this.authenticated = false;
+    this.authenticatedAgent = null;
+    this.options.sessionToken = "";
     this.failedAuthAgents.clear();
     this.lastPeerCount = undefined;''', '''    this.authenticated = false;
+    this.authenticatedAgent = null;
+    this.options.sessionToken = "";
     this.restrictedRoleLease = null;
     this.restrictedRoleRegistrations.clear();
     this.failedAuthAgents.clear();
