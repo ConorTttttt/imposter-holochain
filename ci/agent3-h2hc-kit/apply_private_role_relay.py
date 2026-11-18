@@ -104,12 +104,16 @@ def apply(root):
         signature: String,
         #[serde(skip_serializing)]
         origin_token: String,
+        #[serde(skip_serializing)]
+        origin_wire: WsSender,
     },
     RoleDeliveryV1 {
         envelope: RoleEnvelope,
         signature: String,
         #[serde(skip_serializing)]
         origin_token: String,
+        #[serde(skip_serializing)]
+        origin_wire: WsSender,
     },
     /// Pong response to ping. Includes network peer count.""")
     replace(ws,
@@ -134,8 +138,8 @@ def apply(root):
             // socket write, so an administrative remove cannot race between
             // permission recheck and the wire send. The token is never serialized.
             let _dispatch_guard = match &msg {
-                ServerMessage::RoleRequestV1 { envelope, origin_token, .. }
-                | ServerMessage::RoleDeliveryV1 { envelope, origin_token, .. } => {
+                ServerMessage::RoleRequestV1 { envelope, origin_token, origin_wire, .. }
+                | ServerMessage::RoleDeliveryV1 { envelope, origin_token, origin_wire, .. } => {
                     let Some(store) = dispatch_app.auth_store.as_ref() else { continue };
                     let guard = store.role_dispatch_gate().lock_owned().await;
                     let op = if matches!(&msg, ServerMessage::RoleRequestV1 { .. }) {
@@ -143,7 +147,7 @@ def apply(root):
                     } else { RoleOperation::Delivery };
                     let Some(token) = active_session_send.read().await.clone() else { continue };
                     if !private_role::can_dispatch(
-                        &dispatch_app, &token, &dispatch_sender, origin_token, envelope, op,
+                        &dispatch_app, &token, &dispatch_sender, origin_token, origin_wire, envelope, op,
                     ).await { continue; }
                     Some(guard)
                 }
@@ -171,7 +175,7 @@ def apply(root):
         """        ClientMessage::RoleRequestV1 { envelope, signature } => {
             let result = private_role::queue_role(
                 app_state, state.authenticated_agent.as_ref(),
-                state.session_token.as_deref(), &state.registrations,
+                state.session_token.as_deref(), sender, &state.registrations,
                 envelope, signature, RoleOperation::Request,
             ).await;
             Some(match result {
@@ -183,7 +187,7 @@ def apply(root):
         ClientMessage::RoleDeliveryV1 { envelope, signature } => {
             let result = private_role::queue_role(
                 app_state, state.authenticated_agent.as_ref(),
-                state.session_token.as_deref(), &state.registrations,
+                state.session_token.as_deref(), sender, &state.registrations,
                 envelope, signature, RoleOperation::Delivery,
             ).await;
             Some(match result {
