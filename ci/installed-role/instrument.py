@@ -26,6 +26,12 @@ worker = replace_once(worker, "       await s.session.sendRoleFrame(toRoleFrame(
 worker = replace_once(worker, "attestation,roleBytes:payload,", "attestation,roleBytes:fixtureRoleOpening(recipient,payload),")
 worker = replace_once(worker, "     await s.session.sendRoleFrame(toRoleFrame(packet));",
                       "     observeFixtureSend(packet);\n     await s.session.sendRoleFrame(toRoleFrame(packet));")
+worker = replace_once(worker, "       const att=await decodeAttestationBody(body,{dna:cell.dna,agent:packet.sender});",
+                      """       const att=await decodeAttestationBody(body,{dna:cell.dna,agent:packet.sender}).catch(error=>{
+         if(error.message==='expired or not-yet-valid key attestation')
+           throw Error('expired signed requester attestation after HPKE');
+         throw error;
+       });""")
 receiver.write_text(worker)
 source = background.read_text()
 source = """// @ts-ignore CI-only fixture module.
@@ -36,7 +42,7 @@ source = replace_once(source, "let installedRoleRuntime: any = null;", """let in
 let lastAcceptedCiphertext: string | null = null;
 const knownDenials = new Map([
   ["invalid role Merkle proof", "malformed-opening"],
-  ["expired or not-yet-valid key attestation", "attestation-expired"],
+  ["expired signed requester attestation after HPKE", "attestation-expired"],
   ["native enrollment differs from signed recipient request", "epoch-disagrees-with-native-enrollment"],
 ]);
 const fixtureDenials = new Map<string,string>();
