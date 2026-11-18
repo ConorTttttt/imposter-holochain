@@ -9,8 +9,8 @@ const req=p=>new Promise((resolve,reject)=>{p.onsuccess=()=>resolve(p.result);p.
 const done=t=>new Promise((resolve,reject)=>{t.oncomplete=resolve;t.onabort=()=>reject(t.error??Error('IndexedDB transaction aborted'));t.onerror=()=>reject(t.error??Error('IndexedDB transaction failed'));});
 export async function openRoleStore(name='hwc-imposter-private-role-v1'){
  if(typeof indexedDB==='undefined')throw Error('IndexedDB unavailable; private role transport disabled');
- const connection=indexedDB.open(name,1);
- connection.onupgradeneeded=()=>{const d=connection.result;d.createObjectStore('cells',{keyPath:'cell'});d.createObjectStore('replay',{keyPath:'id'});};
+ const connection=indexedDB.open(name,2);
+ connection.onupgradeneeded=()=>{const d=connection.result;if(!d.objectStoreNames.contains('cells'))d.createObjectStore('cells',{keyPath:'cell'});if(!d.objectStoreNames.contains('replay'))d.createObjectStore('replay',{keyPath:'id'});if(!d.objectStoreNames.contains('trusted'))d.createObjectStore('trusted',{keyPath:'cell'});};
  const db=await req(connection);
  db.onversionchange=()=>db.close();
  return {
@@ -47,6 +47,40 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      }
      s.put({...stored,attestation});await finished;
      return true;
+   },
+   /** Only call with enrollment independently obtained and validated by the
+    * extension's native DHT authority. A signature alone is NOT enrollment.
+    * No page listener, unsigned H2HC lookup, or Boolean validation shortcut
+    * may reach this method. Watermarks survive browser restart/revocation.
+    */
+   async pinTrustedRecipient(dna,agent,attestation,{now=Date.now()}={}){
+     await verifyKeyAttestation(attestation,{dna,agent,now});
+     const cell=key({dna,agent});
+     const t=db.transaction('trusted','readwrite',{durability:'strict'}),finished=done(t),s=t.objectStore('trusted');
+     const prior=await req(s.get(cell));
+     const eq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((x,i)=>x===b[i]);
+     if(prior&&(attestation.epoch<prior.epoch||
+       (attestation.epoch===prior.epoch&&
+         (prior.revoked||!eq(attestation.keyId,prior.keyId)||!eq(attestation.publicKey,prior.publicKey))))){
+       t.abort();try{await finished;}catch{}throw Error('trusted recipient rollback, equivocation or revoked epoch');
+     }
+     s.put({cell,epoch:attestation.epoch,keyId:attestation.keyId,publicKey:attestation.publicKey,attestation,revoked:false});
+     await finished;
+     return true;
+   },
+   /** Check validity afresh: an expired public attestation cannot be used to encrypt. */
+   async getTrustedRecipient(dna,agent,{now=Date.now()}={}){
+     const t=db.transaction('trusted','readonly'),record=await req(t.objectStore('trusted').get(key({dna,agent})));
+     if(!record||record.revoked)throw Error('no current trusted recipient enrollment');
+     await verifyKeyAttestation(record.attestation,{dna,agent,minEpoch:record.epoch,now});
+     return record.attestation;
+   },
+   /** Keep the old epoch watermark even after a transport revocation. */
+   async revokeTrustedRecipient(dna,agent){
+     const cell=key({dna,agent});
+     const t=db.transaction('trusted','readwrite',{durability:'strict'}),finished=done(t),s=t.objectStore('trusted'),old=await req(s.get(cell));
+     if(old)s.put({...old,revoked:true});
+     await finished;
    },
    async reserve({dna,recipient,sender,commit,messageId}){
      if(!(messageId instanceof Uint8Array)||messageId.length!==16)throw Error('invalid replay message id');
