@@ -326,5 +326,15 @@ extra = r"""
 src = src.replace(begin, extra + begin, 1)
 src = src.replace(after_delete, after + after_delete, 1)
 src = src.replace(end, restore + end, 1)
+import re
+# The actual headed Chromium tests above replace the old explicit NOT RUN
+# placeholders; never emit contradictory negative/positive CI evidence.
+for name, details in (
+    ("AGENT2_TWO_INDEPENDENT_LAIR_SESSIONS", "Requires distinct authorized second profile and cross-bearer rejection"),
+    ("AGENT2_FOREIGN_DNA_BROWSER_SIGNING", "Source-level negative tests passed; live browser negative not yet exercised"),
+):
+    pattern = r"record\\('" + name + r"','NOT RUN',\\s*'" + re.escape(details) + r"'\\);"
+    src, count = re.subn(pattern, "", src)
+    assert count == 1, "Old NOT RUN marker anchor drift for " + name
 bridge.write_text(src)
 print("Injected status-only offscreen protected-HTTP revocation probe and reauthorization gates")
