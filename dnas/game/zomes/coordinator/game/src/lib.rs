@@ -497,7 +497,7 @@ pub fn request_role(_: ()) -> ExternResult<Option<u8>> {
         return Ok(Some(role));
     }
 
-    let io = match call_remote(host, zome_info()?.name, "provide_role".into(), None, ())? {
+    let io = match call_remote(host.clone(), zome_info()?.name, "provide_role".into(), None, ())? {
         ZomeCallResponse::Ok(io) => io,
         other => {
             return Err(wasm_error!(WasmErrorInner::Guest(format!(
@@ -1389,7 +1389,7 @@ fn my_role_leaf() -> ExternResult<RoleLeafResp> {
             proof: role_proof(&layers, &sealed.salt, seat),
         });
     }
-    let io = match call_remote(host, zome_info()?.name, "provide_role".into(), None, ())? {
+    let io = match call_remote(host.clone(), zome_info()?.name, "provide_role".into(), None, ())? {
         ZomeCallResponse::Ok(io) => io,
         other => {
             return Err(wasm_error!(WasmErrorInner::Guest(format!(
