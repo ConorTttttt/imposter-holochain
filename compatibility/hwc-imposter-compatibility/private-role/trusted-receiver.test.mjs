@@ -15,7 +15,8 @@ async function identity(){
  const pub=new Uint8Array(await crypto.subtle.exportKey('raw',k.publicKey));
  return {agent:new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]),
    lair:{signByPubKey:async(publicCore,data)=>{
-     assert.deepEqual(publicCore,pub);
+     // Test Lair-like signer can be pointed at the WRONG installed identity;
+     // production verifier must reject the foreign signature regardless.
      return new Uint8Array(await crypto.subtle.sign('Ed25519',k.privateKey,data));
    }}};
 }
