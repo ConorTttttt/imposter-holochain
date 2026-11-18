@@ -356,3 +356,42 @@ contract-review cycle, not an implicit v1 freeze.
 
 
 **Permanent-fixture equality gate PASS:** [run 44304081583](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583), tested source `f40914d7c629b6c01568697e7c174cd4a4b02d57`; regenerated native/Python fixture equals the committed gzip-base64 payload byte-for-byte, and both forms pass independent Node Ed25519 and RFC9180 decryption checks. [CI archive 14426722802](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304081583/artifacts/14426722802). This is *candidate protocol conformance*, not HWC/Lair receiver acceptance or two-agent freeze.
+
+
+## Agent 3 runnable gateway handoff — epoch-bound v1 candidate
+
+**Latest full combined security/native vectors/real gateway PASS**:
+[GitHub Actions run 44304976936](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304976936),
+source Imposter `293563649f7fd18a6bc2e0d1426c31132bf2b8c7`,
+runner-built H2HC patched source `9f5eb04b5be12e3e9e7fcc304bd905da1449ade9`.
+Download [artifact 14428255589](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304976936/artifacts/14428255589)
+and extract `role-gateway/h2hc-linker-linux-x86_64`. The **exact
+stripped artifact executable SHA256** is
+`8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f`.
+The archived `role-gateway/SHA256SUMS` matches independently extracted
+binary bytes. `role-gateway/role-smoke-result.txt` reports
+`ROLE_GATEWAY_THREE_AGENT_NETWORK=PASS; HWC_RECEIVER=NOT_TESTED`.
+The same successful job executes `cargo fmt --check`, `cargo test
+--locked`, strict `cargo clippy --locked --all-targets -- -D warnings`,
+native typed-hash/Ed25519/attestation verification, independently rechecked
+RFC9180/Node vector HPKE decryption, exact permanent-fixture equality,
+and the live signed three-agent restricted routing/security negative probe.
+Its included `role-public-vectors.json` SHA256 is the same
+`065435eee01a44b2111627636136efa21a777954de8cd86786d0d8d044fbd6e4`
+as the committed fixture.
+
+**Independent runtime cross-check**: [run 44301679119](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44301679119)
+was also **SUCCESS**, on earlier epoch-bound source
+`72bbb7240af1be3d20c6f992a3dea3848d5acfdb`,
+[artifact 14426778975](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44301679119/artifacts/14426778975),
+executable SHA256
+`565061a877264df79050e9b1e7c3ae20931cf78e912f2a3d1dd58506e2f53d4a`.
+Either binary passed synthetic authenticated relay tests, but Agent 2
+should pin the **latest complete combined artifact 14428255589** for integration.
+
+These are CI synthetic-session gateway results; no real HWC/Lair role recipient
+decryption, live recipient attestation, installed-DNA native commitment proof,
+persistent replay or third-guest denied plaintext is claimed. Do not conflate
+an accepted `role_queued_v1` frame with receipt or decryption. A complete
+end-to-end HWC integration run is blocked on Agent 2's written byte-level
+approval and matching browser receiver.
