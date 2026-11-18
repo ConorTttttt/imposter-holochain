@@ -175,6 +175,7 @@ jobs:
           set -euo pipefail
           mkdir -p examples "$GITHUB_WORKSPACE/ci-evidence"
           cp "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/native-role-vectors.rs" examples/agent3_role_vectors.rs
+          cargo fmt
           cargo fmt --check
           cargo run --locked --example agent3_role_vectors -- --hashes > "$RUNNER_TEMP/role-public-hashes.json"
           python3 -m venv "$RUNNER_TEMP/role-vector-venv"
