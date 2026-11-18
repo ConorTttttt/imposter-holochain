@@ -1,0 +1,77 @@
+name: Agent 2 — staged HWC restricted-role frame handler (DENY ONLY)
+
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/agent2-role-staged-hwc-handler.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny-only-hwc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Verify and apply old accepted HWC compatibility unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'Unauthenticated remote provenance' hwc/packages/core/src/ribosome/index.ts
+      - name: Apply narrow deny-only HWC frame boundary and check diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --write
+          git -C hwc diff --check
+          grep -Fq 'NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'PRIVATE_ROLE_SENDER_REJECTED' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'this.isConnected() && this.restrictedRoleCallback' hwc/packages/core/src/network/websocket-service.ts
+          grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' hwc/packages/extension/src/background/index.ts
+          echo 'HWC_RESTRICTED_ROLE_RECEIVE=DENY_ONLY; REMOTE_WASM_EXECUTION=DISABLED'
+      - name: Install pinned HWC dependencies
+        run: npm ci --prefix hwc
+      - name: Typecheck modified core and extension
+        working-directory: hwc
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tsc -p packages/shared/tsconfig.json
+          npx tsc -p packages/lair/tsconfig.json
+          npx tsc -p packages/core/tsconfig.json
+          npx tsc --noEmit -p packages/extension/tsconfig.json
+      - name: Chrome and Firefox extension builds
+        working-directory: hwc
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:chrome --workspace @hwc/extension
+          npm run build:firefox --workspace @hwc/extension
+      - name: Evidence boundaries (not an E2E receiver acceptance)
+        run: |
+          echo 'HWC_RESTRICTED_WS_FRAME_PARSE_AND_PRIVILEGED_SENDER_CHECK=BUILD_PASS'
+          echo 'HWC_NATIVE_STATE_BRIDGE=NOT_INSTALLED'
+          echo 'HWC_ROLE_DECRYPTION=NOT_TESTED'
+          echo 'HWC_COORDINATOR_REMOTE_PROVENANCE=DISABLED'
