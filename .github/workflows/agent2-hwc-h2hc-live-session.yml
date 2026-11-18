@@ -323,6 +323,9 @@ jobs:
           export H2HC_LINKER_ADDRESS=127.0.0.1
           export H2HC_LINKER_PORT=8090
           export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/ephemeral-H2HC-identity.key"
+          # Keep ephemeral agent allowlist across the controlled real WS server restart.
+          # Default memory store would drop it and falsely blame browser reconnect.
+          export H2HC_LINKER_SESSION_STORE="sqlite://$RUNNER_TEMP/ephemeral-h2hc-auth.db"
           export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
           export H2HC_LINKER_RELAY_URL="https://dev-test-bootstrap2.holochain.org/"
           export H2HC_LINKER_ALLOW_INSECURE_DEV=false
