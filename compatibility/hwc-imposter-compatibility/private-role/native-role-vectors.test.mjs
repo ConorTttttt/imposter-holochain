@@ -96,3 +96,22 @@ test('wire limits, timestamp windows and malformed reply/IDs fail closed',()=>{
  assert.throws(()=>internalsForTests.fresh({...valid,createdAt:valid.createdAt+30001},valid.createdAt),/stale/);
  assert.throws(()=>internalsForTests.fresh(valid,Date.now()),/stale/,'historical fixture must not be live');
 });
+
+test('all nine Agent 3 declarative negative-vector mutations fail closed',async()=>{
+ for(const negative of fixture.negative_cases){
+  const source=fixture.cases[negative.case];
+  const frame=standardFrame(source),mut=negative.mutate;
+  for(const [field,value] of Object.entries(mut)){
+   if(field.startsWith('envelope.'))frame.envelope[field.slice('envelope.'.length)]=value;
+   else frame[field]=value;
+  }
+  let parsed;
+  try{parsed=fromRoleFrame(frame);}
+  catch{continue;} // Parsing rejection is sufficient for structurally invalid frames.
+  if(negative.name==='expired_envelope'){
+   assert.throws(()=>internalsForTests.fresh(parsed,1700000000000),/stale/);
+   continue;
+  }
+  assert.equal(await internalsForTests.verify(parsed.signature,parsed.sender,internalsForTests.roleTranscript(parsed)),false,negative.name);
+ }
+});
