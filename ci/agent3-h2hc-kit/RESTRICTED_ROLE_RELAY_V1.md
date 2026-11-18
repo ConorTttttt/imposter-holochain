@@ -1,6 +1,6 @@
 # Agent 3 / Agent 2 — restricted confidential role protocol v1
 
-**18 November 2026.** Gateway-side **v1 candidate freeze** for Agent 2 review.
+**18 November 2026.** Gateway-side **v1 candidate revision 2**, pending explicit Agent 2 byte-for-byte approval. **NOT FROZEN**.
 **Not a claim of Agent 2 approval, browser receiver acceptance, or a completed round.**
 Review references: Agent 3 `PRIVATE_GAMEPLAY_TRANSPORT_HANDOFF.md`;
 Agent 2 `docs/hwc-confidential-full-round-transport-proposal.md` on
@@ -33,6 +33,7 @@ Client-to-gateway messages are JSON containing only:
     "role_commit": "u<canonical-39-byte-ActionHash>",
     "seat": 1,
     "recipient_key_id": "<32 lowercase hex characters>",
+    "recipient_key_epoch": 9,
     "message_id": "<32 lowercase hex characters>",
     "created_at_ms": 1700000000000,
     "expires_at_ms": 1700000030000,
@@ -47,12 +48,16 @@ Client-to-gateway messages are JSON containing only:
 For `role_request_v1`, change only the outer `type` and create an independently
 signed envelope for the **request** operation. Both operations use the same
 header schema but different operation bytes. `role_request_v1` has
-`in_reply_to=null`; `role_delivery_v1` uses null for unsolicited push or
-the original request message ID for recovery. Envelopes specify the target's
+`in_reply_to=null` (the gateway rejects any other value); `role_delivery_v1`
+uses null ONLY for an unsolicited host push that the recipient independently
+validates, or the original request message ID for recovery. An HWC recovery
+receiver MUST reject any unmatched reply ID, stale request, duplicate reply,
+wrong requester/host/DNA/role commitment/seat, or any reply issued for an old
+recipient key epoch. Gateway does NOT store requests or check correlation. Envelopes specify the target's
 actual current cell; `sender_agent` must exactly equal the **signed socket
 identity**, never an untrusted claimed name. DNA, sender, recipient and
 commitment must be canonical Holochain 0.7 hashes with correct types.
-`seat` is unsigned 16-bit big-endian. Message/key IDs each contain 16 bytes
+`seat` is unsigned 16-bit big-endian. `recipient_key_epoch` is a positive, JavaScript-safe integer (1–9007199254740991), serialized u64 big-endian and cryptographically bound to the recipient's Lair-signed key attestation. A key rotation MUST change key ID and increment the epoch; gateway does not know which epoch is current. Message/key IDs each contain 16 bytes
 and are encoded as 32 lowercase hex characters.
 
 **Gateway response:** `{"type":"role_queued_v1","message_id":"<id>"}`
@@ -82,6 +87,7 @@ HEADER =
     role_commit                            39 bytes (ActionHash)
     seat                                   u16 BE
     recipient_key_id                       16 bytes
+    recipient_key_epoch                    u64 BE (>=1, <= 2^53-1)
     message_id                             16 bytes
     created_at_ms                          u64 BE
     expires_at_ms                          u64 BE
@@ -110,7 +116,9 @@ Creation may be at most 30 seconds in the future; `expires_at_ms` must be
 strictly after creation, not older than receiver current time, and at most
 60,000 milliseconds after creation. These are gateway limits; HWC may impose
 stricter windows and rejects outdated rounds/commitments. `message_id`
-must come from a CSPRNG (>=128 random bits). A different delivery/rotation
+must come from a CSPRNG (>=128 random bits). `recipient_key_epoch`
+must be a safe integer; absent/zero/unsafe values are rejected, not defaulted.
+A different delivery/rotation
 uses a fresh message ID, fresh HPKE encapsulation and ciphertext.
 
 ## RFC 9180 HPKE and signed key enrollment
@@ -154,7 +162,11 @@ key is already authenticated; this is not an unsigned key-discovery API.
 Rotate by creating a new X25519 key, incrementing the per-cell monotonic
 epoch, generating a fresh CSPRNG `key_id`, signing a new attestation,
 and persisting protected key state before advertising it. New messages
-use only the current verified key/epoch; old pending messages cannot
+use only the current verified key/epoch; HWC MUST compare the signed
+`recipient_key_epoch` and key ID with its durable, latest authenticated
+key attestation, not just a sender-supplied number. Once rotated, any
+message to the old key/epoch fails closed, including matched replies.
+Old pending messages cannot
 resurface after reauth or key rotation. Lost keys require new keys and
 fresh host-signed encrypted delivery. No server-owned plaintext, key
 escrow, cache, or offline replay.
@@ -195,8 +207,11 @@ The Python cryptographic reference uses synthetic X25519 recipients
 byte-51 / byte-52, fixed ephemeral byte-61 / byte-62, independent HPKE
 key schedule and AESGCM tag verification, including invalid
 AAD and foreign-recipient decryption denials. Public vector JSON includes
-canonical `signed_bytes_hex`, `aad_hex`, ciphertext/enc, signature,
-typed hashes, key-ID and message-ID. Both cases are independently
+canonical `header_hex`, `signed_bytes_hex`, `aad_hex`,
+`hpke_info_hex`, `hpke_enc_hex`, `ciphertext_hex`, `signature_hex`,
+`signature_b64`, typed hashes, key-ID, key epoch, message-ID, signed key
+attestations and declarative negative mutations. These are safe synthetic
+fixtures for direct import into HWC tests, not a live Lair signing claim. Both cases are independently
 verified by the native Holochain Rust example against Ed25519 key cores.
 Fixed timestamps are **historic fixture values**: signatures/vectors
 test canonical bytes only; live traffic MUST use current time and HWC
@@ -240,3 +255,51 @@ to implement this feature.
 all green, private role delivery remains **NOT E2E ACCEPTED** until Agent 2
 has independently accepted a real encrypted message in its receiver and
 reported negative cases. Keep PR #6 Draft.
+
+
+## Interoperability delta and two-agent freeze gate (18 Nov 2026)
+
+**Candidate negotiation, NOT a frozen standard.** Agent 2 currently signs
+`imposter-hwc/role-delivery/v1\\0` plus its own header, uses
+`imposter-hwc/role-hpke/v1` as HPKE info, the header itself as AAD,
+a **u16** ciphertext length, **120,000 ms** maximum role lifetime,
+and an attestation with a different field order/prefix. That implementation
+also lacks `role_request_v1` and signed `in_reply_to` correlation.
+**Those bytes cannot pass the current H2HC verifier.**
+
+Proposed wire resolution for review:
+
+- Sign the precise v1 `SIGNED_BYTES` and use the precise `AAD` and
+  `info` above; no JSON signature, no UTF-8 hash signing, no key reinterpretation.
+- Represent the same canonical HoloHash raw39, u16 seat, u64 key epoch,
+  u64 timestamps, presence-tagged reply ID, 32-byte HPKE encapsulation,
+  and u32 ciphertext length in both receivers and gateway.
+- Use the existing wire `envelope` field names exactly;
+  HWC's internal `dna/agent/keyId/createdAt/enc` names may remain
+  internal but need explicit, lossless canonical mapping.
+- Keep 60s maximum lifetime and 30s future skew at the gateway;
+  HWC must reject at least the same invalid windows. Keep per-key
+  `not_before_ms/not_after_ms` independent from envelope expiry.
+- Use attestation `IMPOSTER-H2HC-ROLE-KEY\\0\\x01`
+  || DNA raw39 || agent raw39 || key ID raw16 || X25519 pk raw32
+  || epoch u64 BE || not-before u64 BE || not-after u64 BE.
+  No JSON/MessagePack serialization is part of its signature.
+- Request and reply must be separately signed with operation 0x01/0x02;
+  a valid gateway queue acknowledgement is never an application receipt.
+- Receiver acceptance requires genuine Lair signer verification,
+  exact installed DNA, local recipient and native-verified host,
+  matching round/commit/seat/Merkle proof, current attested key epoch,
+  correlated request where present, and durable replay reservation
+  before decryption/application. No role plaintext in gateway or public DHT.
+
+**Freeze is explicitly BLOCKED pending both written approvals**:
+1. Agent 3 approves this exact candidate revision and passing gateway,
+   native vectors and live restricted network gates.
+2. Agent 2 independently matches its HWC implementation to the *same*
+   canonical vector fixture, approves all normative bytes by explicit
+   PR comment, and supplies separately verified Lair and receiver gates.
+
+Once both approvals exist, publish a single immutable v1 contract pin
+(commit SHA + fixture SHA-256); do not reinterpret candidate revision
+as already frozen. Browser/desktop live role delivery remains NOT ACCEPTED
+until independent receiver post-decryption proof checks pass.
