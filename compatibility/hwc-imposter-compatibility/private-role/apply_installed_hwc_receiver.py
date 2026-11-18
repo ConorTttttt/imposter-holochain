@@ -130,7 +130,16 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
   // Set up state change callback for logging and auto-retry
   wsService.onStateChange((state: ConnectionState) => {''')
     edit(offscreen, '''    if (message.type === "CONFIGURE_NETWORK") {''',
-'''    // Role-only internal IPC. Chrome background service worker is the sole
+'''    // The original offscreen EXECUTE_ZOME_CALL is powerful enough to execute
+    // host_role_opening. Require the actual extension background sender before
+    // even decoding its payload. A tab, content script or popup is denied.
+    if (message.type === "EXECUTE_ZOME_CALL" &&
+        (sender.id !== chrome.runtime.id || sender.tab !== undefined ||
+         sender.url !== chrome.runtime.getURL("background/index.js"))) {
+      sendResponse({success:false,error:"PRIVILEGED_NATIVE_EXECUTOR_SENDER_DENIED"});
+      return false;
+    }
+    // Role-only internal IPC. Chrome background service worker is the sole
     // permitted caller; content scripts, popup and public message forwarding
     // cannot obtain a lease or transmit ciphertext through this route.
     if (message.type === "PRIVATE_ROLE_SESSION_PROBE" ||
@@ -332,8 +341,8 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     edit(background, '''    if (rawMessage.target === "offscreen") {
       log.trace("Forwarding message to offscreen:", rawMessage.type);''',
 '''    if (rawMessage.target === "offscreen") {
-      // Never forward privileged role-probe/send IPC from a tab or popup.
-      if (["PRIVATE_ROLE_SESSION_PROBE","PRIVATE_ROLE_SEND_FRAME"].includes(rawMessage.type))
+      // Never forward privileged role-probe/send or unrestricted native executor IPC.
+      if (["PRIVATE_ROLE_SESSION_PROBE","PRIVATE_ROLE_SEND_FRAME","EXECUTE_ZOME_CALL"].includes(rawMessage.type))
         return false;
       log.trace("Forwarding message to offscreen:", rawMessage.type);''')
 
