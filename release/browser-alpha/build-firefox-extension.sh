@@ -20,6 +20,9 @@ test -z "$(git -C "$hwc" status --porcelain)"
 test "$(node --version)" = "$(jq -er .node_version "$release/pins.json")"
 
 python3 "$kit/verify_pinned_sources.py" "$hwc"
+if [[ $(git -C "$hwc" branch --show-current) != fix/imposter-hwc-compatibility ]]; then
+  git -C "$hwc" switch -c fix/imposter-hwc-compatibility
+fi
 python3 "$kit/apply.py" "$hwc" --write
 python3 "$kit/private-role/apply_restricted_hwc_handler.py" "$hwc" --write
 python3 "$kit/private-role/apply_installed_hwc_receiver.py" "$hwc" --write
