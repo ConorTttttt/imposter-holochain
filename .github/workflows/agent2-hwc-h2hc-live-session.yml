@@ -198,8 +198,30 @@ jobs:
              await waitForSession(true);
              evidence.agent2_chromium_restart='REAL_PROCESS_RELAUNCH_SAME_EPHEMERAL_PROFILE';
            });
+          
+           // Independent server-side revocation exercise, not a simulated network outage.
+           await step('AGENT2_SERVER_SIDE_AGENT_SESSION_REVOCATION',async()=>{
+             const url=process.env.H2HC_BASE_URL+'/admin/agents';
+             const secret=process.env.H2HC_LINKER_ADMIN_SECRET;
+             must(Boolean(secret),'Missing ephemeral admin authorization');
+             const headers={Authorization:'Bearer '+secret,'Content-Type':'application/json'};
+             const removed=await fetch(url,{method:'DELETE',headers,
+               body:JSON.stringify({agent_pubkey:host})});
+             must(removed.status===204,'H2HC admin revocation denied (status '+removed.status+')');
+             const response=await fetch(url,{headers:{Authorization:'Bearer '+secret}});
+             must(response.ok,'Could not verify revoked agent allowlist');
+             const data=await response.json();
+             must(!data.agents?.some(a=>a.agent_pubkey===host),
+               'Revoked Lair identity still present in server allowlist');
+             evidence.agent2_server_revocation='ADMIN_AGENT_DELETE_204_WITH_SESSION_REMOVAL';
+           });
+           await step('AGENT2_REVOKED_BROWSER_SESSION_INVALIDATES',async()=>{
+             // This is a distinct live status assertion after server-side revocation.
+             // No endpoint URL reconfiguration, bearer introspection or socket simulation.
+             await waitForSession(false);
+           });
            record('AGENT2_TRUE_TOKEN_EXPIRY','NOT RUN',
-             'No tested H2HC short-TTL or server-side token revocation control');
+             'H2HC server has no session TTL; independently tested admin revocation above');
            record('AGENT2_TWO_INDEPENDENT_LAIR_SESSIONS','NOT RUN',
              'Requires distinct authorized second profile and cross-bearer rejection');
            record('AGENT2_FOREIGN_DNA_BROWSER_SIGNING','NOT RUN',
