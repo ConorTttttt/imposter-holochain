@@ -209,11 +209,35 @@ jobs:
         timeout-minutes: 28
         run: |
           set -euo pipefail
-          # Only reviewed coordinator authorization differs from historic base.
-          # Original integrity DNA, manifests, toolchain and locks remain pinned.
+          # Only reviewed coordinator authorization and additive signed
+          # attestation modules may differ. All other DNA/build sources stay pinned.
           git diff --exit-code 111e6a44795e6572ed01191a98245ed723788c12 HEAD -- \
             Cargo.toml Cargo.lock flake.nix flake.lock dnas/game \
-            ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs'
+            ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs' \
+            ':(exclude)dnas/game/zomes/coordinator/game/src/recipient_keys.rs' \
+            ':(exclude)dnas/game/zomes/integrity/game_integrity/src/lib.rs' \
+            ':(exclude)dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs'
+          # Verifies all preexisting integrity rules match the pinned commit.
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = 'dnas/game/zomes/integrity/game_integrity/src/lib.rs'
+          source = Path(path).read_text()
+          additions = [
+              "mod recipient_keys;\npub use recipient_keys::*;\n",
+              "    RecipientKeyAttestation(RecipientKeyAttestation),\n",
+              "    RecipientKeyByAgent,\n",
+              "            LinkTypes::RecipientKeyByAgent => validate_recipient_key_link(&action),\n",
+              "        EntryTypes::RecipientKeyAttestation(a) => validate_recipient_key(a, &author, action.timestamp()),\n",
+          ]
+          for delta in additions:
+              assert source.count(delta) == 1
+              source = source.replace(delta, '', 1)
+          pinned = subprocess.check_output(['git', 'show',
+              '111e6a44795e6572ed01191a98245ed723788c12:' + path], text=True)
+          assert source == pinned, 'existing integrity validator was modified'
+          print('NATIVE_LEGACY_INTEGRITY_UNCHANGED=PASS')
+          PY
           timeout --signal=TERM --kill-after=60s 1550s nix -L develop --no-write-lock-file --command bash -c 'hc --version; cargo --version' 2>&1 | tee runtime-evidence/pinned-toolchain.log
 
       - name: Run isolated host/recipient/seat/commitment role authorization regressions
