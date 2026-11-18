@@ -69,9 +69,16 @@ async function joinGateway(page,agent,dna,label,evidence,record){
  evidence.h2hc_profile_sessions[label]={agent,dna,authenticated:true,ws_healthy:true,
     server_signed_challenge:true,server_registered_for_dna:true,
     background_has_session:network?.hasSession===true};
- if(network?.hasSession!==true)
-  record('H2HC_BACKGROUND_SESSION_'+label,'BLOCKED',
-    'Offscreen signed session verified by gateway; background hasSession is false');
+ // The hardened HWC background must reflect the live authenticated WS session.
+ // Check status only; never export, log or persist a bearer token.
+ for(let i=0;i<25&&network?.hasSession!==true;i++){
+  await sleep(200);
+  network=await page.evaluate(async()=>window.holochain.getNetworkStatus());
+ }
+ requireTrue(network?.hasSession===true,
+   label+' authenticated H2HC connection did not report hasSession=true');
+ record('H2HC_BACKGROUND_SESSION_'+label,'PASS',
+   'Authenticated background reports hasSession=true; bearer token not inspected');
 }
 async function checkApp(page,agent,dna){
  const info=await page.evaluate(async()=>{
