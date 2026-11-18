@@ -77,3 +77,47 @@ test('signed attestation is durably pinned only to the active nonextractable cel
  assert.equal((await reopened.getCell(d,a)).attestation,undefined);
  reopened.close();
 });
+
+test('native-enrolled recipient watermark rejects rollback and same-epoch equivocation across restart',async()=>{
+ const name='agent2-role-trusted-epoch-'+Date.now(),db=await openRoleStore(name);
+ const signer=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signer.publicKey));
+ const a=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]),d=dna(14),now=Date.now();
+ const sign=async(_pub,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signer.privateKey,b));
+ const pair=await crypto.subtle.generateKey('X25519',false,['deriveBits']);
+ const publicKey=new Uint8Array(await crypto.subtle.exportKey('raw',pair.publicKey));
+ const att1=await attestKey({dna:d,agent:a,epoch:1,publicKey,sign,now});
+ assert.equal(await db.pinTrustedRecipient(d,a,att1,{now}),true);
+ assert.deepEqual((await db.getTrustedRecipient(d,a,{now})).keyId,att1.keyId);
+ db.close();
+ const restarted=await openRoleStore(name);
+ const att0=await attestKey({dna:d,agent:a,epoch:1,publicKey,sign,now,keyId:crypto.getRandomValues(new Uint8Array(16))});
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att0,{now}),/equivocation/);
+ const att2=await attestKey({dna:d,agent:a,epoch:2,publicKey,sign,now});
+ await restarted.pinTrustedRecipient(d,a,att2,{now});
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att1,{now}),/rollback/);
+ await restarted.revokeTrustedRecipient(d,a);
+ await assert.rejects(restarted.getTrustedRecipient(d,a,{now}),/no current/);
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att2,{now}),/revoked epoch/);
+ const att3=await attestKey({dna:d,agent:a,epoch:3,publicKey,sign,now});
+ await restarted.pinTrustedRecipient(d,a,att3,{now});
+ assert.equal((await restarted.getTrustedRecipient(d,a,{now})).epoch,3);
+ await assert.rejects(restarted.getTrustedRecipient(d,a,{now:now+61000}),/expired/);
+ restarted.close();
+});
+test('version-1 key/replay rows survive version-2 trusted watermark upgrade',async()=>{
+ const name='agent2-role-idb-upgrade-'+Date.now();
+ const initial=indexedDB.open(name,1);
+ initial.onupgradeneeded=()=>{const db=initial.result;db.createObjectStore('cells',{keyPath:'cell'});db.createObjectStore('replay',{keyPath:'id'});};
+ const old=await new Promise((resolve,reject)=>{initial.onsuccess=()=>resolve(initial.result);initial.onerror=()=>reject(initial.error);});
+ old.close();
+ const upgraded=await openRoleStore(name);
+ const d=dna(20),a=agent(20),k=await upgraded.rotateCell(d,a,1);
+ assert.equal(k.privateKey.extractable,false);
+ await upgraded.reserve(replay(d,a,agent(19),commit(20),1));
+ upgraded.close();
+ const again=await openRoleStore(name);
+ assert.equal((await again.getCell(d,a)).epoch,1);
+ await assert.rejects(again.reserve(replay(d,a,agent(19),commit(20),1)),/replay/);
+ again.close();
+});
