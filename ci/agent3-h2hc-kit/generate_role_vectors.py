@@ -13,7 +13,7 @@ import struct
 import sys
 
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 DOMAIN = "imposter.h2hc.private-role.v1"
@@ -21,7 +21,7 @@ SIGN_PREFIX = b"IMPOSTER-H2HC-ROLE-SIGNED\x00\x01"
 AAD_PREFIX = b"IMPOSTER-H2HC-ROLE-AAD\x00\x01"
 INFO = b"imposter.h2hc.private-role/hpke-v1"
 KEM_SUITE = b"KEM" + (32).to_bytes(2, "big")
-HPKE_SUITE = b"HPKE" + (32).to_bytes(2, "big") + (1).to_bytes(2, "big") + (3).to_bytes(2, "big")
+HPKE_SUITE = b"HPKE" + (32).to_bytes(2, "big") + (1).to_bytes(2, "big") + (2).to_bytes(2, "big")
 
 
 def raw_hash(s):
@@ -85,13 +85,13 @@ def hpke_encrypt(seed_recipient, seed_ephemeral, plaintext, aad):
     sk_e = x25519.X25519PrivateKey.from_private_bytes(bytes([seed_ephemeral]) * 32)
     enc = sk_e.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     key, nonce = schedule(sk_e.exchange(pk_r), enc, pk_r_raw)
-    ciphertext = ChaCha20Poly1305(key).encrypt(nonce, plaintext, aad)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
     # Independent receiver key schedule and base-mode authentication.
     key_r, nonce_r = schedule(sk_r.exchange(sk_e.public_key()), enc, pk_r_raw)
-    assert ChaCha20Poly1305(key_r).decrypt(nonce_r, ciphertext, aad) == plaintext
+    assert AESGCM(key_r).decrypt(nonce_r, ciphertext, aad) == plaintext
     bad = False
     try:
-        ChaCha20Poly1305(key_r).decrypt(nonce_r, ciphertext, aad + b"!")
+        AESGCM(key_r).decrypt(nonce_r, ciphertext, aad + b"!")
     except Exception:
         bad = True
     assert bad, "tampered HPKE associated data must fail"
@@ -99,7 +99,7 @@ def hpke_encrypt(seed_recipient, seed_ephemeral, plaintext, aad):
     wrong_pk = wrong.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     key_w, nonce_w = schedule(wrong.exchange(sk_e.public_key()), enc, wrong_pk)
     try:
-        ChaCha20Poly1305(key_w).decrypt(nonce_w, ciphertext, aad)
+        AESGCM(key_w).decrypt(nonce_w, ciphertext, aad)
         raise AssertionError("foreign recipient decrypted role ciphertext")
     except Exception as err:
         if isinstance(err, AssertionError):
@@ -110,6 +110,7 @@ def hpke_encrypt(seed_recipient, seed_ephemeral, plaintext, aad):
 def main():
     hashes = json.load(open(sys.argv[1], encoding="utf-8"))
     cases = []
+    key_attestations = []
     for op, agent_seed, recipient_seed, ephemeral_seed, ident, reply in [
         ("role_request_v1", 28, 51, 61, "22" * 16, None),
         ("role_delivery_v1", 27, 52, 62, "33" * 16, "22" * 16),
@@ -133,16 +134,39 @@ def main():
         sk = ed25519.Ed25519PrivateKey.from_private_bytes(bytes([agent_seed]) * 32)
         sig = sk.sign(preimage)
         sk.public_key().verify(sig, preimage)
+        # Per-cell Lair-signed encryption-key attestation. Public fixture only.
+        key_id = bytes.fromhex(e["recipient_key_id"])
+        attest_before = 1699999000000
+        attest_after = 1700000099999
+        epoch = 1
+        attest_bytes = b"".join([
+            b"IMPOSTER-H2HC-ROLE-KEY\x00\x01",
+            raw_hash(e["dna_hash"]), raw_hash(e["recipient_agent"]),
+            key_id, pk, struct.pack(">Q", epoch),
+            struct.pack(">Q", attest_before), struct.pack(">Q", attest_after),
+        ])
+        recipient_signer = 27 if recipient == "agent_a" else 28
+        signer = ed25519.Ed25519PrivateKey.from_private_bytes(bytes([recipient_signer]) * 32)
+        attest_sig = signer.sign(attest_bytes)
+        signer.public_key().verify(attest_sig, attest_bytes)
+        key_attestations.append({
+            "dna_hash": e["dna_hash"], "agent": e["recipient_agent"],
+            "key_id": e["recipient_key_id"], "epoch": epoch,
+            "not_before_ms": attest_before, "not_after_ms": attest_after,
+            "x25519_public_key_b64": base64.b64encode(pk).decode(),
+            "signed_bytes_hex": attest_bytes.hex(),
+            "signature_b64": base64.b64encode(attest_sig).decode(),
+        })
         cases.append({
             "operation": op, "envelope": e,
             "signature_b64": base64.b64encode(sig).decode(),
             "signed_bytes_hex": preimage.hex(), "aad_hex": aad.hex(),
             "recipient_hpke_pk_b64": base64.b64encode(pk).decode(),
             "plaintext_sha256": hashlib.sha256(clear).hexdigest(),
-            "suite": "HPKE-v1/DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/ChaCha20Poly1305",
+            "suite": "HPKE-v1/DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/AESGCM",
         })
     with open(sys.argv[2], "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "cases": cases, "fixture_only": True}, f, indent=2)
+        json.dump({"version": 1, "cases": cases, "key_attestations": key_attestations, "fixture_only": True}, f, indent=2)
     print("DETERMINISTIC_HPKE_VECTORS=PASS; recipient and wrong-AAD/foreign-recipient checks pass")
 
 

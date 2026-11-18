@@ -54,5 +54,39 @@ fn main() {
         } else { RoleOperation::Request }).unwrap(), &signature).is_err(),
             "operation must be cryptographically bound");
     }
+    let attestations = file["key_attestations"].as_array().expect("signed key attestations");
+    assert_eq!(attestations.len(), 2, "recipient A and recipient B keys");
+    for (i, att) in attestations.iter().enumerate() {
+        let expected = if i == 0 { key(27) } else { key(28) };
+        let dna = DnaHash::from_raw_32(vec![5;32]);
+        assert_eq!(att["agent"].as_str().unwrap(), expected.to_string());
+        assert_eq!(att["dna_hash"].as_str().unwrap(), dna.to_string());
+        let att_bytes = hex::decode(att["signed_bytes_hex"].as_str().unwrap()).unwrap();
+        let mut canonical = b"IMPOSTER-H2HC-ROLE-KEY\0\x01".to_vec();
+        for h in [dna.to_string(), expected.to_string()] {
+            let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&h[1..]).unwrap();
+            assert_eq!(raw.len(),39);
+            canonical.extend_from_slice(&raw);
+        }
+        canonical.extend_from_slice(&hex::decode(att["key_id"].as_str().unwrap()).unwrap());
+        canonical.extend_from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(att["x25519_public_key_b64"].as_str().unwrap()).unwrap());
+        canonical.extend_from_slice(&att["epoch"].as_u64().unwrap().to_be_bytes());
+        canonical.extend_from_slice(&att["not_before_ms"].as_u64().unwrap().to_be_bytes());
+        canonical.extend_from_slice(&att["not_after_ms"].as_u64().unwrap().to_be_bytes());
+        assert_eq!(att_bytes, canonical, "key attestation field-order and cell binding");
+        let sig = base64::engine::general_purpose::STANDARD
+            .decode(att["signature_b64"].as_str().unwrap()).unwrap();
+        let sig = ed25519_dalek::Signature::from_slice(&sig).unwrap();
+        let verify_key = VerifyingKey::from_bytes(
+            expected.get_raw_32().try_into().expect("32-byte native Holochain agent key")
+        ).unwrap();
+        verify_key.verify(&att_bytes,&sig).expect("native Holochain key attestation verifier");
+        let wrong = if i == 0 { key(28) } else { key(27) };
+        let wrong_verify = VerifyingKey::from_bytes(wrong.get_raw_32().try_into().unwrap()).unwrap();
+        assert!(wrong_verify.verify(&att_bytes,&sig).is_err(),"foreign agent key signature denied");
+    }
+    println!("NATIVE_HOLOCHAIN_KEY_ATTESTATIONS=PASS; cases=2");
     println!("NATIVE_HOLOCHAIN_ROLE_VECTORS=PASS; cases=2; no private fixture keys exported");
 }

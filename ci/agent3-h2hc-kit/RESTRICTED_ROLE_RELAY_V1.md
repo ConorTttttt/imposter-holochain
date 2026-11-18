@@ -118,9 +118,9 @@ uses a fresh message ID, fresh HPKE encapsulation and ciphertext.
 **Exact v1 cipher suite:**
 DHKEM(X25519, HKDF-SHA256) `0x0020`,
 HKDF-SHA256 `0x0001`,
-ChaCha20-Poly1305 `0x0003`;
+AES-256-GCM `0x0002`;
 HPKE base mode `0x00`, 32-byte X25519 encapsulated key, 16-byte tag,
-sequence number zero. The fixed HPKE `info` bytes are
+sequence number zero. AES-256-GCM is supported directly by browser WebCrypto; Agent 2 must use an audited RFC9180 HPKE implementation with identical KEM and key schedule. The fixed HPKE `info` bytes are
 `ASCII("imposter.h2hc.private-role/hpke-v1")`; HPKE `aad` is the
 byte-for-byte `AAD` specified above. Never reinterpret an Holochain
 Ed25519 key as X25519; no private key material is hosted at H2HC.
@@ -138,6 +138,7 @@ ASCII("IMPOSTER-H2HC-ROLE-KEY") || 0x00 || 0x01
 ```
 
 Sign directly with the **cell author's** Lair Ed25519 key.
+The public vector JSON includes **two reproducible signed key attestations** with native-Holochain 0.7 verification, wrong-agent denial, monotonic epoch and validity fields; the fixture uses expired test dates and must never be accepted as a live key.
 Recipient and host independently verify the full signed binding, exact
 installed DNA/agent, key ID, epoch, validity and protocol version. HWC
 MUST provide a separately authenticated source for these public
@@ -185,14 +186,14 @@ A gateway transport ACK does not satisfy any of these checks.
 
 ## Test vector and verification commands
 
-The two public, reproducible vector cases are generated as follows:
+The two public, reproducible encrypted role vector cases **and two separately signed recipient-key attestation cases** are generated as follows:
 native Holochain 0.7 `AgentPubKey::from_raw_32`,
 `DnaHash::from_raw_32` and `ActionHash::from_raw_32` produce canonical
 39-byte typed hashes; deterministic **test-only** Ed25519 signers
 use byte-27 (host) and byte-28 (guest) seeds, with byte-29 third agent.
 The Python cryptographic reference uses synthetic X25519 recipients
 byte-51 / byte-52, fixed ephemeral byte-61 / byte-62, independent HPKE
-key schedule and ChaCha20Poly1305 tag verification, including invalid
+key schedule and AESGCM tag verification, including invalid
 AAD and foreign-recipient decryption denials. Public vector JSON includes
 canonical `signed_bytes_hex`, `aad_hex`, ciphertext/enc, signature,
 typed hashes, key-ID and message-ID. Both cases are independently
