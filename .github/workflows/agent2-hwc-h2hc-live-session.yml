@@ -278,11 +278,48 @@ jobs:
           echo 'PASS: pinned authenticated H2HC binary online, local authority fallback disabled'
           timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-h2hc-real-browser-bridge.mjs 2>&1 | tee runtime-evidence/real-hwc-h2hc-bridge.log
 
+      - name: Prepare allowlisted credential-free lifecycle evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sanitized-evidence
+          # Do not upload raw H2HC server logs, browser profiles, tokens,
+          # private CapGrants or unfiltered exception traces.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          source=Path('runtime-evidence/runtime-evidence.json')
+          if source.exists():
+              raw=json.loads(source.read_text())
+              checks=raw.get('checks',{})
+              clean={
+                'schema_version':2,
+                'mode':'REAL_HWC_EPHEMERAL_BROWSER',
+                'deployment_ready':False,
+                'checks':{str(k):{'result':str(v.get('result','UNKNOWN'))}
+                          for k,v in checks.items()
+                          if isinstance(v,dict)},
+                'session_lifecycle':{
+                  'endpoint_loss':'SIMULATED_NOT_EXPIRY',
+                  'token_expiry':'NOT_RUN_UNLESS_EXPLICITLY_PROVEN',
+                  'browser_restart':'REAL_CHROMIUM_RELAUNCH_TEST'
+                }
+              }
+              Path('sanitized-evidence/lifecycle-gates.json').write_text(
+                  json.dumps(clean,indent=2)+'\n')
+          for name in ['source-pins.txt','h2hc-provenance.txt',
+                       'hwc-temporary-diff-stat.txt']:
+              p=Path('runtime-evidence')/name
+              if p.exists():
+                  (Path('sanitized-evidence')/name).write_bytes(p.read_bytes())
+          PY
+
       - name: Preserve first real HWC→H2HC wire evidence, no keys
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agent2-live-HWC-H2HC-session-evidence-${{ github.run_id }}
-          path: runtime-evidence/
+          path: sanitized-evidence/
           retention-days: 14
           if-no-files-found: warn
