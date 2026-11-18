@@ -3,9 +3,18 @@
 // Never runs inside HWC or receives real role leaves, bearer tokens or Lair keys.
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {gunzipSync} from 'node:zlib';
 import {createHmac, createPrivateKey, createPublicKey, diffieHellman, createDecipheriv, verify} from 'node:crypto';
 
-const v=JSON.parse(readFileSync(process.argv[2],'utf8'));
+const fixturePath=process.argv[2];
+const file=readFileSync(fixturePath,'utf8');
+const unpack=p=>gunzipSync(Buffer.from(p.replace(/\\s/g,''),'base64'));
+const raw=fixturePath.endsWith('.gz.base64')?unpack(file):Buffer.from(file,'utf8');
+if(process.argv[3]) {
+ const pinned=unpack(readFileSync(process.argv[3],'utf8'));
+ assert(raw.equals(pinned),'committed fixture bytes differ from freshly generated native vectors');
+}
+const v=JSON.parse(raw.toString('utf8'));
 assert.equal(v.version,1);
 assert.equal(v.fixture_only,true);
 assert.equal(v.status,'candidate-pending-agent2-approval');
