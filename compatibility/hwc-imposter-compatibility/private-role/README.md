@@ -1,102 +1,100 @@
-# Agent 2 — restricted private role transport preflight (18 November 2026)
+# Agent 2 — restricted confidential role cryptography / HWC preflight
 
-**Status: PARTIAL CRYPTOGRAPHIC PROTOTYPE ONLY. NOT INSTALLED OR WIRED INTO HWC.
-NOT DEPLOYABLE; NOT A LIVE ROLE-TRANSPORT ACCEPTANCE.**
+**18 November 2026. Status: REVISION-2 CRYPTOGRAPHIC INTEROPERABILITY ONLY.
+NO REMOTE GAME ROLE TRANSPORT OR COORDINATOR EXECUTION IS ENABLED.**
+PR #5 remains Draft. The current **normative candidate**, not yet jointly
+frozen, is Agent 3's `ci/agent3-h2hc-kit/RESTRICTED_ROLE_RELAY_V1.md`
+revision 2, reviewed at commit
+`8500270ecb3285ff6435bba568d1ef46c0c3ac8e`. Agent 3's
+native Holochain 0.7 Rust/HPKE vectors passed CI
+[44304051978](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44304051978).
+**Signed recipient key epoch (`recipient_key_epoch`) is mandatory in
+revision 2.** Earlier pre-epoch vectors from run 44299128149 are
+superseded and MUST NOT be used as approval for revision 2.
 
-Branch: `validation/agent2-hwc-integration`; PR #5 remains Draft.
-Accepted patch `bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39` and the
-pinned upstream HWC `0c391226e78769d44ccb4661881ed8998b15f903`
-are unchanged. No bypass of the existing rejected remote-signal path.
+See [AGENT2_AGENT3_REV2_HANDOFF.md](./AGENT2_AGENT3_REV2_HANDOFF.md)
+for exact domains/field ordering, epoch rules, threat model,
+receiver blockers, and two-party freeze requirements.
 
-## Isolated module contents
+## Implemented and testable (isolated extension-side modules)
 
-- `hpke.mjs`: RFC 9180 base mode candidate:
-  DHKEM(X25519, HKDF-SHA256) 0x0020, HKDF-SHA256 0x0001,
-  AES-256-GCM 0x0002, with one-shot seq=0.
-  Raw 32-byte recipient public keys and non-extractable X25519 private keys;
-  no Ed25519-to-X25519 key conversion and no Lair signing-key export.
-  Browser WebCrypto implementation is **not externally audited**.
-- `wire.mjs`: deterministic fixed-order, domain-separated signed
-  `key-attestation/v1` and **role_delivery_v1 only**.
-  Sender Ed25519 signature covers DNA, both full agents, commitment action,
-  exact recipient/seat/key ID/epoch, message ID, timestamps, encapsulated key
-  and all ciphertext. HPKE AAD covers the fixed role header. Key attestation
-  is signed via an injected *existing Lair* `signByPubKey(agent core, bytes)`
-  callback, never an in-page signer. The role receiver requires the actual
-  installed DNA and Lair local agent, an independently native-validated
-  current commitment with exact host and seats, a matching persisted cell
-  encryption key, a durable replay reservation, and a trusted proof-verifier
-  callback **before any coordinator execution**. It neither executes WASM
-  nor dispatches a browser signal.
-- `store.mjs`: extension-origin IndexedDB database, full 39-byte
-  `(DNA,agent)` cell key, non-extractable CryptoKey structured clone,
-  monotonically increasing epoch, and a strict read-write transaction
-  inserting `(DNA,recipient,sender,message_id)` before decrypt/application.
-  The replay ledger is not cleared on revocation or reauthorization. The
-  role commitment is authenticated separately; omitting it from replay-key
-  identity denies reuse of the same message ID across rounds.
-- `*.test.mjs`: Node 22 WebCrypto cryptographic tests and synthetic
-  `fake-indexeddb` persistence, concurrency and replay tests.
-  Source-level CI only checks the original remote handler is still rejected.
+- `wire.mjs`: only `role_request_v1` (operation 01) and
+  `role_delivery_v1` (operation 02), canonical 39-byte typed
+  HoloHash text/raw39 mapping, signature transcript, 32-byte HPKE
+  encapsulation, ciphertext length u32BE, current key epoch u64BE,
+  version and domain, optional reply correlation, and strict
+  expiration/frame/encoding checks. Key attestation signs the
+  specified native prefix, DNA, agent, X25519 public key,
+  key ID, epoch and validity in the required field order.
+- `hpke.mjs`: WebCrypto RFC 9180 base mode
+  DHKEM(X25519,HKDF-SHA256), HKDF-SHA256, AES-256-GCM,
+  fixed info and AAD, one-shot sequence 0. Recipient private
+  `CryptoKey` is non-extractable; deterministic ephemeral key
+  injection is test-only. The WebCrypto composition has
+  **not been independently security-audited**.
+- `agent3-role-public-vectors-v1-candidate.json.gz.base64`:
+  byte-identical published Agent 3 revision-2 source fixture
+  pinned from `ci/agent3-h2hc-kit/fixtures/` at Agent 3 commit
+  `8c1bedbb2bec78ac0d404ce54c67ce54691ffc8d`.
+  `native-fixture.mjs` decodes it. Cross-language tests assert
+  exact native Holochain 0.7 byte transcripts, Ed25519 signatures,
+  fixed-ephemeral HPKE ciphertext/AAD, attestation signatures,
+  and Agent 3's nine declarative malicious mutations. These
+  have no real role leaf, signing secret or bearer.
+- `lair-signing-acceptance.mjs` and
+  `agent2-role-lair-signing.yml`: **genuine pinned HWC
+  `@holo-host/lair`** signs original key-attestation and role
+  transcripts with CI-created keys, with negative signer identity
+  checks. This is the REAL Lair implementation but **not an
+  installed Imposter DNA browser signing acceptance**.
+- `store.mjs`: extension-origin IndexedDB per-(DNA,agent) key
+  generation, protected non-extractable private keys, monotonic
+  epoch rotation, strict durable replay reservations and atomic
+  installation of signed attestation matching the **current
+  held key**. Source-only `fake-indexeddb` tests and separate
+  genuine two-process Chromium restart probe establish isolated
+  key persistence and replay denial, not live recipient enrollment.
+- `receiveRoleDelivery` pure preflight requires installed local
+  DNA/agent, expected host and seat, latest role commitment and
+  recipient key epoch, verified signed sender, AAD, expiration,
+  replay ledger, and separately supplied proof and remote-caller
+  context. However **trust is not established** by external
+  `nativeValidated` or `authenticated` flags: the
+  native-authority and verified H2HC transport sources are
+  NOT wired. It performs no remote WASM execution.
 
-## Fixed canonical transcript fixtures (synthetic, NOT Holochain native vectors)
+## Run isolated checks
 
-The fixture shapes are defined in `canonical-vectors.test.mjs`.
-These hashes are SHA-256 **fingerprints for comparing original transcript
-bytes**, not the signing primitive, HPKE KDF or a substitute for signatures.
+```bash
+node --test compatibility/hwc-imposter-compatibility/private-role/{native-role-vectors,canonical-vectors,private-role}.test.mjs
+# In GitHub Actions, fake-indexeddb/auto is imported for store.test.mjs,
+# and the dedicated Chromium and pinned genuine HWC Lair jobs run separately.
+```
 
-| Transcript | Length | SHA-256 |
-| --- | ---: | --- |
-| `key-attestation/v1` | 182 bytes | `809ac8a578be2731201d8940b82ba6d367eefd1b27f3fb943e171f8d28561573` |
-| `role-delivery/v1` | 302 bytes | `fca5e715a6e0b54c0718fb58e92d69f4c23df413d8df2188f903a914cb6ee375` |
+## Security acceptance still blocked
 
-Fields are signed as **raw Ed25519 over the canonical transcript bytes**
-as exercised by the local test harness. This must be checked byte-for-byte
-against the *real existing Holochain 0.7 / Lair signer* on the installed cell
-before it is accepted as a cross-implementation contract. In particular
-legacy native remote-signal signing of SHA2-512(serialized ZomeCallParams)
-is a separate primitive; these role-only transcripts must not be substituted
-for that legacy message or its remote caller provenance.
+- **Recipient enrollment/discovery:** host has no trusted native entry
+  or direct authenticated exchange to obtain and pin the signed current
+  recipient key; no unauthenticated H2HC key-lookup fallback.
+- **Installed cell:** no genuine installed-game-DNA recipient
+  attestation through the actual extension's Lair routing.
+- **Trusted receiver:** no native validated lobby/round/RoleCommit
+  host/seat/Merkle proof or segregated verified remote-caller
+  HWC context. No arbitrary remote zome call or generic signal is
+  authorized. Gateway queue ACK is not receipt.
+- **Multiplayer:** no three independent extensions, actual role
+  delivery, revocation recovery/replay, or browser-to-desktop acceptance.
+  Per-cell host latest-epoch watermark and proof binding remain to
+  be independently implemented in a privileged boundary.
+- **Final freeze:** both Agent 2 and Agent 3 must explicitly approve
+  the same contract and matching vector artifact; green unit tests
+  alone are not a joint approval.
 
-## Critical outstanding conditions (fail closed)
-
-1. **Agent 3 must finalize the exact HPKE suite/wire bytes, origin binding,
-   routing capabilities and real H2HC restricted relay.** The two handoff
-   proposals give example suites, not a published independently verified
-   native sign/verify vector. The present candidate is not an agreement.
-2. **HWC integration is not implemented**: no installed-cell key enrollment
-   exposed to a verified extension handler, no authenticated gateway frame
-   dispatch, no secure verified remote-caller executor/CapGrant bridge.
-   The existing handler continues rejecting arbitrary remote signals, and
-   the local chain author is never used as a remote-caller substitute.
-3. The native-validated `Lobby` / `RoleCommit` lookup, host/seat/round
-   authority, role proof and typed coordinator entry point must be wired
-   as privileged extension-side dependencies. An arbitrary caller-provided
-   `nativeValidated:true` flag or untrusted proof callback is **NOT** a
-   security boundary. The current tests supply fixture callbacks ONLY.
-4. A `role_request_v1` recovery operation is not yet implemented.
-   No secret `provide_role` HTTP GET/POST, generic remote calls,
-   server-side plaintext/mailbox, private DHT writes, or task recovery.
-5. **Isolated real Chromium key-storage test PASS:** [run 44296271475](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44296271475) launches two genuine Chromium processes with one persisted profile. Non-extractable X25519 CryptoKey clone, post-restart decryption, replay denial and epoch rotation passed, but only for the isolated test origin, **not** the installed HWC extension. Firefox extension build, actual HWC Lair signer vectors, three-browser role disclosure/isolation, native app-validation, stale/revoked delivery, and replay after real gateway session revocation **remain unaccepted**. `fake-indexeddb` tests are separately emulated only.
-6. Review and test RFC 9180 against independent IETF vectors, audit the
-   HPKE glue, check full HoloHash type+location hashes using the installed
-   HWC functions and cap the wire payload before exposure. A malformed
-   ciphertext currently consumes the replay reservation as intended.
-7. The accepted `apply.py` storage migration, foreign-DNA restrictions
-   and session lifecycle remain unchanged; do not modify the accepted
-   source patch or mark PR #5 ready while these gates are open.
-
-## Suggested acceptance sequence
-
-Freeze byte-for-byte signed/native vectors with Agent 3; implement only
-authenticated recipient key registration and role-only gateway dispatch;
-inject an authenticated remote caller distinct from `ChainAuthor` or stop;
-verify native-validated `RoleCommit` / seat / proof independently; prove
-the enrolled recipient-only role path in **three independent HWC/Lair
-Chromium processes**, then restart the recipient and repeat, with negative
-wrong-recipient/other-DNA/forgery/replay/revocation tests. Keep private tasks
-and general gameplay out of this gate.
-
-Run the local protocol tests with
-`node --test compatibility/hwc-imposter-compatibility/private-role/private-role.test.mjs compatibility/hwc-imposter-compatibility/private-role/canonical-vectors.test.mjs`.
-The separate CI job also injects `fake-indexeddb` to run the storage test.
+**The accepted HWC source patch remains
+`bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39`** on pinned
+HWC upstream `0c391226e78769d44ccb4661881ed8998b15f903`.
+This branch updates isolated integration candidate modules and tests
+but **does not install them into the upstream HWC extension source**.
+Legacy remote signals, generic remote zome execution, local ChainAuthor
+remote-caller fallback, plaintext server mailbox and private DHT
+publication remain disabled. Keep PR #5 **Draft**.
