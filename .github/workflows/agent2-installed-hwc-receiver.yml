@@ -1,0 +1,114 @@
+name: Agent 2 — installed HWC role receiver compile and Chromium boundary (NO RECEIPT)
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/agent2-installed-hwc-receiver.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent2-installed-hwc-receiver-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed-extension-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      NATIVE_REMOTE_COORDINATOR: DISABLED
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Verify exact source and apply accepted + stage + installed receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 compatibility/hwc-imposter-compatibility/verify_pinned_sources.py hwc
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          python3 compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --write
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py hwc --patch "$GITHUB_WORKSPACE/agent2-installed-hwc-receiver.diff"
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py hwc --write
+          for p in hwc/packages/extension/src/private-role/*.mjs; do git -C hwc add -N "${p#hwc/}"; done
+          git -C hwc diff --check
+          sha256sum agent2-installed-hwc-receiver.diff | tee agent2-installed-hwc-receiver.diff.sha256
+          git -C hwc rev-parse HEAD | tee upstream-hwc-pin.txt
+          git rev-parse HEAD | tee agent2-source-pin.txt
+          grep -Fq 'REMOTE_COORDINATOR=DISABLED' compatibility/hwc-imposter-compatibility/private-role/apply_installed_hwc_receiver.py
+          grep -Fq 'Remote signal rejected: authenticated H2HC envelope unavailable' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'PRIVILEGED_ROLE_OPERATION_DENIED' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'get_authoritative_game_view' hwc/packages/extension/src/background/index.ts
+          grep -Fq 'PRIVATE_ROLE_SESSION_PROBE' hwc/packages/extension/src/offscreen/index.ts
+          grep -Fq 'no genuine installed cell' hwc/packages/extension/src/private-role/trusted-receiver.mjs
+          echo 'HWC_RECEIVER_SOURCE_INSTALLED=YES; END_TO_END_ROLE_RECEIPT=NOT_YET_PROVEN'
+      - name: Node native authority and role boundary regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test compatibility/hwc-imposter-compatibility/private-role/native-authority.test.mjs
+          node --test compatibility/hwc-imposter-compatibility/private-role/trusted-receiver.test.mjs
+          mkdir -p "$RUNNER_TEMP/agent2-idb"
+          cd "$RUNNER_TEMP/agent2-idb"
+          printf '{"name":"agent2-idb-only","private":true}\n' > package.json
+          npm install --no-save --ignore-scripts --package-lock=false --no-audit --no-fund fake-indexeddb@6.2.5
+          cd "$GITHUB_WORKSPACE"
+          node --import "$RUNNER_TEMP/agent2-idb/node_modules/fake-indexeddb/auto/index.mjs" --test compatibility/hwc-imposter-compatibility/private-role/store.test.mjs
+      - name: Install pinned HWC dependencies
+        run: npm ci --prefix hwc
+      - name: Typecheck original core and installed extension
+        working-directory: hwc
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tsc -p packages/shared/tsconfig.json
+          npx tsc -p packages/lair/tsconfig.json
+          npx tsc -p packages/core/tsconfig.json
+          npx tsc --noEmit -p packages/extension/tsconfig.json
+      - name: Build genuine Chromium extension bundle
+        working-directory: hwc
+        run: npm run build:chrome --workspace @hwc/extension
+      - name: Install real Chromium and exercise privileged-boundary denial
+        working-directory: hwc
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx playwright install --with-deps chromium
+          node ../compatibility/hwc-imposter-compatibility/private-role/installed-chromium-boundary.mjs
+      - name: Archive exact installed HWC source delta and evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent2-installed-hwc-boundary-${{ github.run_id }}
+          path: |
+            agent2-installed-hwc-receiver.diff
+            agent2-installed-hwc-receiver.diff.sha256
+            upstream-hwc-pin.txt
+            agent2-source-pin.txt
+          retention-days: 14
+      - name: Strict evidence limit
+        run: |
+          echo 'CHROMIUM_EXTENSION_LOADED_AND_PRIVATE_ROUTE_DENIED=PASS'
+          echo 'GENUINE_INSTALLED_GAME_NATIVE_VIEW=NOT_TESTED_IN_THIS_JOB'
+          echo 'GATEWAY_ROLE_QUEUED=NOT_TESTED_IN_THIS_JOB'
+          echo 'GUEST_B_EXTENSION_LOCAL_DECRYPTED_ROLE_RECEIPT=NOT_TESTED_IN_THIS_JOB'
+          echo 'REMOTE_COORDINATOR=DISABLED'

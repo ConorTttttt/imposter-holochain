@@ -1,0 +1,111 @@
+<!doctype html><meta charset="utf-8"><body>LOADING</body><script type="module">
+import {openRoleStore} from './store.mjs';
+import {seal,openForCell,createRecipientKey,rawPublicKey} from './hpke.mjs';
+import {attestKey} from './wire.mjs';
+const dna=new Uint8Array([0x84,0x2d,0x24,...new Array(36).fill(1)]);
+const agent=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(2)]);
+const sender=new Uint8Array([0x84,0x20,0x24,...new Array(36).fill(3)]);
+const commit=new Uint8Array([0x84,0x29,0x24,...new Array(36).fill(4)]);
+const messageId=new Uint8Array(16).fill(5);
+const lobby=new Uint8Array([0x84,0x29,0x24,...new Array(36).fill(6)]);
+const actionEq=(a,b)=>a instanceof Uint8Array&&b instanceof Uint8Array&&a.length===b.length&&a.every((v,i)=>v===b[i]);
+async function assertDurableActionPins(store){
+ if(!actionEq(await store.getPinnedLobby(dna,agent),lobby)||
+    !actionEq(await store.getPinnedRoleCommit(dna,agent),commit))
+   throw Error('persisted native-action identity pin lost');
+ let lobbyDenied=false,commitDenied=false;
+ try{await store.pinNativeLobby(dna,agent,new Uint8Array([0x84,0x29,0x24,...new Array(36).fill(9)]));}
+ catch{lobbyDenied=true;}
+ try{await store.pinTrustedRoleCommit(dna,agent,lobby,
+   new Uint8Array([0x84,0x29,0x24,...new Array(36).fill(10)]));}
+ catch{commitDenied=true;}
+ if(!lobbyDenied||!commitDenied)throw Error('action equivocation accepted after Chromium restart');
+ return true;
+}
+try{
+ const store=await openRoleStore('real-chromium-role-test-v1');
+ const phase=new URLSearchParams(location.search).get('phase');
+ if(phase==='revoked-restart'){
+  // Third *physical Chromium process*: revoked recipient watermark must
+  // survive an additional process exit, never resurrect a stale DHT key.
+  const openedDB=indexedDB.open('real-chromium-role-test-v1',3);
+  const db=await new Promise((ok,fail)=>{openedDB.onsuccess=()=>ok(openedDB.result);openedDB.onerror=()=>fail(openedDB.error);});
+  const tx=db.transaction('trusted','readonly'),request=tx.objectStore('trusted').getAll();
+  const all=await new Promise((ok,fail)=>{request.onsuccess=()=>ok(request.result);request.onerror=()=>fail(request.error);});
+  db.close();
+  if(all.length!==1||all[0].epoch!==1||!all[0].revoked)throw Error('revoked native epoch floor lost');
+  const remote=all[0].attestation.agent;
+  const floor=await store.getTrustedFloor(dna,remote);
+  const revokedFloorRetained=floor?.revoked===true&&floor.epoch===1&&
+    floor.keyId.every((v,i)=>v===all[0].keyId[i]);
+  if(!revokedFloorRetained)throw Error('revoked epoch/key ID not durable');
+  try{await store.getTrustedRecipient(dna,remote);throw Error('revoked recipient became active');}
+  catch(e){if(String(e).includes('became active'))throw e;}
+  let replayDenied=false;
+  try{await store.reserve({dna,recipient:agent,sender,commit,messageId});}catch{replayDenied=true;}
+  if(!replayDenied)throw Error('old replay accepted after second restart');
+  const actionPinsRetained=await assertDurableActionPins(store);
+  const local=await store.getCell(dna,agent);
+  if(local?.epoch!==2||local.privateKey?.extractable!==false)throw Error('rotated cell lost');
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:2,
+    nonextractable:true,replayDenied,revokedFloorRetained,actionPinsRetained});
+ }else if(phase==='register'){
+  const cell=await store.rotateCell(dna,agent,1);
+  // Test-only source values model the already validated native actions.
+  // In production only the installed-cell privileged executor may create pins.
+  await store.pinNativeLobby(dna,agent,lobby);
+  await store.pinTrustedRoleCommit(dna,agent,lobby,commit);
+  await store.reserve({dna,recipient:agent,sender,commit,messageId});
+  // Real browser WebCrypto signing and separate non-extractable X25519 key.
+  // Public signed enrollment is pinned in EXTENSION-ORIGIN IDB, never the
+  // shared page localStorage. This is not a genuine installed HWC Lair cell.
+  const signer=await crypto.subtle.generateKey('Ed25519',false,['sign','verify']);
+  const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signer.publicKey));
+  const remoteAgent=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]);
+  const remote=await createRecipientKey();
+  const att=await attestKey({dna,agent:remoteAgent,epoch:1,
+    publicKey:await rawPublicKey(remote.publicKey),now:Date.now(),
+    sign:async(_pub,transcript)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signer.privateKey,transcript))});
+  await store.pinTrustedRecipient(dna,remoteAgent,att);
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:cell.epoch,nonextractable:!cell.privateKey.extractable});
+ }else{
+  const actionPinsRetained=await assertDurableActionPins(store);
+  const cell=await store.getCell(dna,agent);
+  if(!cell||cell.epoch!==1||cell.privateKey.extractable)throw Error('persisted key not found');
+  const txt=new TextEncoder().encode('secret');const aad=new Uint8Array([1,2]);
+  const sealed=await seal(cell.publicKey,txt,aad);
+  const opened=await openForCell(cell,sealed.enc,sealed.ciphertext,aad);
+  if(new TextDecoder().decode(opened)!=='secret')throw Error('failed decryption after restart');
+  let replayDenied=false;
+  try{await store.reserve({dna,recipient:agent,sender,commit,messageId});}catch{replayDenied=true;}
+  if(!replayDenied)throw Error('replay succeeded');
+  let rotationDenied=false;
+  try{await store.rotateCell(dna,agent,1);}catch{rotationDenied=true;}
+  if(!rotationDenied)throw Error('same-epoch rotation succeeded');
+  // Re-open a distinct trusted-recipient watermark stored by the first
+  // Chromium process. Signature is verified anew without the signer secret.
+  const openedDB=indexedDB.open('real-chromium-role-test-v1',3);
+  const db=await new Promise((ok,fail)=>{openedDB.onsuccess=()=>ok(openedDB.result);openedDB.onerror=()=>fail(openedDB.error);});
+  const tx=db.transaction('trusted','readonly');
+  const allReq=tx.objectStore('trusted').getAll();
+  const pinned=await new Promise((ok,fail)=>{allReq.onsuccess=()=>ok(allReq.result);allReq.onerror=()=>fail(allReq.error);});
+  db.close();
+  if(pinned.length!==1||pinned[0].epoch!==1||pinned[0].revoked)throw Error('trusted recipient missing after Chromium restart');
+  const previous=pinned[0].attestation;
+  const verified=await store.getTrustedRecipient(dna,previous.agent);
+  if(verified.epoch!==1)throw Error('trusted epoch was lost');
+  await store.revokeTrustedRecipient(dna,previous.agent);
+  let revokedKeyDenied=false;
+  try{await store.getTrustedRecipient(dna,previous.agent);}catch{revokedKeyDenied=true;}
+  if(!revokedKeyDenied)throw Error('revoked trusted key accepted after restart');
+  const floor=await store.getTrustedFloor(dna,previous.agent);
+  if(floor?.epoch!==1||!floor.revoked||
+     !floor.keyId.every((v,i)=>v===previous.keyId[i]))
+    throw Error('revocation discarded the epoch/key ID floor');
+  const newCell=await store.rotateCell(dna,agent,2);
+  if(newCell.epoch!==2||newCell.privateKey.extractable)throw Error('rotation key insecure');
+  document.body.textContent=JSON.stringify({status:'PASS',phase,epoch:newCell.epoch,replayDenied,rotationDenied,revokedKeyDenied,actionPinsRetained,nonextractable:!newCell.privateKey.extractable});
+ }
+ store.close();
+}catch(e){document.body.textContent=JSON.stringify({status:'FAIL',phase:location.search,error:String(e)});}
+</script>

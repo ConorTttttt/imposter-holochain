@@ -1,0 +1,57 @@
+name: Agent 2 - private role cryptographic preflight (NOT browser acceptance)
+
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/agent2-role-preflight.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/**'
+  pull_request:
+    paths:
+      - '.github/workflows/agent2-role-preflight.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crypto-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Source syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in compatibility/hwc-imposter-compatibility/private-role/*.mjs; do
+            node --check "$f"
+          done
+      - name: Install isolated IndexedDB test emulation (NOT Chromium)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/agent2-idb"
+          cd "$RUNNER_TEMP/agent2-idb"
+          printf '{"name":"agent2-idb-only","private":true}\n' > package.json
+          npm install --no-save --ignore-scripts --package-lock=false --no-audit --no-fund fake-indexeddb@6.2.5
+          test -s node_modules/fake-indexeddb/auto/index.mjs
+          echo "AGENT2_IDB_SHIM=$RUNNER_TEMP/agent2-idb/node_modules/fake-indexeddb/auto/index.mjs" >> "$GITHUB_ENV"
+      - name: Crypto, transcript, and simulated persistent IndexedDB tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import "$AGENT2_IDB_SHIM" --test compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
+      - name: Confirm remote HWC handler remains disabled (source-level invariant)
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'Remote signal rejected: authenticated H2HC envelope unavailable' \
+            compatibility/hwc-imposter-compatibility/apply.py
+          echo 'REMOTE_WASM_RECEIVER_NOT_ENABLED: PASS'

@@ -1,0 +1,200 @@
+/** Simulated IndexedDB durability and concurrency, not physical Chromium acceptance.
+ * The CI workflow imports fake-indexeddb/auto. No secrets printed. */
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {openRoleStore} from './store.mjs';
+import {seal,openForCell} from './hpke.mjs';
+import {attestKey} from './wire.mjs';
+const hash=(prefix,n)=>new Uint8Array([...prefix,...new Array(36).fill(n)]);
+const dna=n=>hash([0x84,0x2d,0x24],n);
+const agent=n=>hash([0x84,0x20,0x24],n);
+const commit=n=>hash([0x84,0x29,0x24],n);
+const replay=(d,r,s,root,id)=>({dna:d,recipient:r,sender:s,commit:root,messageId:new Uint8Array(16).fill(id)});
+test('cell key retains non-extractable X25519 identity across DB closure and reopening',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const name='agent2-role-cell-restart-'+Date.now();
+ const first=await openRoleStore(name),a=agent(1),b=agent(2),d=dna(5);
+ const k1=await first.rotateCell(d,a,1);
+ assert.equal(k1.privateKey.extractable,false);
+ assert.equal(await first.getCell(d,b),null);
+ assert.equal(await first.getCell(dna(6),a),null);
+ const k2=await first.rotateCell(d,b,1);
+ assert.notDeepEqual(k1.publicKey,k2.publicKey);
+ await assert.rejects(first.rotateCell(d,a,1),/non-monotonic/);
+ first.close();
+ const second=await openRoleStore(name);
+ const retrieved=await second.getCell(d,a);
+ assert.ok(retrieved?.privateKey);
+ assert.equal(retrieved.epoch,1);
+ assert.equal(retrieved.privateKey.extractable,false);
+ assert.deepEqual(retrieved.keyId,k1.keyId);
+ const aad=new Uint8Array([1,2,3]),plaintext=new Uint8Array([4,5,6]);
+ const packet=await seal(retrieved.publicKey,plaintext,aad);
+ assert.deepEqual(await openForCell(retrieved,packet.enc,packet.ciphertext,aad),plaintext);
+ const newer=await second.rotateCell(d,a,2);
+ assert.equal(newer.epoch,2);
+ await assert.rejects(second.rotateCell(d,a,1),/non-monotonic/);
+ second.close();
+});
+test('atomic replay insertion persists across DB reopening; concurrent duplicate and other cells',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const name='agent2-role-replay-'+Date.now();
+ const d=dna(3),r=agent(3),s=agent(2),c=commit(8);
+ const a=await openRoleStore(name),b=await openRoleStore(name);
+ const msg=replay(d,r,s,c,7);
+ const both=await Promise.allSettled([a.reserve(msg),b.reserve(msg)]);
+ assert.equal(both.filter(x=>x.status==='fulfilled').length,1);
+ assert.equal(both.filter(x=>x.status==='rejected').length,1);
+ a.close();b.close();
+ const restarted=await openRoleStore(name);
+ await assert.rejects(restarted.reserve(msg),/replay/);
+ await assert.rejects(restarted.reserve(replay(d,r,s,commit(9),7)),/replay/);
+ await restarted.reserve(replay(d,r,s,c,8));
+ await restarted.reserve(replay(dna(4),r,s,c,7));
+ await restarted.reserve(replay(d,agent(9),s,c,7));
+ restarted.close();
+});
+
+test('signed attestation is durably pinned only to the active nonextractable cell key',async()=>{
+ if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
+ const n='agent2-role-attestation-'+Date.now(),store=await openRoleStore(n);
+ const signKey=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signKey.publicKey));
+ const a=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]),d=dna(12);
+ const sign=async(_core,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signKey.privateKey,b));
+ const c=await store.rotateCell(d,a,1);
+ const now=Date.now(),att=await attestKey({dna:d,agent:a,keyId:c.keyId,epoch:1,publicKey:c.publicKey,sign,now});
+ assert.equal(await store.installCellAttestation(d,a,att,{now}),true);
+ await assert.rejects(store.installCellAttestation(dna(13),a,att,{now}),/wrong attested cell/);
+ await assert.rejects(store.installCellAttestation(d,a,{...att,publicKey:new Uint8Array(32)},{now}),/forged/);
+ await assert.rejects(store.installCellAttestation(d,a,{...att,keyId:new Uint8Array(16)},{now}),/forged/);
+ store.close();
+ const reopened=await openRoleStore(n),persisted=await reopened.getCell(d,a);
+ assert.deepEqual(persisted.attestation.signature,att.signature);
+ assert.equal(persisted.privateKey.extractable,false);
+ await reopened.rotateCell(d,a,2);
+ await assert.rejects(reopened.installCellAttestation(d,a,att,{now}),/does not match current/);
+ assert.equal((await reopened.getCell(d,a)).attestation,undefined);
+ reopened.close();
+});
+
+test('native-enrolled recipient watermark rejects rollback and same-epoch equivocation across restart',async()=>{
+ const name='agent2-role-trusted-epoch-'+Date.now(),db=await openRoleStore(name);
+ const signer=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',signer.publicKey));
+ const a=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]),d=dna(14),now=Date.now();
+ const sign=async(_pub,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',signer.privateKey,b));
+ const pair=await crypto.subtle.generateKey('X25519',false,['deriveBits']);
+ const publicKey=new Uint8Array(await crypto.subtle.exportKey('raw',pair.publicKey));
+ const att1=await attestKey({dna:d,agent:a,epoch:1,publicKey,sign,now});
+ assert.equal(await db.pinTrustedRecipient(d,a,att1,{now}),true);
+ assert.deepEqual((await db.getTrustedRecipient(d,a,{now})).keyId,att1.keyId);
+ db.close();
+ const restarted=await openRoleStore(name);
+ const att0=await attestKey({dna:d,agent:a,epoch:1,publicKey,sign,now,keyId:crypto.getRandomValues(new Uint8Array(16))});
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att0,{now}),/equivocation/);
+ const att2=await attestKey({dna:d,agent:a,epoch:2,publicKey,sign,now});
+ await restarted.pinTrustedRecipient(d,a,att2,{now});
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att1,{now}),/rollback/);
+ await restarted.revokeTrustedRecipient(d,a);
+ assert.equal((await restarted.getTrustedFloor(d,a)).epoch,2);
+ assert.deepEqual((await restarted.getTrustedFloor(d,a)).keyId,att2.keyId);
+ assert.equal((await restarted.getTrustedFloor(d,a)).revoked,true);
+ await assert.rejects(restarted.getTrustedRecipient(d,a,{now}),/no current/);
+ await assert.rejects(restarted.pinTrustedRecipient(d,a,att2,{now}),/revoked epoch/);
+ const att3=await attestKey({dna:d,agent:a,epoch:3,publicKey,sign,now});
+ await restarted.pinTrustedRecipient(d,a,att3,{now});
+ assert.equal((await restarted.getTrustedFloor(d,a)).revoked,false);
+ assert.equal((await restarted.getTrustedFloor(d,a)).epoch,3);
+ assert.equal((await restarted.getTrustedRecipient(d,a,{now})).epoch,3);
+ await assert.rejects(restarted.getTrustedRecipient(d,a,{now:now+61000}),/expired/);
+ restarted.close();
+});
+test('version-1 key/replay rows survive version-3 trusted watermark/action-pin upgrade',async()=>{
+ const name='agent2-role-idb-upgrade-'+Date.now();
+ const initial=indexedDB.open(name,1);
+ initial.onupgradeneeded=()=>{const db=initial.result;db.createObjectStore('cells',{keyPath:'cell'});db.createObjectStore('replay',{keyPath:'id'});};
+ const old=await new Promise((resolve,reject)=>{initial.onsuccess=()=>resolve(initial.result);initial.onerror=()=>reject(initial.error);});
+ old.close();
+ const upgraded=await openRoleStore(name);
+ const d=dna(20),a=agent(20),k=await upgraded.rotateCell(d,a,1);
+ assert.equal(k.privateKey.extractable,false);
+ await upgraded.reserve(replay(d,a,agent(19),commit(20),1));
+ upgraded.close();
+ const again=await openRoleStore(name);
+ assert.equal((await again.getCell(d,a)).epoch,1);
+ await assert.rejects(again.reserve(replay(d,a,agent(19),commit(20),1)),/replay/);
+ again.close();
+});
+
+test('consecutive native key epochs and non-rewinding renewal windows are required',async()=>{
+ const name='agent2-role-renewal-'+Date.now(),store=await openRoleStore(name),d=dna(31);
+ const keySigner=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+ const pub=new Uint8Array(await crypto.subtle.exportKey('raw',keySigner.publicKey));
+ const agentId=new Uint8Array([0x84,0x20,0x24,...pub,0,0,0,0]);
+ const sign=async(_k,b)=>new Uint8Array(await crypto.subtle.sign('Ed25519',keySigner.privateKey,b));
+ const first=await store.rotateCell(d,agentId,1);
+ await assert.rejects(store.rotateCell(d,agentId,3),/skipped/);
+ const now=Date.now();
+ const a1=await attestKey({dna:d,agent:agentId,keyId:first.keyId,
+   publicKey:first.publicKey,epoch:1,sign,now,validForMs:40000});
+ await store.installCellAttestation(d,agentId,a1,{now});
+ const rollback=await attestKey({dna:d,agent:agentId,keyId:first.keyId,
+   publicKey:first.publicKey,epoch:1,sign,now:now+1000,validForMs:1000});
+ await assert.rejects(store.installCellAttestation(d,agentId,rollback,{now:now+1000}),/rollback/);
+ const remote1=await store.pinTrustedRecipient(d,agentId,a1,{now});
+ assert.equal(remote1,true);
+ await assert.rejects(store.pinTrustedRecipient(d,agentId,rollback,{now:now+1000}),/rollback/);
+ const a2=await attestKey({dna:d,agent:agentId,publicKey:first.publicKey,
+   epoch:3,sign,now});
+ await assert.rejects(store.pinTrustedRecipient(d,agentId,a2,{now}),/rollback/);
+ const newer=await store.rotateCell(d,agentId,2);
+ assert.equal(newer.epoch,2);
+ store.close();
+});
+
+test('native Lobby and RoleCommit pins survive restart and never switch actions',async()=>{
+ const name='agent2-role-action-pins-'+Date.now();
+ const d=dna(41),a=agent(42),lobby=commit(51),roleCommit=commit(52);
+ const first=await openRoleStore(name);
+ assert.equal(await first.getPinnedLobby(d,a),null);
+ assert.equal(await first.getPinnedRoleCommit(d,a),null);
+ await assert.rejects(first.pinTrustedRoleCommit(d,a,lobby,roleCommit),/missing/);
+ await first.pinNativeLobby(d,a,lobby);
+ await first.pinNativeLobby(d,a,lobby);
+ await assert.rejects(first.pinNativeLobby(d,a,commit(53)),/Lobby action changed/);
+ await first.pinTrustedRoleCommit(d,a,lobby,roleCommit);
+ await first.pinTrustedRoleCommit(d,a,lobby,roleCommit);
+ first.close();
+ const second=await openRoleStore(name);
+ assert.deepEqual(await second.getPinnedLobby(d,a),lobby);
+ assert.deepEqual(await second.getPinnedRoleCommit(d,a),roleCommit);
+ await assert.rejects(second.pinTrustedRoleCommit(d,a,lobby,commit(54)),/RoleCommit action changed/);
+ await assert.rejects(second.pinTrustedRoleCommit(d,a,commit(55),roleCommit),/RoleCommit action changed/);
+ await assert.rejects(second.pinNativeLobby(d,a,commit(55)),/Lobby action changed/);
+ assert.deepEqual(await second.getPinnedRoleCommit(d,a),roleCommit);
+ assert.equal(await second.getPinnedRoleCommit(dna(42),a),null);
+ assert.equal(await second.getPinnedRoleCommit(d,agent(44)),null);
+ await assert.rejects(second.pinNativeLobby(d,a,new Uint8Array(39)),/ActionHash/);
+ second.close();
+});
+test('existing version-2 trusted recipient records survive the version-3 action pin migration',async()=>{
+ const name='agent2-role-v2-to-v3-'+Date.now();
+ const req=indexedDB.open(name,2);
+ req.onupgradeneeded=()=>{
+  const d=req.result;
+  d.createObjectStore('cells',{keyPath:'cell'});
+  d.createObjectStore('replay',{keyPath:'id'});
+  d.createObjectStore('trusted',{keyPath:'cell'});
+ };
+ const original=await new Promise((resolve,reject)=>{
+  req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+ });
+ original.close();
+ const upgraded=await openRoleStore(name);
+ const d=dna(81),a=agent(82),l=commit(83),c=commit(84);
+ await upgraded.pinNativeLobby(d,a,l);
+ await upgraded.pinTrustedRoleCommit(d,a,l,c);
+ assert.deepEqual(await upgraded.getPinnedRoleCommit(d,a),c);
+ upgraded.close();
+});

@@ -1,0 +1,25 @@
+{
+  "repository": "Holo-Host/holo-web-conductor",
+  "revision": "0c391226e78769d44ccb4661881ed8998b15f903",
+  "source": "GitHub connector fetch_file at pinned commit, 2026-11-17",
+  "files": {
+    "packages/extension/src/lib/happ-context-manager.ts": "4d88e5089fd0554518bcc0b24102a8fad54a39b3",
+    "packages/core/src/ribosome/wasm-io-types.ts": "5e3107e4426d257b34b4c0d0f13896ae9e55b897",
+    "packages/core/src/storage/types.ts": "ad14a0ee3859a4f4039d7c73a5c6c438095c296e",
+    "packages/core/src/hash/index.ts": "05edddb095b001bfde48b116e4a0a62a76615158",
+    "packages/core/src/ribosome/host-fn/create.ts": "0257631b2397b702fdb04af42b982701bff1258d",
+    "packages/core/src/ribosome/host-fn/update.ts": "a0589c39da3fce0c51bbfb2d684eca5a081d434a",
+    "packages/core/src/ribosome/host-fn/entry-utils.ts": "87e63ade9327a346a1fe9212bfb2984a44ca4d1c",
+    "packages/core/src/ribosome/host-fn/action-serialization.ts": "88ea66bb6c17ccab0726782f619c1c28a7cb49d8",
+    "packages/core/src/dht/record-converter.ts": "2feb79f44f9a7d261f1abe690a92ada37c8c5d7f",
+    "packages/core/src/dht/produce-ops.ts": "ba26103fd5609ba8f962b14294d1da51e07851ab",
+    "packages/extension/src/offscreen/ribosome-worker.ts": "ce0a47a86f1d7e3398e4faaf6919b6d8ab5769ae",
+    "packages/core/src/storage/source-chain-storage.ts": "1f7c0b0262f3d67b396cfd1191f22a63a73ce377",
+    "packages/core/src/dht/publish-tracker.ts": "1a82e3cb9e02b7e3cbc8d27a92d7d50ff50e73ab",
+    "packages/core/src/storage/genesis.ts": "2e4e7af3473ff31ff821a8ab7e825ece5e4fb9cb",
+    "packages/core/src/ribosome/index.ts": "4e04d001b95d54927f1a01a991cb4d05a3c11ea2",
+    "packages/core/src/storage/genesis.test.ts": "65579a9c7a6623be19363435de78739e425d8710",
+    "packages/extension/src/lib/happ-context-manager.test.ts": "4b6c0f57715d085c679f6681d3e2fd379122f93e",
+    "packages/extension/src/background/index.ts": "180defe93c0258389a34fdb5751aaa260b42e30a"
+  }
+}

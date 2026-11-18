@@ -1,0 +1,55 @@
+name: Agent 2 - real Chromium role key persistence (NOT gateway delivery)
+
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/agent2-role-chromium-persistence.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/browser*'
+      - 'compatibility/hwc-imposter-compatibility/private-role/store.mjs'
+      - 'compatibility/hwc-imposter-compatibility/private-role/hpke.mjs'
+  pull_request:
+    paths:
+      - '.github/workflows/agent2-role-chromium-persistence.yml'
+      - 'compatibility/hwc-imposter-compatibility/private-role/browser*'
+      - 'compatibility/hwc-imposter-compatibility/private-role/store.mjs'
+      - 'compatibility/hwc-imposter-compatibility/private-role/hpke.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium-process-restart:
+    name: Real browser storage lifecycle (isolated origin, no gateway)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact pinned HWC dependency tree for Playwright
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - name: Install pinned browser test dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc
+          (cd hwc && npx playwright install --with-deps chromium)
+      - name: Persist non-extractable key, replay and revoked epoch across three Chromium processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node compatibility/hwc-imposter-compatibility/private-role/browser-persistence.mjs
+      - name: Confirm this CI does not imply remote role delivery
+        run: echo 'LOCAL_CHROMIUM_KEYSTORE_ONLY; H2HC role relay NOT enabled'

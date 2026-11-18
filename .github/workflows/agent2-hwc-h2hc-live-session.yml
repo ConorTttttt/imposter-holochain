@@ -1,0 +1,403 @@
+name: Agent 2 — live HWC browser session status over authenticated H2HC
+on:
+  push:
+    branches: [validation/agent2-hwc-integration]
+    paths:
+      - '.github/workflows/agent2-hwc-h2hc-live-session.yml'
+      - 'compatibility/hwc-imposter-compatibility/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agent2-session-hwc-h2hc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-ephemeral-hwc-to-h2hc:
+    name: Live HWC bearer presence, genuine Lair auth and signed DHT publication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BROWSER_POC_IDENTITY_SOURCE: EPHEMERAL_HWC_BROWSER_PROFILE
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout EXACT verified Agent4 genuine-HWC first-cell harness
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 8b167bf7f5bda0b213cd0a1679b35e9d252a4a36
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout EXACT corrected Agent 2 HWC implementation
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39
+          path: agent2-kit
+          persist-credentials: false
+
+      - name: Checkout Agent 3 test-only browser instrumentation (not an HWC source change)
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: 8d5079c07322c5c07311252319229903188f4e42
+          path: agent3-kit
+          persist-credentials: false
+
+      - name: Checkout Agent 2 acceptance-only instrumentation
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: ${{ github.sha }}
+          path: agent2-acceptance
+          persist-credentials: false
+
+      - name: Checkout pinned upstream HWC
+        uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: 0c391226e78769d44ccb4661881ed8998b15f903
+          path: hwc
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Agent4/Agent2/HWC pins and apply HWC patch only in runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 8b167bf7f5bda0b213cd0a1679b35e9d252a4a36
+          test "$(git -C agent2-kit rev-parse HEAD)" = bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39
+          test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
+          test "$(git -C agent3-kit rev-parse HEAD)" = 8d5079c07322c5c07311252319229903188f4e42
+          git -C hwc switch -c fix/imposter-hwc-compatibility
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
+          python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
+          git -C hwc diff --check
+          python3 agent3-kit/ci/agent3-h2hc-kit/instrument_agent4_browser.py scripts/browser-poc-hwc-smoke.mjs
+          # Keep the original secure Agent3/Lair/H2HC harness; make the fixed
+          # public status a strict P0 browser assertion in a CI-only script.
+          python3 - <<'PY'
+          from pathlib import Path
+          bridge=Path('scripts/agent3-h2hc-real-browser-bridge.mjs')
+          code=bridge.read_text()
+          old='   if(net?.hasSession!==true)'
+          assert code.count(old)==1, 'Strict Agent2 live session assertion anchor drift'
+          code=code.replace(old,
+            "   must(net?.hasSession===true, 'HWC did not reflect live H2HC auth session in public status');\n"
+            "   must(!Object.hasOwn(net,'sessionToken')&&!Object.hasOwn(net,'token'), 'Bearer leaked into status API');\n"
+            +old,1)
+          # Extend the live browser run without changing the accepted HWC patch.
+          # This is a real Chromium process restart plus controlled endpoint
+          # disruption; endpoint disruption is NOT a measured H2HC token expiry.
+          lifecycle = r"""
+           // Agent2 lifecycle acceptance (ephemeral Lair profile; no bearer is read).
+           const lifecycleStatus = async () => page.evaluate(async () => ({
+             connection: await window.holochain.getConnectionStatus(),
+             network: await window.holochain.getNetworkStatus()
+           }));
+           const assertPublicStatus = (s, expected) => {
+             must(s.network?.hasSession === expected,
+               'Live HWC session reporting disagrees with expected state: ' + expected);
+             const publicData = JSON.stringify(s);
+             must(!/sessionToken|accessToken|refreshToken|bearer|authorization/i.test(publicData),
+               'Credential-shaped field exposed through public HWC status');
+           };
+           const waitForSession = async expected => {
+             let last;
+             for (let i=0;i<100;i++) {
+               last=await lifecycleStatus();
+               if (last.network?.hasSession===expected &&
+                   (expected!==true || last.connection?.authenticated===true)) {
+                 assertPublicStatus(last,expected);
+                 return;
+               }
+               await new Promise(r=>setTimeout(r,500));
+             }
+             throw Error('Timed out waiting for HWC session transition to '+expected+
+               '; observed only booleans '+JSON.stringify({
+                 authenticated:last?.connection?.authenticated,
+                 hasSession:last?.network?.hasSession,
+                 wsHealthy:last?.connection?.wsHealthy
+               }));
+           };
+           await step('AGENT2_CONTROLLED_ENDPOINT_LOSS_INVALIDATES_SESSION',async()=>{
+             // Deliberately changes the configured endpoint: not an expired bearer test.
+             await page.evaluate(async()=>window.holochain.configureNetwork({
+               linkerUrl:'http://127.0.0.1:1'
+             }));
+             await waitForSession(false);
+             evidence.agent2_endpoint_loss='SIMULATED_ENDPOINT_DISRUPTION_NOT_TOKEN_EXPIRY';
+           });
+           await step('AGENT2_LIVE_REAUTHENTICATION',async()=>{
+             await page.evaluate(async(url)=>window.holochain.configureNetwork({
+               linkerUrl:url
+             }),process.env.H2HC_BASE_URL);
+             await waitForSession(true);
+           });
+          
+           await step('AGENT2_REAL_WEBSOCKET_DISCONNECT_INVALIDATES_SESSION',async()=>{
+             // Kill the actual authenticated H2HC WebSocket server process. Unlike
+             // endpoint reconfiguration this forces a real close of an existing WS.
+             const pid=Number(process.env.H2HC_SERVER_PID);
+             must(Number.isSafeInteger(pid)&&pid>1,'Missing live H2HC server PID');
+             process.kill(pid,'SIGTERM');
+             let offline=false;
+             for(let i=0;i<60;i++){
+               try{await fetch(process.env.H2HC_BASE_URL+'/health');}
+               catch{offline=true;break;}
+               await new Promise(r=>setTimeout(r,250));
+             }
+             must(offline,'The real H2HC server did not stop');
+             await waitForSession(false);
+             evidence.agent2_real_ws_disconnect='SERVER_PROCESS_TERMINATED_WS_CLOSED';
+           });
+           await step('AGENT2_REAL_WEBSOCKET_RECOVERY',async()=>{
+             // Start the identical pinned H2HC binary on the same address and keyfile.
+             // Do NOT reconfigure the extension endpoint; require its own WS reconnect
+             // and fresh signed challenge/registration to restore public hasSession.
+             const {spawn}=await import('node:child_process');
+             const output=fs.openSync(process.env.H2HC_SERVER_LOG,'a');
+             const linker=spawn(path.join(ROOT,'h2hc-binary/h2hc-linker-linux-x86_64'),
+               ['--address','127.0.0.1','--port','8090'],
+               {cwd:ROOT,env:{...process.env},stdio:['ignore',output,output]});
+             fs.closeSync(output);
+             linker.on('error',()=>{});
+             must(Number.isSafeInteger(linker.pid)&&linker.pid>1,
+               'Could not restart pinned H2HC process');
+             linker.unref();
+             process.on('exit',()=>{try{process.kill(linker.pid,'SIGTERM')}catch{}});
+             let online=false;
+             for(let i=0;i<120;i++){
+               try{const r=await fetch(process.env.H2HC_BASE_URL+'/health');
+                 if(r.ok){online=true;break;}}catch{}
+               await new Promise(r=>setTimeout(r,250));
+             }
+             must(online,'Pinned H2HC server did not restart');
+             await waitForSession(true);
+             evidence.agent2_ws_recovered='AUTOMATIC_FRESH_AUTH_WITHOUT_ENDPOINT_RECONFIGURATION';
+           });
+           await step('AGENT2_FULL_CHROMIUM_RESTART_AND_FRESH_AUTH',async()=>{
+             await context.close();
+             context=await chromium.launchPersistentContext(PROFILE,{
+               headless:false,viewport:{width:1100,height:800},
+               args:['--disable-extensions-except='+ext,'--load-extension='+ext,
+                 '--no-first-run','--disable-default-apps','--no-sandbox',
+                 '--disable-dev-shm-usage']
+             });
+             page=context.pages()[0]||await context.newPage();
+             await page.goto(ORIGIN,{waitUntil:'domcontentloaded'});
+             await page.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),
+               {timeout:45000});
+             const after=await page.evaluate(async()=>{
+               const hc=window.holochain;
+               await hc.connect();
+               const k=new Uint8Array(hc.myPubKey||[]);
+               return 'u'+btoa(String.fromCharCode(...k)).replace(/\+/g,'-')
+                 .replace(/\//g,'_').replace(/=+$/,'');
+             });
+             must(after===host,'Lair identity changed on real Chromium process restart');
+             await page.evaluate(async(url)=>window.holochain.configureNetwork({
+               linkerUrl:url
+             }),process.env.H2HC_BASE_URL);
+             await waitForSession(true);
+             evidence.agent2_chromium_restart='REAL_PROCESS_RELAUNCH_SAME_EPHEMERAL_PROFILE';
+           });
+          
+           // Independent server-side revocation exercise, not a simulated network outage.
+           await step('AGENT2_SERVER_SIDE_AGENT_SESSION_REVOCATION',async()=>{
+             const url=process.env.H2HC_BASE_URL+'/admin/agents';
+             const secret=process.env.H2HC_LINKER_ADMIN_SECRET;
+             must(Boolean(secret),'Missing ephemeral admin authorization');
+             const headers={Authorization:'Bearer '+secret,'Content-Type':'application/json'};
+             const removed=await fetch(url,{method:'DELETE',headers,
+               body:JSON.stringify({agent_pubkey:host})});
+             must(removed.status===204,'H2HC admin revocation denied (status '+removed.status+')');
+             const response=await fetch(url,{headers:{Authorization:'Bearer '+secret}});
+             must(response.ok,'Could not verify revoked agent allowlist');
+             const data=await response.json();
+             must(!data.agents?.some(a=>a.agent_pubkey===host),
+               'Revoked Lair identity still present in server allowlist');
+             evidence.agent2_server_revocation='ADMIN_AGENT_DELETE_204_WITH_SESSION_REMOVAL';
+           });
+           await step('AGENT2_REVOKED_BROWSER_SESSION_INVALIDATES',async()=>{
+             // This is a distinct live status assertion after server-side revocation.
+             // No endpoint URL reconfiguration, bearer introspection or socket simulation.
+             await waitForSession(false);
+           });
+           record('AGENT2_TRUE_TOKEN_EXPIRY','NOT RUN',
+             'H2HC server has no session TTL; independently tested admin revocation above');
+           record('AGENT2_TWO_INDEPENDENT_LAIR_SESSIONS','NOT RUN',
+             'Requires distinct authorized second profile and cross-bearer rejection');
+           record('AGENT2_FOREIGN_DNA_BROWSER_SIGNING','NOT RUN',
+             'Source-level negative tests passed; live browser negative not yet exercised');
+           """
+          anchor=" record('UNAUTHORIZED_GUEST_REJECTED','NOT RUN','Separate independent guest profile and integrity rejection needed');"
+          assert code.count(anchor)==1, 'Lifecycle insertion point changed'
+          code=code.replace(' const page=context.pages()[0]||await context.newPage();',
+                            ' let page=context.pages()[0]||await context.newPage();',1)
+          code=code.replace(anchor,lifecycle+'\n'+anchor,1)
+          bridge.write_text(code)
+          PY
+          python3 agent2-acceptance/compatibility/hwc-imposter-compatibility/browser/agent2-security-acceptance-inject.py hwc scripts/agent3-h2hc-real-browser-bridge.mjs
+          mkdir -p runtime-evidence
+          git -C hwc diff --stat > runtime-evidence/hwc-temporary-diff-stat.txt
+          printf '%s\n' "Agent4=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent2=bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
+          printf '%s\n' 'H2HC_RUNTIME_WORKFLOW_SOURCE=03e116ea6f59d88248096ac7dee2f653ded26e60' 'H2HC_REVOCATION_PATCH=ci/agent3-h2hc-kit/apply_revocation_patch.py' >> runtime-evidence/source-pins.txt
+          echo "Original Agent4 and HWC source remain untouched in repositories"
+
+      - name: Reuse exact successful H2HC executable from prior CI (no rebuild)
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 44274859411
+          repository: ConorTttttt/imposter-holochain
+          name: agent3-h2hc-authenticated-runtime-44274859411
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: h2hc-binary
+
+      - name: Validate H2HC artifact checksum and pinned source record
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(head -1 h2hc-binary/SHA256SUMS | cut -d' ' -f1)"
+          actual="$(sha256sum h2hc-binary/h2hc-linker-linux-x86_64 | cut -d' ' -f1)"
+          test "$expected" = "$actual"
+          applied="$(sed -n 's/^SOURCE_H2HC=//p' h2hc-binary/build-provenance.txt)"
+          test "$applied" = "$(cat h2hc-binary/h2hc-applied-source-commit.txt)"
+          grep -q cab242d32c988fe5e4e9fd06ebc82ed043541aa2 h2hc-binary/RUNTIME_RUNBOOK.md
+          chmod +x h2hc-binary/h2hc-linker-linux-x86_64
+          printf 'H2HC_SOURCE_APPLIED=%s\nH2HC_BINARY_SHA256=%s\nARTIFACT_RUN=44274859411\n' "$applied" "$actual" > runtime-evidence/h2hc-provenance.txt
+
+      - name: Set up Node 22 for actual patched HWC
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+
+      - name: Build corrected HWC Chrome extension and typecheck runtime workspaces
+        shell: bash
+        timeout-minutes: 14
+        run: |
+          set -euo pipefail
+          npm ci --prefix hwc 2>&1 | tee runtime-evidence/hwc-npm-install.log
+          (
+            cd hwc
+            npx tsc -p packages/shared/tsconfig.json
+            npx tsc -p packages/lair/tsconfig.json
+            npx tsc -p packages/core/tsconfig.json
+            npx tsc --noEmit -p packages/extension/tsconfig.json
+            npm run build:chrome --workspace @hwc/extension
+          ) 2>&1 | tee runtime-evidence/hwc-build.log
+          test -s hwc/packages/extension/dist-chrome/manifest.json
+          test -s hwc/packages/extension/dist-chrome/background/index.js
+
+      - name: Install Playwright Chromium and Xvfb prerequisites
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          (cd hwc && npx playwright install --with-deps chromium) 2>&1 | tee runtime-evidence/playwright-install.log
+          command -v xvfb-run
+
+      - name: Install Nix with exact Agent4 Holochain 0.7 binary cache
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+
+      - name: Resolve exactly pinned Imposter native Holochain build tooling
+        shell: bash
+        timeout-minutes: 28
+        run: |
+          set -euo pipefail
+          git diff --exit-code 111e6a44795e6572ed01191a98245ed723788c12 HEAD -- Cargo.toml Cargo.lock flake.nix flake.lock dnas/game
+          timeout --signal=TERM --kill-after=60s 1550s nix -L develop --no-write-lock-file --command bash -c 'hc --version; cargo --version' 2>&1 | tee runtime-evidence/pinned-toolchain.log
+
+      - name: Run real HWC ephemeral browser against secure H2HC server
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-evidence
+          export H2HC_LINKER_ADMIN_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::$H2HC_LINKER_ADMIN_SECRET"
+          export H2HC_LINKER_ADDRESS=127.0.0.1
+          export H2HC_LINKER_PORT=8090
+          export H2HC_LINKER_KEY_FILE="$RUNNER_TEMP/ephemeral-H2HC-identity.key"
+          # Keep ephemeral agent allowlist across the controlled real WS server restart.
+          # Default memory store would drop it and falsely blame browser reconnect.
+          export H2HC_LINKER_SESSION_STORE="sqlite://$RUNNER_TEMP/ephemeral-h2hc-auth.db"
+          export H2HC_LINKER_BOOTSTRAP_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_RELAY_URL="https://dev-test-bootstrap2.holochain.org/"
+          export H2HC_LINKER_ALLOW_INSECURE_DEV=false
+          export H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK=false
+          export H2HC_BASE_URL="http://127.0.0.1:8090"
+          export H2HC_SERVER_LOG="$GITHUB_WORKSPACE/runtime-evidence/h2hc-server.log"
+          RUST_LOG="h2hc_linker=info,kitsune2=warn,iroh=warn" h2hc-binary/h2hc-linker-linux-x86_64 --address 127.0.0.1 --port 8090 > "$H2HC_SERVER_LOG" 2>&1 &
+          H2HC_PID=$!
+          export H2HC_SERVER_PID="$H2HC_PID"
+          trap 'kill "$H2HC_PID" 2>/dev/null || true; wait "$H2HC_PID" 2>/dev/null || true' EXIT
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8090/health >/dev/null; then ok=1;break;fi
+            if ! kill -0 "$H2HC_PID" 2>/dev/null; then break;fi
+            sleep 1
+          done
+          if test "$ok" != 1; then tail -80 "$H2HC_SERVER_LOG"; exit 1; fi
+          echo 'PASS: pinned authenticated H2HC binary online, local authority fallback disabled'
+          timeout --signal=TERM --kill-after=60s 1680s xvfb-run -a node scripts/agent3-h2hc-real-browser-bridge.mjs 2>&1 | tee runtime-evidence/real-hwc-h2hc-bridge.log
+
+      - name: Prepare allowlisted credential-free lifecycle evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sanitized-evidence
+          # Do not upload raw H2HC server logs, browser profiles, tokens,
+          # private CapGrants or unfiltered exception traces.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          source=Path('runtime-evidence/runtime-evidence.json')
+          if source.exists():
+              raw=json.loads(source.read_text())
+              checks=raw.get('checks',{})
+              clean={
+                'schema_version':2,
+                'mode':'REAL_HWC_EPHEMERAL_BROWSER',
+                'deployment_ready':False,
+                'checks':{str(k):{'result':str(v.get('result','UNKNOWN'))}
+                          for k,v in checks.items()
+                          if isinstance(v,dict)},
+                'session_lifecycle':{
+                  'endpoint_loss':'SIMULATED_NOT_EXPIRY',
+                  'token_expiry':'NOT_RUN_UNLESS_EXPLICITLY_PROVEN',
+                  'browser_restart':'REAL_CHROMIUM_RELAUNCH_TEST'
+                }
+              }
+              Path('sanitized-evidence/lifecycle-gates.json').write_text(
+                  json.dumps(clean,indent=2)+'\n')
+          for name in ['source-pins.txt','h2hc-provenance.txt',
+                       'hwc-temporary-diff-stat.txt']:
+              p=Path('runtime-evidence')/name
+              if p.exists():
+                  (Path('sanitized-evidence')/name).write_bytes(p.read_bytes())
+          PY
+
+      - name: Preserve first real HWC→H2HC wire evidence, no keys
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-live-HWC-H2HC-session-evidence-${{ github.run_id }}
+          path: sanitized-evidence/
+          retention-days: 14
+          if-no-files-found: warn
