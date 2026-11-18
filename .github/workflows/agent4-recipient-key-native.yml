@@ -1,4 +1,4 @@
-name: Agent 4 — native recipient-key attestation acceptance
+name: Agent 4 — native RoleCommit game boundary acceptance
 on:
   push:
     branches: [feature/browser-compatibility-harness]
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   native-key-attestation:
-    name: Two native 0.7 conductors — signed record, DHT lookup, impersonation, rotation
+    name: Real native Holochain 0.7 — exact RoleCommit, DHT joins and negative gates
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -38,35 +38,34 @@ jobs:
             trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
             max-jobs = 2
             cores = 2
-      - name: Compile installed-DNA integrity/coordinator WASM and pack real game DNA
+      - name: Compile installed-DNA native WASM and separate forge-negative test DNA
         timeout-minutes: 45
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           nix -L develop --no-write-lock-file --command bash -euo pipefail -c '
-            cargo build --locked --release --target wasm32-unknown-unknown -p game_integrity -p game
-            hc dna pack dnas/game/workdir
+            bash scripts/build-forge-dna.sh
             test -s dnas/game/workdir/game.dna
-            cargo test --locked -p game_integrity recipient_keys::tests -- --nocapture
-          ' 2>&1 | tee recipient-key-build.log
-      - name: Two real native Holochain 0.7 conductors and independent host discovery
+            test -s tests/forge/game.dna
+          ' 2>&1 | tee rolecommit-build.log
+      - name: Native independent RoleCommit read and malformed author/lobby/seat/join/stale rejection
         timeout-minutes: 35
         shell: bash
         run: |
           set -euo pipefail
-          nix -L develop --no-write-lock-file --command             cargo test --locked -p game_tests --test full_round             recipient_key_native_two_conductors_attest_discover_and_rotate -- --nocapture             2>&1 | tee recipient-key-native.log
-          for gate in RECIPIENT_ATTESTATION_NATIVE_VALID RECIPIENT_ATTESTATION_HOST_LOOKUP RECIPIENT_ATTESTATION_IMPERSONATION_DENIED RECIPIENT_ATTESTATION_STALE_FLOOR_DENIED; do
-            grep -Fq "$gate=PASS" recipient-key-native.log
+          nix -L develop --no-write-lock-file --command cargo test --locked -p game_tests --test full_round native_game_role_commit_boundary -- --nocapture 2>&1 | tee rolecommit-native.log
+          for gate in NATIVE_GAME_VALID_LOBBY_AND_JOINS NATIVE_GAME_EXACT_COMMIT_INDEPENDENT_READ NATIVE_GAME_NO_SIGNAL_COMMIT_AND_IDEMPOTENT_RETRY NATIVE_GAME_WRONG_HOST_DENIED NATIVE_GAME_WRONG_LOBBY_DENIED NATIVE_GAME_WRONG_RECIPIENT_SEAT_DENIED NATIVE_GAME_STALE_COMMIT_DENIED NATIVE_GAME_MISMATCHED_JOIN_NATIVE_INVALID NATIVE_GAME_INVALID_RECORD_FAIL_CLOSED; do
+            grep -Fq "$gate=PASS" rolecommit-native.log
           done
-          grep -Fq RECIPIENT_ATTESTATION_GLOBAL_FRESHNESS=UNPROVEN recipient-key-native.log
+          grep -Eq '^NATIVE_ROLE_COMMIT_ACTION=uhCkk[A-Za-z0-9_-]+' rolecommit-native.log
       - name: Publish diagnostic logs (no secret key material)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agent4-recipient-key-native-evidence-${{ github.run_id }}
+          name: agent4-rolecommit-native-evidence-${{ github.run_id }}
           retention-days: 14
           if-no-files-found: warn
           path: |
-            recipient-key-build.log
-            recipient-key-native.log
+            rolecommit-build.log
+            rolecommit-native.log
