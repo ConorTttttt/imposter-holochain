@@ -284,11 +284,14 @@ export function createInstalledHwcRoleRuntime({
       for(const h of services.values()){
         const lobby=await h.store.getPinnedLobby(h.cell.dna,h.cell.agent);
         const commit=await h.store.getPinnedRoleCommit(h.cell.dna,h.cell.agent);
+        const gateway=await probeSocket().catch(()=>null);
         out.push({contextId:h.cell.contextId,installedDna:hex(h.cell.dna),
           installedAgent:hex(h.cell.agent),pinnedLobby:lobby?hex(lobby):null,
           pinnedRoleCommit:commit?hex(commit):null,
           nativeEnrollmentPublished:enrolled.has(cellKey(h.cell)),
           sessionBound:!!h.session.leaseId(),
+          gatewayRoleRequestQueued:gateway?.queuedAcks?.requests??0,
+          gatewayRoleDeliveryQueued:gateway?.queuedAcks?.deliveries??0,
           decryptedRoleReceipts:acceptedReceipts.has(cellKey(h.cell))?1:0});
       }
       return out;
