@@ -1276,6 +1276,14 @@ pub struct ForgeLink {
     pub tag: Vec<u8>,
 }
 
+/// Test-only: an attacker attempts a malformed public RoleCommit. Native
+/// integrity must reject it before any authoritative read sees the action.
+#[cfg(feature = "forge")]
+#[hdk_extern]
+pub fn forge_role_commit(rc: RoleCommit) -> ExternResult<ActionHash> {
+    create_entry(EntryTypes::RoleCommit(rc))
+}
+
 #[cfg(feature = "forge")]
 #[hdk_extern]
 pub fn forge_link(input: ForgeLink) -> ExternResult<ActionHash> {
@@ -3260,7 +3268,7 @@ pub fn get_authoritative_game_view(input: NativeGameViewQuery) -> ExternResult<N
         if resolutions.len() > 1 {
             return Err(native_view_error("conflicting meeting resolutions"));
         }
-        resolutions.first().is_none_or(|e| matches!(e.outcome, TallyOutcome::Tie { .. }))
+        resolutions.first().map_or(true, |e| matches!(&e.outcome, TallyOutcome::Tie { .. }))
     } else {
         false
     };
