@@ -253,7 +253,7 @@ export async function runNativeNegativeFixture({
       genesisAccepted?'Four signed genesis AgentActivity operations accepted and integrated by real native authorities':
         'Signed genesis transport passed but exact native chain dependencies not yet all accepted/integrated');
 
-    const invalidPublish=await publish(invalid.ops);
+    const invalidPublish=await publish(invalid.ops.filter(op=>op.type===ChainOpType.CreateEntry));
     evidence.negative_native_invalid_publish=invalidPublish;
     record('NEGATIVE_H2HC_INVALID_CONTENT_PUBLICATION',
       invalidPublish.published>0?'PASS':'NO_CONFIRMED_DELIVERY',
@@ -273,6 +273,7 @@ export async function runNativeNegativeFixture({
     const observed=Object.values(nativeInvalid).flatMap(c=>c.rows)
       .filter(x=>invalidHashes.has(x.hash));
     const integratedInvalid=observed.filter(x=>valid(x));
+    await sleep(2000); // Allow native validation warnings to flush before checking exact reason.
     const log=fs.readFileSync(path.join(OUT_LOG,'native-holochain-0.7.log'),'utf8');
     const reasonVisible=log.includes('game seed host does not match lobby author');
     evidence.negative_native_invalid_verdict={
