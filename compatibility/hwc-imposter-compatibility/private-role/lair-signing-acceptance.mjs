@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 import {createRecipientKey,rawPublicKey,openForCell} from './hpke.mjs';
 import {attestKey,verifyKeyAttestation,makeRoleDelivery,internalsForTests,HPKE_INFO} from './wire.mjs';
-const requireFromHwc=createRequire(resolve('hwc/package.json'));
+const requireFromHwc=createRequire(resolve('hwc/packages/core/package.json'));
 const {createLairClient,MemoryKeyStorage}=await import(pathToFileURL(resolve('hwc/packages/lair/dist/index.js')).href);
 const {hashFrom32AndType,HoloHashType}=await import(pathToFileURL(requireFromHwc.resolve('@holochain/client')).href);
 const fixture=JSON.parse((await import('node:fs')).readFileSync(new URL('./native-role-vectors.json',import.meta.url),'utf8'));
