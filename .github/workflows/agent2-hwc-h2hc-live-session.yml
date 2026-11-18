@@ -48,6 +48,14 @@ jobs:
           path: agent3-kit
           persist-credentials: false
 
+      - name: Checkout Agent 2 acceptance-only instrumentation
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/imposter-holochain
+          ref: ${{ github.sha }}
+          path: agent2-acceptance
+          persist-credentials: false
+
       - name: Checkout pinned upstream HWC
         uses: actions/checkout@v4
         with:
@@ -234,6 +242,7 @@ jobs:
           code=code.replace(anchor,lifecycle+'\n'+anchor,1)
           bridge.write_text(code)
           PY
+          python3 agent2-acceptance/compatibility/hwc-imposter-compatibility/browser/agent2-security-acceptance-inject.py hwc scripts/agent3-h2hc-real-browser-bridge.mjs
           mkdir -p runtime-evidence
           git -C hwc diff --stat > runtime-evidence/hwc-temporary-diff-stat.txt
           printf '%s\n' "Agent4=8b167bf7f5bda0b213cd0a1679b35e9d252a4a36" "Agent2=bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39" "HWC=0c391226e78769d44ccb4661881ed8998b15f903" > runtime-evidence/source-pins.txt
