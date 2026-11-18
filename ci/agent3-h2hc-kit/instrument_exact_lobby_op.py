@@ -22,8 +22,9 @@ r"""  const lobbyActionHash=publicHoloHash(lobbyHashCandidate);
   // Import only a test-only bundle of the exact pinned HWC hash source.
   // Do not change HWC's source files, signatures, database, or native WASM.
   const {pathToFileURL}=await import('node:url');
-  const {hashAction,hashOp,ChainOpType}=await import(
-    pathToFileURL(path.join(OUT_LOG,'hwc-op-hash-native.mjs')).href);
+  const nativeHashModule=await import(
+    pathToFileURL(path.join(OUT_LOG,'hwc-op-hash-native.cjs')).href);
+  const {hashAction,hashOp,ChainOpType}=nativeHashModule.default||nativeHashModule;
   const restoreHwcBytes=v=>{
     if(Array.isArray(v))return v.map(restoreHwcBytes);
     if(v instanceof Uint8Array)return v;
