@@ -25,8 +25,9 @@ printf '%s  %s\n' "$(jq -er .gateway.sha256 "$rc/pins.json")" "$gateway" | sha25
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-git clone --quiet --no-checkout --no-hardlinks "$hwc" "$scratch/hwc"
-git -C "$scratch/hwc" switch --detach "$(jq -er .hwc_commit "$rc/pins.json")"
+git init --quiet "$scratch/hwc"
+git -C "$scratch/hwc" fetch --quiet --depth=1 "$hwc" "$(jq -er .hwc_commit "$rc/pins.json")"
+git -C "$scratch/hwc" switch --detach FETCH_HEAD
 bash "$rc/build-extension.sh" "$scratch/hwc"
 source_epoch=$(git -C "$game" show -s --format=%ct HEAD)
 native_identity=UNVERIFIED_OPERATOR_INPUT
