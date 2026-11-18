@@ -333,7 +333,7 @@ for name, details in (
     ("AGENT2_TWO_INDEPENDENT_LAIR_SESSIONS", "Requires distinct authorized second profile and cross-bearer rejection"),
     ("AGENT2_FOREIGN_DNA_BROWSER_SIGNING", "Source-level negative tests passed; live browser negative not yet exercised"),
 ):
-    pattern = r"record\\('" + name + r"','NOT RUN',\\s*'" + re.escape(details) + r"'\\);"
+    pattern = r"record\('" + name + r"','NOT RUN',\s*'" + re.escape(details) + r"'\);"
     src, count = re.subn(pattern, "", src)
     assert count == 1, "Old NOT RUN marker anchor drift for " + name
 bridge.write_text(src)
