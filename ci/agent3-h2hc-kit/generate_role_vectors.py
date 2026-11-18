@@ -38,7 +38,7 @@ def hdr(e, op):
         raw_hash(e["dna_hash"]), raw_hash(e["sender_agent"]),
         raw_hash(e["recipient_agent"]), raw_hash(e["role_commit"]),
         struct.pack(">H", e["seat"]), bytes.fromhex(e["recipient_key_id"]),
-        bytes.fromhex(e["message_id"]), struct.pack(">Q", e["created_at_ms"]),
+        struct.pack(">Q", e["recipient_key_epoch"]), bytes.fromhex(e["message_id"]), struct.pack(">Q", e["created_at_ms"]),
         struct.pack(">Q", e["expires_at_ms"]), reply,
     ])
 
@@ -111,9 +111,9 @@ def main():
     hashes = json.load(open(sys.argv[1], encoding="utf-8"))
     cases = []
     key_attestations = []
-    for op, agent_seed, recipient_seed, ephemeral_seed, ident, reply in [
-        ("role_request_v1", 28, 51, 61, "22" * 16, None),
-        ("role_delivery_v1", 27, 52, 62, "33" * 16, "22" * 16),
+    for op, agent_seed, recipient_seed, ephemeral_seed, ident, reply, epoch, keyhex in [
+        ("role_request_v1", 28, 51, 61, "22" * 16, None, 7, "11" * 16),
+        ("role_delivery_v1", 27, 52, 62, "33" * 16, "22" * 16, 9, "44" * 16),
     ]:
         sender = "agent_b" if op == "role_request_v1" else "agent_a"
         recipient = "agent_a" if op == "role_request_v1" else "agent_b"
@@ -121,7 +121,7 @@ def main():
             "version": 1, "domain": DOMAIN, "dna_hash": hashes["dna"],
             "sender_agent": hashes[sender], "recipient_agent": hashes[recipient],
             "role_commit": hashes["commit"], "seat": 1,
-            "recipient_key_id": "11" * 16, "message_id": ident,
+            "recipient_key_id": keyhex, "recipient_key_epoch": epoch, "message_id": ident,
             "created_at_ms": 1700000000000, "expires_at_ms": 1700000030000,
             "in_reply_to": reply, "hpke_enc": "", "ciphertext": "",
         }
@@ -138,7 +138,6 @@ def main():
         key_id = bytes.fromhex(e["recipient_key_id"])
         attest_before = 1699999000000
         attest_after = 1700000099999
-        epoch = 1
         attest_bytes = b"".join([
             b"IMPOSTER-H2HC-ROLE-KEY\x00\x01",
             raw_hash(e["dna_hash"]), raw_hash(e["recipient_agent"]),
@@ -156,17 +155,38 @@ def main():
             "x25519_public_key_b64": base64.b64encode(pk).decode(),
             "signed_bytes_hex": attest_bytes.hex(),
             "signature_b64": base64.b64encode(attest_sig).decode(),
+            "signature_hex": attest_sig.hex(),
         })
         cases.append({
             "operation": op, "envelope": e,
             "signature_b64": base64.b64encode(sig).decode(),
             "signed_bytes_hex": preimage.hex(), "aad_hex": aad.hex(),
+            "header_hex": hdr(e, op).hex(), "hpke_info_hex": INFO.hex(),
+            "hpke_enc_hex": enc.hex(), "ciphertext_hex": ct.hex(),
+            "signature_hex": sig.hex(),
             "recipient_hpke_pk_b64": base64.b64encode(pk).decode(),
             "plaintext_sha256": hashlib.sha256(clear).hexdigest(),
             "suite": "HPKE-v1/DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/AESGCM",
         })
+    # Declarative negative mutations are directly usable by HWC's fixture importer.
+    # They retain the ORIGINAL signatures, so every modified signed field must fail.
+    negatives = [
+        {"name": "wrong_sender_signature", "case": 1, "mutate": {"signature_b64": base64.b64encode(bytes(64)).decode()}, "reject_at": "gateway"},
+        {"name": "wrong_recipient", "case": 1, "mutate": {"envelope.recipient_agent": hashes["agent_c"]}, "reject_at": "gateway_or_receiver"},
+        {"name": "wrong_dna", "case": 1, "mutate": {"envelope.dna_hash": hashes["other_dna"]}, "reject_at": "gateway_or_receiver"},
+        {"name": "expired_envelope", "case": 1, "mutate": {"envelope.expires_at_ms": 1699999999999}, "reject_at": "gateway_or_receiver"},
+        {"name": "old_key_epoch", "case": 1, "mutate": {"envelope.recipient_key_epoch": 8}, "reject_at": "receiver_or_bad_signature"},
+        {"name": "key_epoch_zero", "case": 1, "mutate": {"envelope.recipient_key_epoch": 0}, "reject_at": "gateway"},
+        {"name": "tampered_ciphertext", "case": 1, "mutate": {"envelope.ciphertext": base64.b64encode(bytes(32)).decode()}, "reject_at": "gateway_or_receiver"},
+        {"name": "request_with_reply_id", "case": 0, "mutate": {"envelope.in_reply_to": "77" * 16}, "reject_at": "gateway"},
+        {"name": "mismatched_request_id", "case": 1, "mutate": {"envelope.in_reply_to": "88" * 16}, "reject_at": "receiver"},
+    ]
+    assert cases[0]["envelope"]["message_id"] == cases[1]["envelope"]["in_reply_to"]
+    assert cases[0]["envelope"]["recipient_key_epoch"] != cases[1]["envelope"]["recipient_key_epoch"]
     with open(sys.argv[2], "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "cases": cases, "key_attestations": key_attestations, "fixture_only": True}, f, indent=2)
+        json.dump({"version": 1, "status": "candidate-pending-agent2-approval",
+                   "cases": cases, "key_attestations": key_attestations,
+                   "negative_cases": negatives, "fixture_only": True}, f, indent=2)
     print("DETERMINISTIC_HPKE_VECTORS=PASS; recipient and wrong-AAD/foreign-recipient checks pass")
 
 
