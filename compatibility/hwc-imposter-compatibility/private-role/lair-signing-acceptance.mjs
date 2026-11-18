@@ -12,7 +12,7 @@ import {attestKey,verifyKeyAttestation,makeRoleDelivery,internalsForTests,HPKE_I
 const requireFromHwc=createRequire(resolve('hwc/packages/core/package.json'));
 const {createLairClient,MemoryKeyStorage}=await import(pathToFileURL(resolve('hwc/packages/lair/dist/index.js')).href);
 const {hashFrom32AndType,HoloHashType}=await import(pathToFileURL(requireFromHwc.resolve('@holochain/client')).href);
-const fixture=JSON.parse((await import('node:fs')).readFileSync(new URL('./native-role-vectors.json',import.meta.url),'utf8'));
+const {nativeFixture:fixture}=await import('./native-fixture.mjs');
 const typed=(core,kind)=>new Uint8Array(hashFrom32AndType(core,kind));
 const decodeHash=s=>new Uint8Array(Buffer.from(s.slice(1).replace(/-/g,'+').replace(/_/g,'/'),'base64'));
 const cellDna=decodeHash(fixture.dna);
