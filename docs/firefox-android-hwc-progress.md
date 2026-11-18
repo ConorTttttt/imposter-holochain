@@ -16,15 +16,21 @@ The Firefox background keeps role frames and private native operations inside ex
 | Firefox development archive | PASS | The package verifier checked the manifest, background, worker, SQLite WebAssembly, asset inventory and SHA-256. Two builds produced byte-identical archives. |
 | Firefox socket adapter | PASS | Tests covered signed challenge gating, acknowledged recipient registration, closing sockets, registration revocation, stale lease rejection and legitimate reauthentication. |
 | Shared receiver and persistence | PASS | 41 tests covered the production role protocol, including signature and recipient validation, proof rejection, attestation expiry, replay, epoch rollback and native authority validation. |
+| Both extension build inventories | PASS | All 36 HWC build-validation tests passed with both browser outputs present. |
 | Chromium baseline | PASS | Built the unmodified operator extension and exercised the Lair public identity and installed background sender checks in Chromium. |
 | All-workspace HWC type-check | FAIL | The upstream client workspace could not resolve `@holo-host/joining-service`. The release command’s targeted TypeScript checks passed. |
+| Full HWC extension unit suite | FAIL | Chrome offscreen mocks omit the sender metadata required by the existing compatibility guard. The state-query timeout also reproduced on a Chromium-only checkout with the existing patches. Real Chromium sender checks passed. |
 | Firefox Desktop add-on load and Lair identity | PASS | GitHub-hosted Firefox loaded the stock add-on and the browser-alpha setup page obtained a real Lair public identity. |
 | Firefox local fixture hApp installation | PASS | Hosted Firefox installed the pinned HWC fixture. The webpage’s attempt to invoke a privileged role call was denied. |
+| Firefox local fixture zome call | PASS | The browser ribosome executed the pinned fixture’s `ziptest::get_things`. |
+| Firefox local profile restart | PASS | Firefox retained its Lair identity and executed the installed fixture again after restart with Mozilla’s temporary add-on testing preferences. |
 | Firefox authenticated operator gateway session | BLOCKED | Requires a Tailscale-connected test environment and admission for a Firefox identity on the private deployment. |
 | Firefox host-bound game hApp and native zome call | NOT EXECUTED | Requires the deployed exact game hApp and gateway. |
 | Firefox encrypted role and mixed three-player round | NOT EXECUTED | Requires the live mixed-browser acceptance below. |
 | Firefox restart and authenticated session recovery | NOT EXECUTED | Requires the same Firefox profile and an admitted game identity. |
 | Firefox Android package and device acceptance | NOT EXECUTED | Android implementation starts after the Desktop mixed round passes. |
+
+[Hosted Firefox build and browser evidence](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44416811867) · [Unsigned development package and SHA-256](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44416811867/artifacts/14479538480)
 
 ## Build and install on Firefox Desktop
 
