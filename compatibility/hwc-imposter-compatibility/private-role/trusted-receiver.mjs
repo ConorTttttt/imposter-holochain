@@ -6,13 +6,14 @@
  * - installedCell(): actual enabled HWC installed context, Lair agent
  * - session: extension's authenticated role-only H2HC WebSocket with an
  *   incarnation/lease ID that changes on disconnect, reauth and revocation
- * - native: extension-owned adapter that independently reads *native-validated*
- *   current Lobby, RoleCommit and recipient key enrollment. NOT webpage values
+ * - native: extension-owned adapter that actually invokes
+ *   game::get_authoritative_game_view and independent native key lookup,
+ *   not an object annotated with invented nativeValidated/authenticated flags
  * - store: extension-owned IndexedDB, no public store mutation bridge
  * No adapter exists in the accepted HWC patch yet: fail closed, do NOT silently
  * promote this pure module to an accepted installed-cell runtime.
  */
-import {verifyKeyAttestation,makeRoleRequest,makeRoleDelivery,receiveRoleDelivery,
+import {verifyKeyAttestation,makeRoleRequest,makeRoleDelivery,
   parseRoleFrame,toRoleFrame,internalsForTests,HPKE_INFO} from './wire.mjs';
 import {openForCell} from './hpke.mjs';
 import {encodeAttestationBody,decodeAttestationBody} from './request-attestation.mjs';
@@ -206,17 +207,21 @@ export function createRestrictedRoleService(s){
      if(!request||request.lease!==lease||Date.now()>request.expiresAt||
         !packet.inReplyTo||!eq(request.id,packet.inReplyTo))
        throw Error('unsolicited, stale or uncorrelated role delivery');
-     const verifiedRemoteCaller={authenticated:true,agent:packet.sender,
-       dna:cell.dna,operation:'role_delivery_v1'};
-     const commitState={nativeValidated:true,host:game.lobby.host,
-       action:game.commit.action,seats:game.commit.seats};
-     const plaintext=await receiveRoleDelivery(packet,{
-       installedDna:cell.dna,localAgent:cell.agent,commitState,
-       verifiedRemoteCaller,cellKey:held,ledger:s.store,expectedReplyTo:request.id,
-       verifyRoleProof:async({plaintext:opening,seat:actual})=>{
-         try{await verifyRoleOpening({payload:opening,seat:actual,
-           root:game.commit.merkleRoot});return true;}catch{return false;}
-       }});
+     // The signed frame's actual sender and the extension's live H2HC
+     // session lease provide remote provenance. The *native v1 result*
+     // provides commitment authority. NEVER manufacture
+     // {authenticated:true} or {nativeValidated:true} for a low-level API.
+     if(!eq(held.dna,cell.dna)||!eq(held.agent,cell.agent)||
+        !eq(held.publicKey,held.attestation.publicKey)||
+        !eq(held.keyId,held.attestation.keyId)||
+        held.epoch!==held.attestation.epoch)
+       throw Error('locally protected recipient key or attestation substituted');
+     // Strict durable, atomic replay reservation BEFORE decryption.
+     await s.store.reserve({dna:packet.dna,recipient:packet.recipient,
+       sender:packet.sender,commit:packet.commit,messageId:packet.messageId});
+     unchanged(s.session,cell,lease);
+     const plaintext=await openForCell(held,packet.enc,packet.ciphertext,
+       internalsForTests.aadBytes(packet),HPKE_INFO);
      unchanged(s.session,cell,lease);
      const role=await verifyRoleOpening({payload:plaintext,seat:packet.seat,
        root:game.commit.merkleRoot});
