@@ -37,6 +37,9 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
             changes.append((file, original, updated))
 
     core = "packages/core/src/network/websocket-service.ts"
+    edit(core, '''  | { type: "ping" }''', '''  | { type: "ping" }
+  // Only the restricted role service is allowed to emit these two operations.
+  | { type: "role_request_v1" | "role_delivery_v1"; envelope: unknown; signature: string }''')
     edit(core, '  | { type: "error"; message: string }', '''  | { type: "error"; message: string }
   // Restricted encrypted role frames are forwarded only to the extension's
   // private HWC receiver. No generic remote signal or zome execution.
