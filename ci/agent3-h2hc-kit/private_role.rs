@@ -306,6 +306,13 @@ mod tests {
         wrong_recipient.recipient_agent = c.to_string();
         assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&wrong_recipient,RoleOperation::Delivery).await);
 
+        // Connection replacement is NOT a license to deliver an older frame,
+        // even while the original bearer still validates.
+        let (replacement_tx, _replacement_rx) = mpsc::channel(8);
+        app.agent_proxy.register(dna.clone(), a.clone(), replacement_tx).await;
+        assert!(!can_dispatch(&app,token_b.as_str(),&recipient_tx,old_a.as_str(),&origin_tx,&env,RoleOperation::Delivery).await);
+        app.agent_proxy.register(dna.clone(), a.clone(), origin_tx.clone()).await;
+
         // Deterministic race: an in-flight private dispatch holds exactly the
         // same gate as administrative revocation. No old lease survives release.
         let hold = auth.role_dispatch_gate().lock_owned().await;
