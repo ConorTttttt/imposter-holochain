@@ -55,7 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ConorTttttt/imposter-holochain
-          ref: e72340c018b1353c6d403de83f1f89e9ca8829f6
+          ref: bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39
           path: agent2-kit
           persist-credentials: false
 
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C hwc rev-parse HEAD)" = "0c391226e78769d44ccb4661881ed8998b15f903"
-          test "$(git -C agent2-kit rev-parse HEAD)" = "e72340c018b1353c6d403de83f1f89e9ca8829f6"
+          test "$(git -C agent2-kit rev-parse HEAD)" = "bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39"
           git -C hwc switch -c fix/imposter-hwc-compatibility
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --check
           python3 agent2-kit/compatibility/hwc-imposter-compatibility/apply.py hwc --write
@@ -85,7 +85,7 @@ jobs:
           grep -Fq 'ON CONFLICT(cell_id, entry_hash) DO NOTHING' hwc/packages/extension/src/offscreen/ribosome-worker.ts
           grep -Fq "keyPath: ['cellId', 'entryHash']" hwc/packages/core/src/storage/source-chain-storage.ts
           mkdir -p runtime-evidence
-          printf '%s\n' 'upstream_hwc=0c391226e78769d44ccb4661881ed8998b15f903' 'agent2_migration_patch=e72340c018b1353c6d403de83f1f89e9ca8829f6' 'migration_schema=composite_cell_id_entry_hash' 'collision_acceptance=Agent2 headed Chrome run 44191974895 (independent CI; not re-executed here)' > runtime-evidence/hwc-migration-provenance.txt
+          printf '%s\n' 'upstream_hwc=0c391226e78769d44ccb4661881ed8998b15f903' 'agent2_migration_patch=bc55d2a2fd9cc4da6c384f086e261f3ffa27cb39' 'migration_schema=composite_cell_id_entry_hash' 'collision_acceptance=Agent2 headed Chrome run 44191974895 (independent CI; not re-executed here)' > runtime-evidence/hwc-migration-provenance.txt
           echo 'P0_MIGRATION_SOURCE_PIN_VERIFIED PASS composite SQLite and IndexedDB migrations present'
           git -C hwc diff --stat > runtime-evidence/patched-hwc-diff-stat.txt
           git -C hwc status --short >> runtime-evidence/patched-hwc-diff-stat.txt
