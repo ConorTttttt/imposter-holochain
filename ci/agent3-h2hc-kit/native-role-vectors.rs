@@ -16,6 +16,7 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--hashes") {
         println!("{}", serde_json::json!({
             "dna": DnaHash::from_raw_32(vec![5; 32]).to_string(),
+            "other_dna": DnaHash::from_raw_32(vec![6; 32]).to_string(),
             "agent_a": key(27).to_string(),
             "agent_b": key(28).to_string(),
             "agent_c": key(29).to_string(),
