@@ -45,6 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --check
+          python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --patch "$GITHUB_WORKSPACE/agent2-restricted-hwc-deny-only.diff"
           python3 compatibility/hwc-imposter-compatibility/private-role/apply_restricted_hwc_handler.py hwc --write
           git -C hwc diff --check
           grep -Fq 'NATIVE_ROLE_STATE_BRIDGE_UNAVAILABLE' hwc/packages/extension/src/background/index.ts
@@ -73,6 +74,13 @@ jobs:
           set -euo pipefail
           npm run build:chrome --workspace @hwc/extension
           npm run build:firefox --workspace @hwc/extension
+      - name: Publish exact pinned HWC narrow source diff (DENY ONLY)
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent2-hwc-restricted-ws-deny-only-${{ github.run_id }}
+          path: agent2-restricted-hwc-deny-only.diff
+          retention-days: 14
+          if-no-files-found: error
       - name: Evidence boundaries (not an E2E receiver acceptance)
         run: |
           echo 'HWC_RESTRICTED_WS_REGISTRATION_AND_LEASE_CHECK=BUILD_PASS'
