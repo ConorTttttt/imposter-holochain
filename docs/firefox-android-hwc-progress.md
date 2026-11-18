@@ -18,9 +18,9 @@ The Firefox background keeps role frames and private native operations inside ex
 | Shared receiver and persistence | PASS | 41 tests covered the production role protocol, including signature and recipient validation, proof rejection, attestation expiry, replay, epoch rollback and native authority validation. |
 | Chromium baseline | PASS | Built the unmodified operator extension and exercised the Lair public identity and installed background sender checks in Chromium. |
 | All-workspace HWC type-check | FAIL | The upstream client workspace could not resolve `@holo-host/joining-service`. The release command’s targeted TypeScript checks passed. |
-| Firefox Desktop add-on load and Lair identity | BLOCKED | Firefox startup timed out locally before WebDriver could load the add-on. The draft PR runs a hosted Firefox smoke test. |
-| Firefox local fixture hApp installation | NOT EXECUTED | The hosted smoke test installs a pinned upstream fixture and checks that a webpage call to a privileged role operation is denied. |
-| Firefox authenticated operator gateway session | NOT EXECUTED | Requires admission for a Firefox identity on the private deployment. |
+| Firefox Desktop add-on load and Lair identity | PASS | GitHub-hosted Firefox loaded the stock add-on and the browser-alpha setup page obtained a real Lair public identity. |
+| Firefox local fixture hApp installation | PASS | Hosted Firefox installed the pinned HWC fixture. The webpage’s attempt to invoke a privileged role call was denied. |
+| Firefox authenticated operator gateway session | BLOCKED | Requires a Tailscale-connected test environment and admission for a Firefox identity on the private deployment. |
 | Firefox host-bound game hApp and native zome call | NOT EXECUTED | Requires the deployed exact game hApp and gateway. |
 | Firefox encrypted role and mixed three-player round | NOT EXECUTED | Requires the live mixed-browser acceptance below. |
 | Firefox restart and authenticated session recovery | NOT EXECUTED | Requires the same Firefox profile and an admitted game identity. |
@@ -38,7 +38,7 @@ python3 release/browser-alpha/package-firefox.py verify firefox-desktop-dev
 (cd firefox-desktop-dev && sha256sum --check SHA256SUMS)
 ```
 
-Unpack `firefox-desktop-hwc.zip` into a dedicated directory. Create or select a dedicated persistent Firefox profile in `about:profiles`. In that profile, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select the unpacked `manifest.json`. Firefox removes temporary add-ons on exit. Reload the same directory from the same profile when testing a restart, then check the identity before entering the lobby. A permanent installation on Release or Beta requires Mozilla signing. The development archive is unsigned. [Temporary installation](https://extensionworkshop.com/documentation/develop/temporary-installation-in-firefox/) · [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/)
+Unpack `firefox-desktop-hwc.zip` into a dedicated directory. Create or select a dedicated persistent Firefox profile in `about:profiles`. In that profile, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select the unpacked `manifest.json`. Firefox removes temporary add-ons on exit. When testing a restart, set `extensions.webextensions.keepStorageOnUninstall` and `extensions.webextensions.keepUuidOnUninstall` to `true` in the dedicated development profile before exiting. Reload the same directory from the same profile and check the identity before entering the lobby. A permanent installation on Release or Beta requires Mozilla signing. The development archive is unsigned. [Temporary installation](https://extensionworkshop.com/documentation/develop/temporary-installation-in-firefox/) · [Testing persistent add-on data](https://extensionworkshop.com/documentation/develop/testing-persistent-and-restart-features/) · [Mozilla signing](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/)
 
 ## Desktop mixed-round acceptance
 
@@ -58,7 +58,7 @@ web-ext run --source-dir FIREFOX_ANDROID_BUILD --target firefox-android \
   --adb-device DEVICE_SERIAL --firefox-apk org.mozilla.fenix
 ```
 
-Use the installed package ID for the chosen channel. A temporary development load uses the unpacked directory. A permanent installation needs a Mozilla-signed XPI for the target channel. Record the actual Android and Firefox versions during acceptance and check both the signing channel and manifest compatibility before distributing a package. Android’s add-on approval UI, background lifetime, persistent storage and touch interactions need device coverage. [Mozilla’s Android development workflow](https://extensionworkshop.com/documentation/develop/developing-extensions-for-firefox-for-android/)
+Use the installed package ID for the chosen channel. A temporary development load uses the unpacked directory. A permanent installation needs a Mozilla-signed XPI for the target channel. Mozilla supports Firefox for Android on Android 8.0 and later. Record the actual Android and Firefox versions during acceptance and check both the signing channel and add-on manifest before distributing a package. Android’s add-on approval UI, background lifetime, persistent storage and touch interactions need device coverage. [Mozilla’s Android development workflow](https://extensionworkshop.com/documentation/develop/developing-extensions-for-firefox-for-android/) · [Android system requirements](https://support.mozilla.org/en-US/kb/will-firefox-work-my-mobile-device)
 
 - [ ] Connect to the existing HTTPS page, approve the origin, capture a persistent public identity, obtain gateway admission, and verify the installed host-bound hApp.
 - [ ] Run the same round with two desktop participants. Confirm the Android player receives its own verified role and all three players see the same authoritative result.
