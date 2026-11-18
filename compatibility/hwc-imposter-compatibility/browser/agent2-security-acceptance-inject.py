@@ -53,6 +53,96 @@ probe = r"""
       return true;
     }
 
+
+    // Real Chromium HWC WebSocket parser + original Lair signer callback:
+    // inject the foreign-DNA server frame, intercept any response inside
+    // offscreen, and return only whether a signing attempt was denied.
+    if (message.type === "AGENT2_CI_FOREIGN_DNA_SIGN") {
+      if (!wsService?.isAuthenticated() || !wsService?.isConnected() ||
+          typeof message.agent !== "string") {
+        sendResponse({ success: false, error: "NOT_AUTHENTICATED" } as any);
+        return true;
+      }
+      const service = wsService as any;
+      const id = "agent2-ci-foreign-dna";
+      const raw = Uint8Array.from(atob(message.agent.slice(1).replace(/-/g, "+").replace(/_/g, "/")),
+        c => c.charCodeAt(0));
+      if (raw.length !== 39) {
+        sendResponse({ success: false, error: "INVALID_AGENT" } as any);
+        return true;
+      }
+      const encodeCore = (value: Uint8Array) =>
+        btoa(String.fromCharCode(...value)).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+      const now = BigInt(Date.now()) * 1000n;
+      const request = {
+        type: "sign_agent_info", request_id: id, agent_pubkey: message.agent,
+        agent_info: {
+          agent: encodeCore(raw.slice(3, 35)),
+          space: encodeCore(new Uint8Array(32).fill(123)),
+          createdAt: now.toString(),
+          expiresAt: (now + 1200000000n).toString(),
+          isTombstone: false,
+          url: linkerUrl.replace(/^http/, "ws").replace(/\\/$/, "") + "/ws",
+          storageArc: null
+        }
+      };
+      const originalSend = service.send.bind(service);
+      let complete = false;
+      service.send = (packet: any) => {
+        if (packet?.type === "sign_response" && packet.request_id === id) {
+          complete = true;
+          // Never return signature bytes. A defective signer must not send a
+          // forged request's response to the real H2HC WebSocket, either.
+          sendResponse({
+            success: true, denied: !!packet.error && !packet.signature,
+            attemptedSignature: !!packet.signature
+          } as any);
+          return;
+        }
+        originalSend(packet);
+      };
+      service.handleMessage({ data: JSON.stringify(request) });
+      setTimeout(() => {
+        if (!complete) {
+          sendResponse({ success: false, error: "NO_SIGN_RESPONSE" } as any);
+        }
+      }, 8000);
+      return true;
+    }
+
+    // The authenticated B socket attempts to register A. It must receive a
+    // denial from the *real* H2HC server; no bearer leaves the guest extension.
+    if (message.type === "AGENT2_CI_FOREIGN_REGISTRATION") {
+      const socket = (wsService as any)?.ws as WebSocket | undefined;
+      if (!wsService?.isConnected() || !wsService?.isAuthenticated() ||
+          !socket || socket.readyState !== WebSocket.OPEN) {
+        sendResponse({ success: false, error: "GUEST_NOT_AUTHENTICATED" } as any);
+        return true;
+      }
+      let completed = false;
+      const onMessage = (event: MessageEvent) => {
+        try {
+          const response = JSON.parse(String(event.data));
+          if (response.type !== "error") return;
+          if (completed) return;
+          completed = true;
+          socket.removeEventListener("message", onMessage);
+          wsService?.unregisterAgent(message.dna, message.foreignAgent);
+          sendResponse({ success: true, rejected: true } as any);
+        } catch {}
+      };
+      socket.addEventListener("message", onMessage);
+      wsService.registerAgent(message.dna, message.foreignAgent);
+      setTimeout(() => {
+        if (completed) return;
+        completed = true;
+        socket.removeEventListener("message", onMessage);
+        wsService?.unregisterAgent(message.dna, message.foreignAgent);
+        sendResponse({ success: true, rejected: false } as any);
+      }, 6000);
+      return true;
+    }
+
 """
 # Keep the saved bearer in the offscreen closure only, not in extension storage.
 decl = "let agent2CiSavedBearer: string | null = null;\n"
@@ -139,6 +229,101 @@ restore = r"""
 
 """
 src = src.replace(begin, setup + begin, 1)
+
+extra = r"""
+           await step('AGENT2_REAL_CHROMIUM_FOREIGN_DNA_SIGNING_REJECTED', async()=>{
+             const worker = context.serviceWorkers()[0] ||
+               await context.waitForEvent('serviceworker',{timeout:15000});
+             const response = await worker.evaluate(async agent =>
+               chrome.runtime.sendMessage({
+                 target:'offscreen',type:'AGENT2_CI_FOREIGN_DNA_SIGN',agent
+               }),host);
+             must(response?.success === true && response?.denied === true &&
+                  response?.attemptedSignature !== true,
+               'Actual browser WS signer did not deny unregistered foreign DNA');
+             evidence.agent2_foreign_dna='BROWSER_WS_HANDLER_DENIED_NO_LAIR_SIGNATURE';
+           });
+           await step('AGENT2_PERSISTED_LINKER_CONFIG_HAS_NO_CREDENTIALS',async()=>{
+             const worker=context.serviceWorkers()[0] ||
+               await context.waitForEvent('serviceworker',{timeout:15000});
+             const keys=await worker.evaluate(async()=>{
+               const value=(await chrome.storage.local.get('hwc_linker_config')).hwc_linker_config;
+               return Object.keys(value||{});
+             });
+             must(keys.length===1 && keys[0]==='linkerUrl',
+               'Persisted linker configuration contains more than the endpoint URL');
+           });
+           await step('AGENT2_TWO_GENUINE_LAIR_IDENTITIES_CROSS_REGISTER_DENIED',async()=>{
+             const guestProfile=fs.mkdtempSync(path.join(os.tmpdir(),'agent2-lair-guest-'));
+             let guestContext;
+             try {
+               guestContext=await chromium.launchPersistentContext(guestProfile,{
+                 headless:false,viewport:{width:1100,height:800},
+                 args:['--disable-extensions-except='+ext,'--load-extension='+ext,
+                   '--no-first-run','--disable-default-apps','--no-sandbox',
+                   '--disable-dev-shm-usage']
+               });
+               const guestPage=guestContext.pages()[0]||await guestContext.newPage();
+               await guestPage.goto(ORIGIN,{waitUntil:'domcontentloaded'});
+               await guestPage.waitForFunction(()=>Boolean(window.holochain?.isWebConductor),
+                 {timeout:45000});
+               const other=await guestPage.evaluate(async()=>{
+                 const hc=window.holochain;
+                 await hc.connect();
+                 return 'u'+btoa(String.fromCharCode(...new Uint8Array(hc.myPubKey||[])))
+                   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+               });
+               must(/^uhCAk[A-Za-z0-9_-]{48}$/.test(other) && other!==host,
+                 'Second browser was not a distinct real Lair signer');
+               const secret=process.env.H2HC_LINKER_ADMIN_SECRET;
+               const allow=await fetch(process.env.H2HC_BASE_URL+'/admin/agents',{
+                 method:'POST',
+                 headers:{Authorization:'Bearer '+secret,'Content-Type':'application/json'},
+                 body:JSON.stringify({
+                   agent_pubkey:other,capabilities:['dht_read','dht_write','k2'],
+                   label:'independent-ci-lair-guest'
+                 })
+               });
+               must(allow.status===204,'Could not allowlist genuine second Lair identity');
+               await guestPage.evaluate(async digest=>{
+                 const res=await fetch('/imposter-browser-poc.happ',{cache:'no-store'});
+                 if(!res.ok)throw Error('Guest hApp unavailable');
+                 const bundle=new Uint8Array(await res.arrayBuffer());
+                 const actual=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bundle)),
+                   b=>b.toString(16).padStart(2,'0')).join('');
+                 if(actual!==digest)throw Error('Guest hApp bytes differ');
+                 await window.holochain.installApp({bundle,installedAppId:'imposter-browser-poc'});
+               },m.happ_bundle_sha256);
+               await guestPage.evaluate(async url =>
+                 window.holochain.configureNetwork({linkerUrl:url}),process.env.H2HC_BASE_URL);
+               let ready=false;
+               for(let i=0;i<100;i++){
+                 const statuses=await guestPage.evaluate(async()=>({
+                   connection:await window.holochain.getConnectionStatus(),
+                   network:await window.holochain.getNetworkStatus()
+                 }));
+                 if(statuses.connection?.authenticated===true &&
+                    statuses.network?.hasSession===true){ready=true;break;}
+                 await new Promise(r=>setTimeout(r,500));
+               }
+               must(ready,'Independent Lair guest did not authenticate H2HC');
+               const guestWorker=guestContext.serviceWorkers()[0] ||
+                 await guestContext.waitForEvent('serviceworker',{timeout:15000});
+               const denied=await guestWorker.evaluate(async data =>
+                 chrome.runtime.sendMessage({
+                   target:'offscreen',type:'AGENT2_CI_FOREIGN_REGISTRATION',
+                   dna:data.dna,foreignAgent:data.foreignAgent
+                 }),{dna:m.dna_hash,foreignAgent:host});
+               must(denied?.success===true && denied.rejected===true,
+                 'Real H2HC allowed guest-B WebSocket to register host-A identity');
+               evidence.agent2_two_real_lair='TWO_DISTINCT_SIGNERS_SERVER_REJECTED_FOREIGN_WS_REGISTER';
+             } finally {
+               if(guestContext)await guestContext.close().catch(()=>{});
+               fs.rmSync(guestProfile,{recursive:true,force:true});
+             }
+           });
+"""
+src = src.replace(begin, extra + begin, 1)
 src = src.replace(after_delete, after + after_delete, 1)
 src = src.replace(end, restore + end, 1)
 bridge.write_text(src)
