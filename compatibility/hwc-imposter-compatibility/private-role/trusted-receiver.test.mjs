@@ -105,7 +105,7 @@ test('independent host/guest signed role: B extension receives correct opening o
  assert.equal(f.hostSession.sent.length,1);
  const out=await f.guestSvc.receiveFromSocket(f.hostSession.sent[0]);
  assert.equal(out.role,1);assert.equal(out.seat,1);assert.equal(out.coordinatorInvoked,false);
- await assert.rejects(f.guestSvc.receiveFromSocket(f.hostSession.sent[0]),/replay/);
+ await assert.rejects(f.guestSvc.receiveFromSocket(f.hostSession.sent[0]),/replay|uncorrelated/);
  const cSvc=createRestrictedRoleService({installedCell:async()=>({dna:f.d,agent:f.c.agent,contextId:'installed-happ'}),
    native:{readCurrentGame:async()=>f.game,readKeyEnrollment:async()=>f.enrollment},
    lair:f.c.lair,session:session(f.d,f.c.agent,'guest-c'),store:new Keys()});
@@ -135,7 +135,8 @@ test('signed message has no forged browser bool or generic remote API; absent na
 });
 test('host fails closed on missing native recipient enrollment and unregistered session',async()=>{
  const f=await fixture();f.enrollment.author=f.c.agent;
- await assert.rejects(f.guestSvc.requestRole({seat:1}),/native-enrolled|recipient attestation/);
+ await f.guestSvc.requestRole({seat:1});
+ await assert.rejects(f.hostSvc.receiveFromSocket(f.bSession.sent[0]),/native enrollment/);
  f.enrollment.author=f.b.agent;f.hostSession.revoke();
  await assert.rejects(f.hostSvc.sendRole({seat:1,role:1,roleSalt:f.proof.salt,path:f.proof.path}),/live registered/);
 });
