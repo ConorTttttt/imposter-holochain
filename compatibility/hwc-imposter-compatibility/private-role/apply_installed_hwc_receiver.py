@@ -129,13 +129,21 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
 
   // Set up state change callback for logging and auto-retry
   wsService.onStateChange((state: ConnectionState) => {''')
+    edit(offscreen, '''  errors?: string[];
+}''', '''  errors?: string[];
+  // Private socket state returned ONLY to the extension background.
+  roleSession?: {lease: string | null; authenticatedAgent: string | null;
+    registrations: Array<{dna_hash:string;agent_pubkey:string}>;
+    authenticated:boolean; isConnected:boolean};
+  queuedOnly?: boolean;
+}''')
     edit(offscreen, '''    if (message.type === "CONFIGURE_NETWORK") {''',
 '''    // The original offscreen EXECUTE_ZOME_CALL is powerful enough to execute
     // host_role_opening. Require the actual extension background sender before
     // even decoding its payload. A tab, content script or popup is denied.
     if (message.type === "EXECUTE_ZOME_CALL" &&
         (sender.id !== chrome.runtime.id || sender.tab !== undefined ||
-         sender.url !== chrome.runtime.getURL("background/index.js"))) {
+         (sender.url !== undefined && sender.url !== chrome.runtime.getURL("background/index.js")))) {
       sendResponse({success:false,error:"PRIVILEGED_NATIVE_EXECUTOR_SENDER_DENIED"});
       return false;
     }
@@ -151,7 +159,7 @@ def build_changes(root: Path) -> list[tuple[Path, str, str]]:
         return false;
       }
       if (message.type === "PRIVATE_ROLE_SESSION_PROBE") {
-        sendResponse({success:true,state:wsService?.getRestrictedRoleState() ?? {
+        sendResponse({success:true,roleSession:wsService?.getRestrictedRoleState() ?? {
           lease:null,authenticatedAgent:null,registrations:[],
           authenticated:false,isConnected:false
         }});
@@ -213,7 +221,7 @@ function getInstalledRoleRuntime(): any {
         target:"offscreen",type:"PRIVATE_ROLE_SESSION_PROBE"
       });
       if (!response?.success) throw new Error("private role WS probe unavailable");
-      return response.state;
+      return response.roleSession;
     },
     sendSocket: async ({frame,lease}: any) => {
       await executor.initialize();
