@@ -10,6 +10,7 @@ on:
       - 'ci/agent3-h2hc-kit/native-role-vectors.rs'
       - 'ci/agent3-h2hc-kit/generate_role_vectors.py'
       - 'ci/agent3-h2hc-kit/verify-role-vectors.mjs'
+      - 'ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64'
       - 'ci/agent3-h2hc-kit/network-role-probe.mjs'
   workflow_dispatch:
 
@@ -185,7 +186,8 @@ jobs:
           cargo run --locked --example agent3_role_vectors -- "$RUNNER_TEMP/role-public-vectors.json"
           # Independent Node crypto verifier consumes native Rust/Python vectors.
           node --version
-          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/verify-role-vectors.mjs" "$RUNNER_TEMP/role-public-vectors.json"
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/verify-role-vectors.mjs" "$RUNNER_TEMP/role-public-vectors.json" "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64"
+          node "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/verify-role-vectors.mjs" "$GITHUB_WORKSPACE/ci/agent3-h2hc-kit/fixtures/role-public-vectors-v1-candidate.json.gz.base64"
           cargo clippy --locked --example agent3_role_vectors -- -D warnings
           cp "$RUNNER_TEMP/role-public-vectors.json" "$GITHUB_WORKSPACE/ci-evidence/role-public-vectors.json"
           echo "HPKE_ROLE_VECTORS=PASS"
