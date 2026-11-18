@@ -1,0 +1,118 @@
+diff --git a/ui/browser-demo.html b/ui/browser-demo.html
+index 59248cf..b16b952 100644
+--- a/ui/browser-demo.html
++++ b/ui/browser-demo.html
+@@ -29 +29 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
+-<header><div><h1>IMPOSTER</h1><p>Secure HWC browser lobby · pre-provisioned demo</p></div>
++<header><div><h1>IMPOSTER</h1><p>Three-player browser demo</p></div>
+@@ -49,0 +50,5 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
++<div class="actions">
++<button id="start-round" type="button" hidden disabled>Start round</button>
++<button id="complete-task" class="secondary" type="button" hidden disabled>Align Engine Output</button>
++</div>
++<p id="task-progress" aria-live="polite" hidden></p>
+@@ -51 +56 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
+-<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. This page never imports another player's keys or exposes session credentials. Encrypted guest role delivery and full-round play remain disabled until independently accepted.</small></p>
++<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. One shared task is available in this demo.</small></p>
+@@ -56,0 +62,4 @@ const create=$('create-lobby'),join=$('join-lobby'),phase=$('lobby-phase'),list=
++const start=$('start-round'),task=$('complete-task'),progress=$('task-progress');
++// The original engine console from ui/src/game/world.ts is the sole task.
++const demoTask={id:0,name:'Align Engine Output',x:1240,y:1560};
++let latestState=null,refreshing=false;
+@@ -88,0 +98,9 @@ function updateButtons(){
++ const host=latestState?.is_host===true;
++ const full=latestState?.players?.length===latestState?.player_count;
++ const missingTask=latestState?.phase==='playing'&&!latestState.tasks?.length;
++ start.hidden=!(host&&full&&(latestState?.phase==='lobby'||missingTask));
++ start.disabled=!ready||start.hidden;
++ start.textContent=missingTask?'Publish task':'Start round';
++ task.hidden=!(verifiedRole===0&&latestState?.phase==='playing'&&
++   latestState.tasks?.some(item=>item.id===demoTask.id));
++ task.disabled=!ready||task.hidden||Boolean(latestState?.my_tasks_done?.includes(demoTask.id));
+@@ -92 +110 @@ async function init(){
+- verifiedRole=null;roleScope=null;roleBusy=false;roleAttemptAt=0;
++ verifiedRole=null;roleScope=null;roleBusy=false;roleAttemptAt=0;latestState=null;
+@@ -129,0 +148 @@ function renderState(state){
++ latestState=state;
+@@ -133 +152,6 @@ function renderState(state){
+- $('round-state').textContent='Phase: '+(labels[currentPhase]||'Waiting for verified state');
++ const result=state?.result?.outcome;
++ const resultLabel=result==='crew_win'?'Crew wins':result==='impostors_win'?'Impostors win':'';
++ $('round-state').textContent='Phase: '+(labels[currentPhase]||'Waiting for verified state')+
++   (resultLabel?' · '+resultLabel:'');
++ progress.hidden=!state?.tasks?.length;
++ progress.textContent=progress.hidden?'':`Task completions: ${state.tasks_done}/${state.task_target}`;
+@@ -136,2 +160 @@ function renderState(state){
+- // Public native-validated reveal, or private local game::request_role
+- // after its strict recipient, seat, commitment and Merkle proof checks.
++ // Public native-validated reveal or the extension's verified local role.
+@@ -145 +168 @@ function renderState(state){
+- if(!label&&state?.roles_dealt&&state?.my_seat!=null&&currentPhase!=='lobby')
++ if(state?.roles_dealt&&state?.my_seat!=null&&['playing','meeting'].includes(currentPhase))
+@@ -159,0 +183 @@ function renderState(state){
++ updateButtons();
+@@ -162 +186 @@ async function fetchOwnVerifiedRole(scope){
+- if(roleBusy||Date.now()-roleAttemptAt<12000||!hc)return;
++ if(roleBusy||Date.now()-roleAttemptAt<3500||!hc)return;
+@@ -166,6 +190,5 @@ async function fetchOwnVerifiedRole(scope){
+-  // Unverified HWC remote calls remain disabled. Only the coordinator may
+-  // return a verified role. Never cache role material in shared browser storage.
+-  const role=await client.callZome({zome_name:'game',fn_name:'request_role',payload:null});
+-  if(client===hc&&epoch===connectionEpoch&&scope===roleScope&&(role===0||role===1)){
+-   verifiedRole=role;
+-   $('my-role').textContent='Your verified role: '+(role===0?'Crewmate':'Impostor');
++  const role=await client.callZome({zome_name:'game',fn_name:'get_verified_browser_role',payload:null});
++  if(client===hc&&epoch===connectionEpoch&&scope===roleScope){
++   verifiedRole=(role===0||role===1)?role:null;
++   if(verifiedRole!=null)$('my-role').textContent='Your verified role: '+(role===0?'Crewmate':'Impostor');
++   updateButtons();
+@@ -174,2 +197 @@ async function fetchOwnVerifiedRole(scope){
+-  // Expected when encrypted transport is unavailable: no insecure fallback,
+-  // role logging, or lobby interruption.
++  if(client===hc&&epoch===connectionEpoch&&scope===roleScope)verifiedRole=null;
+@@ -179 +201,3 @@ async function refresh(){
+- if(!hc||busy)return;
++ if(!hc||busy||refreshing)return;
++ const client=hc,epoch=connectionEpoch;
++ refreshing=true;
+@@ -181 +205,11 @@ async function refresh(){
+-  const state=await hc.callZome({zome_name:'game',fn_name:'get_game_state',payload:null});
++  const status=await client.getConnectionStatus();
++  if(client!==hc||epoch!==connectionEpoch)return;
++  if(!status?.authenticated||!status?.wsHealthy){
++   verifiedRole=null;latestState=null;roleScope=null;
++   $('my-role').textContent='Waiting for an authenticated gateway session.';
++   setStatus('error','Connection unavailable');updateButtons();
++   return;
++  }
++  if(badge.dataset.status!=='ready')setStatus('ready','Securely connected');
++  const state=await client.callZome({zome_name:'game',fn_name:'get_game_state',payload:null});
++  if(client!==hc||epoch!==connectionEpoch||busy)return;
+@@ -182,0 +217,2 @@ async function refresh(){
++  if(state.is_host&&state.phase==='playing'&&state.tasks_done>=state.task_target)
++   await client.callZome({zome_name:'game',fn_name:'try_finish',payload:null});
+@@ -183,0 +220,21 @@ async function refresh(){
++ finally{refreshing=false;}
++}
++async function roundAction(kind){
++ if(!hc||busy)return;
++ const client=hc;
++ busy=true;updateButtons();
++ try{
++  if(kind==='start'){
++   if(latestState?.phase==='lobby'){
++    const record=await client.callZome({zome_name:'game',fn_name:'commit_roles_only',payload:null});
++    window.dispatchEvent(new CustomEvent('imposter:action',{detail:{kind,record}}));
++   }
++   if(!latestState?.tasks?.length)
++    await client.callZome({zome_name:'game',fn_name:'publish_tasks',payload:[demoTask]});
++   message('Round started.');
++  }else{
++   await client.callZome({zome_name:'game',fn_name:'complete_task',payload:demoTask.id});
++   message('Task complete.');
++  }
++ }catch(e){message(errorText(e),true);}
++ finally{busy=false;updateButtons();await refresh();}
+@@ -202,0 +260,2 @@ join.addEventListener('click',()=>void act('join'));
++start.addEventListener('click',()=>void roundAction('start'));
++task.addEventListener('click',()=>void roundAction('task'));

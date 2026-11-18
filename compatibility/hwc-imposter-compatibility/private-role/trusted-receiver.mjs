@@ -99,14 +99,19 @@ export function createRestrictedRoleService(s){
      unchanged(s.session,cell,lease);
      if(typeof s.session?.sendRoleFrame!=='function')throw Error('restricted H2HC relay unavailable');
      const pendingKey=key(cell.agent,game.commit.action,seat);
-     if(outboundRequests.has(pendingKey))throw Error('outstanding signed recipient request exists');
+     if(outboundRequests.get(pendingKey)?.expiresAt>Date.now())
+       throw Error('outstanding signed recipient request exists');
      // Install correlation before socket send so a fast reply cannot beat
      // registration. On failure, tear it down; do not report receipt for ACK.
-     outboundRequests.set(pendingKey,{id:request.messageId,lease,expiresAt:request.expiresAt});
+     const pending={id:request.messageId,lease,expiresAt:request.expiresAt};
+     outboundRequests.set(pendingKey,pending);
      try {
        await s.session.sendRoleFrame(toRoleFrame(request));
        unchanged(s.session,cell,lease);
-     } catch(e) {outboundRequests.delete(pendingKey);throw e;}
+     } catch(e) {
+       if(outboundRequests.get(pendingKey)===pending)outboundRequests.delete(pendingKey);
+       throw e;
+     }
      return {requestSent:true,roleAvailable:false};
    },
    /** Host can send ONLY after an authenticated, independently signed,

@@ -7,6 +7,8 @@ import {createInstalledNativeAuthority} from './native-authority.mjs';
 import {createRestrictedRoleService} from './trusted-receiver.mjs';
 import {publishInstalledRecipientKey} from './installed-native-enrollment.mjs';
 import {parseRoleFrame} from './wire.mjs';
+import {encodeRoleOpening,verifyRoleOpening} from './merkle.mjs';
+import {requireCurrentRoleState} from './native-state.mjs';
 
 const bytes = v => {
   if (v instanceof Uint8Array) return v;
@@ -36,7 +38,7 @@ export function createInstalledHwcRoleRuntime({
       typeof encodeHash!=='function' || typeof canonicalHash!=='function')
     throw Error('HWC background-only role dependencies missing');
   const storePromise=openRoleStore();
-  const services=new Map(), booting=new Map(), enrolled=new Set();
+  const services=new Map(), booting=new Map();
   const acceptedReceipts=new Map();
   const exactly=(v,type)=> {
     const b=bytes(v);
@@ -69,48 +71,43 @@ export function createInstalledHwcRoleRuntime({
     if(live.contextId!==cell.contextId)throw Error('installed cell changed');
     return live;
   }
-  function sessionFor(cell) {
-    let state=null;
-    const read=()=>state;
+  async function probeLease(cell) {
+    await sameCell(cell);
+    const result=await probeSocket();
+    const dna=encodeHash(cell.dna),agent=encodeHash(cell.agent);
+    if(!result?.isConnected || result.authenticated!==true ||
+       typeof result.lease!=='string' || result.lease.length<16 ||
+       result.authenticatedAgent!==agent ||
+       !Array.isArray(result.registrations) ||
+       !result.registrations.some(r=>r?.dna_hash===dna&&r?.agent_pubkey===agent))
+      throw Error('offscreen authenticated role session not confirmed');
+    return result.lease;
+  }
+  function sessionFor(cell,lease) {
+    let active=true;
     async function refresh(){
-      let result;
       try {
-        await sameCell(cell);
-        result=await probeSocket();
-        const dna=encodeHash(cell.dna),agent=encodeHash(cell.agent);
-        if(!result?.isConnected || result.authenticated!==true ||
-           typeof result.lease!=='string' || result.lease.length<16 ||
-           result.authenticatedAgent!==agent ||
-           !Array.isArray(result.registrations) ||
-           !result.registrations.some(r=>r?.dna_hash===dna&&r?.agent_pubkey===agent))
-          throw Error('offscreen authenticated role session not confirmed');
-        if(state && state.lease!==result.lease)
-          state=null; // pending correlation cannot be carried across leases
-        state={lease:result.lease};
-        return result.lease;
-      } catch(e) { state=null;throw e; }
+        if(!active || await probeLease(cell)!==lease || !active)
+          throw Error('role WebSocket lease changed');
+        return lease;
+      } catch(e) { active=false;throw e; }
     }
     return {
       refresh,
-      invalidate(){state=null;},
-      leaseId(){return read()?.lease??null;},
-      isAuthenticated(){return !!read()?.lease;},
-      isRegistered(d,a){return !!read()?.lease&&eq(d,cell.dna)&&eq(a,cell.agent);},
+      invalidate(){active=false;},
+      leaseId(){return active?lease:null;},
+      isAuthenticated(){return active;},
+      isRegistered(d,a){return active&&eq(d,cell.dna)&&eq(a,cell.agent);},
       async sendRoleFrame(frame){
-        const lease=await refresh();
+        await refresh();
         const status=await sendSocket({frame,lease});
         if(status?.success!==true)throw Error('restricted authenticated WS send rejected');
-        const after=await refresh();
-        if(after!==lease)throw Error('role WS reauthenticated during send');
+        await refresh();
       }
     };
   }
-  async function serviceFor(cell) {
-    const k=cellKey(cell);
-    let held=services.get(k);
-    if(held)return held;
-    const store=await storePromise;
-    const session=sessionFor(cell);
+  function serviceFor(cell,store,lease) {
+    const session=sessionFor(cell,lease);
     const installedCell=()=>sameCell(cell);
     const native=createInstalledNativeAuthority({
       installedCell,
@@ -130,60 +127,56 @@ export function createInstalledHwcRoleRuntime({
         return result;
       }
     });
-    const lair=await getLair();
     const signer=Object.freeze({signByPubKey:async(pub,data)=>{
       await sameCell(cell);
       if(!eq(bytes(pub),cell.agent.slice(3,35)))
         throw Error('different installed Lair signer requested');
-      const signed=await lair.signByPubKey(pub,data);
+      const signed=await (await getLair()).signByPubKey(pub,data);
       await sameCell(cell);
       return signed;
     }});
     const service=createRestrictedRoleService({installedCell,store,native,
       lair:signer,session});
-    held={cell,store,native,service,session,signer,lease:null};
-    services.set(k,held);
-    return held;
+    return {cell,store,native,service,session,signer,enrolledUntil:0};
   }
   async function checked(cell,forwardedLease=null) {
-    const held=await serviceFor(cell);
-    const lease=await held.session.refresh();
+    const store=await storePromise;
+    const lease=await probeLease(cell);
     if(forwardedLease!==null && forwardedLease!==lease)
       throw Error('forwarded role lease is not the active authenticated WS lease');
-    if(held.lease && held.lease!==lease) {
-      // A new service has no old signed request/reply correlation.
-      services.delete(cellKey(cell));
-      const next=await serviceFor(cell);
-      next.lease=lease;
-      await next.session.refresh();
-      return next;
-    }
-    held.lease=lease;
+    const key=cellKey(cell);
+    const previous=services.get(key);
+    if(previous?.session.leaseId()===lease)return previous;
+    // Never let in-flight work refresh onto a new socket with old correlation.
+    previous?.session.invalidate();
+    acceptedReceipts.delete(key);
+    const held=serviceFor(cell,store,lease);
+    services.set(key,held);
     return held;
   }
   function invalidate() {
     for(const held of services.values())held.session.invalidate();
     services.clear();
     booting.clear();
-    enrolled.clear();
+    acceptedReceipts.clear();
   }
   async function bootstrap(cell) {
     const key=cellKey(cell),prior=booting.get(key);
     if(prior)return prior;
     const promise=(async()=>{
       const h=await checked(cell);
-      if(!enrolled.has(key)) {
+      const view=await h.native.readCurrentGame(cell);
+      if(h.enrolledUntil<=Date.now()+15000) {
         // Actual installed HWC Lair attestation, native publication and exact
         // signed action lookup. No DHT-only key or webpage attestation accepted.
-        await publishInstalledRecipientKey({
+        const enrollment=await publishInstalledRecipientKey({
           contextId:cell.contextId,dna:cell.dna,
           contextManager,lair:h.signer,store:h.store,native:h.native
         });
-        enrolled.add(key);
+        await h.session.refresh();
+        h.enrolledUntil=enrollment.expiresAt;
       }
-      const lease=await h.session.refresh();
-      const view=await h.native.readCurrentGame(cell);
-      if(h.session.leaseId()!==lease)throw Error('bootstrap lease invalidated');
+      await h.session.refresh();
       const host=exactly(view.host,'agent');
       if(!eq(host,cell.agent) && !acceptedReceipts.has(key)) {
         const seat=view.seats.find(x=>eq(bytes(x.agent),cell.agent))?.seat;
@@ -196,7 +189,9 @@ export function createInstalledHwcRoleRuntime({
       return {bound:true,host:eq(host,cell.agent)};
     })();
     booting.set(key,promise);
-    try {return await promise;} finally {booting.delete(key);}
+    try {return await promise;} finally {
+      if(booting.get(key)===promise)booting.delete(key);
+    }
   }
   async function pulse() {
     const contexts=await contextManager.listContexts();
@@ -264,18 +259,44 @@ export function createInstalledHwcRoleRuntime({
       await h.service.sendRole({seat:packet.seat});
       return {requestVerified:true,queuedOnly:true};
     }
-    if(outcome && Number.isInteger(outcome.role) && outcome.coordinatorInvoked===false) {
+    if(outcome && [0,1].includes(outcome.role) && outcome.coordinatorInvoked===false) {
       const receipt={seat:outcome.seat,roleCommit:hex(outcome.roleCommit),
         dna:hex(cell.dna),recipient:hex(cell.agent),lease:before,
         coordinatorInvoked:false,extensionLocalVerified:true};
-      acceptedReceipts.set(cellKey(cell),Object.freeze(receipt));
+      acceptedReceipts.set(cellKey(cell),Object.freeze({...receipt,role:outcome.role}));
       onReceipt(Object.freeze({...receipt}));
       return {recipientReceipt:true,coordinatorInvoked:false};
     }
     throw Error('unrecognized role-only frame');
   }
+  async function readOwnRole(contextId) {
+    const context=await contextManager.getContext(contextId);
+    if(!context?.enabled || context.dnas?.length!==1)return null;
+    const cell=await installed(context.dnas[0].hash,context.agentPubKey);
+    if(cell.contextId!==contextId)throw Error('role read requires the installed context');
+    const held=await checked(cell);
+    const game=requireCurrentRoleState(await held.native.readCurrentGame(cell),cell);
+    const seat=game.commit.seats.findIndex(agent=>eq(agent,cell.agent));
+    if(seat<0)return null;
+    let role;
+    if(eq(cell.agent,game.lobby.host)) {
+      const opening=await held.native.readHostRoleOpening(cell,{
+        expected_lobby:game.lobby.action,expected_role_commit:game.commit.action,
+        expected_recipient:cell.agent,expected_seat:seat,
+      });
+      role=await verifyRoleOpening({seat,root:game.commit.merkleRoot,
+        payload:encodeRoleOpening(opening.role,opening.proof.role_salt,opening.proof.path)});
+    } else {
+      const receipt=acceptedReceipts.get(cellKey(cell));
+      if(receipt?.lease!==held.session.leaseId() || receipt?.seat!==seat ||
+         receipt.roleCommit!==hex(game.commit.action))return null;
+      role=receipt.role;
+    }
+    await held.session.refresh();
+    return role;
+  }
   return Object.freeze({
-    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,
+    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,readOwnRole,
     // Only metadata: no role, Lair secret, X25519 private key or native executor.
     receiptCount(){return acceptedReceipts.size;},
     // CI may inspect this through its OWN service-worker debugger only.
@@ -290,7 +311,7 @@ export function createInstalledHwcRoleRuntime({
         out.push({contextId:h.cell.contextId,installedDna:hex(h.cell.dna),
           installedAgent:hex(h.cell.agent),pinnedLobby:lobby?hex(lobby):null,
           pinnedRoleCommit:commit?hex(commit):null,
-          nativeEnrollmentPublished:enrolled.has(cellKey(h.cell)),
+          nativeEnrollmentPublished:h.enrolledUntil>Date.now(),
           sessionBound:!!h.session.leaseId(),
           gatewayRoleRequestQueued:gateway?.queuedAcks?.requests??0,
           gatewayRoleDeliveryQueued:gateway?.queuedAcks?.deliveries??0,

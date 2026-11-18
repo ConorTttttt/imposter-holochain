@@ -336,6 +336,24 @@ function getInstalledRoleRuntime(): any {
       void getInstalledRoleRuntime().pulse().catch(() => {});
     }
     const afterOffscreen = performance.now();''')
+    edit(background, '''    // Build cell_id from context
+    logZome.trace''', '''    // A local read of exactly this tab's installed recipient role.
+    // No payload, seat, recipient or cross-origin context can be supplied.
+    if (zome_name === "game" && fn_name === "get_verified_browser_role") {
+      if (sender.id !== chrome.runtime.id || sender.frameId !== 0 ||
+          !sender.url || new URL(sender.url).origin !== origin ||
+          context.domain !== origin || payload != null)
+        return createErrorResponse(message.id, "PRIVATE_ROLE_ORIGIN_OR_PAYLOAD_DENIED");
+      try {
+        const role = await getInstalledRoleRuntime().readOwnRole(context.id);
+        return createSuccessResponse(message.id, role);
+      } catch {
+        return createErrorResponse(message.id, "PRIVATE_ROLE_UNAVAILABLE");
+      }
+    }
+
+    // Build cell_id from context
+    logZome.trace''')
     edit(background, '''// RESERVED extension-owned entry point for Agent 2's restricted receiver.
 // Until the independently native-validated current-round game-state bridge
 // and authenticated WS lease are installed, deny EVERY private-role frame.

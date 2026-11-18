@@ -10,6 +10,8 @@ test "$(git rev-parse HEAD)" = 0f7b17592e682a7b7d77e9346528cba69a096cdc
 test "$(git -C agent3-kit rev-parse HEAD)" = f49b0dfcc9f8b86a3e2abcd48e6c13375c347ed5
 test "$(git -C hwc rev-parse HEAD)" = 0c391226e78769d44ccb4661881ed8998b15f903
 git -C integration merge-base --is-ancestor 339643b513a91283b69d21ceca322ef6fd6a89a9 HEAD
+git apply --check --unidiff-zero integration/ci/installed-role/browser-demo.patch
+git apply --unidiff-zero integration/ci/installed-role/browser-demo.patch
 
 python3 "$agent2/verify_pinned_sources.py" hwc
 git -C hwc switch -c fix/imposter-hwc-compatibility

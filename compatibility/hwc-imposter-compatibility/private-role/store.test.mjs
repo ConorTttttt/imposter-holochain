@@ -5,11 +5,39 @@ import assert from 'node:assert/strict';
 import {openRoleStore} from './store.mjs';
 import {seal,openForCell} from './hpke.mjs';
 import {attestKey} from './wire.mjs';
+import {createInstalledHwcRoleRuntime} from './hwc-installed-runtime.mjs';
 const hash=(prefix,n)=>new Uint8Array([...prefix,...new Array(36).fill(n)]);
 const dna=n=>hash([0x84,0x2d,0x24],n);
 const agent=n=>hash([0x84,0x20,0x24],n);
 const commit=n=>hash([0x84,0x29,0x24],n);
 const replay=(d,r,s,root,id)=>({dna:d,recipient:r,sender:s,commit:root,messageId:new Uint8Array(16).fill(id)});
+test('the installed runtime pins HWC 0.7 Lobby and PlayerJoin Create records',async()=>{
+ const d=dna(19),host=agent(20),guest=agent(21),lobby=commit(23);
+ const contexts=[host,guest].map((agentPubKey,i)=>({
+   id:String(i),agentKeyTag:String(i),agentPubKey,dnas:[{hash:d}],enabled:true,
+ }));
+ const unused=()=>{throw Error('Unexpected runtime dependency');};
+ const runtime=createInstalledHwcRoleRuntime({
+   contextManager:{listContexts:async()=>contexts,getContext:async id=>contexts[Number(id)]},
+   getLair:async()=>({getEntry:async tag=>({ed25519_pub_key:contexts[Number(tag)].agentPubKey.slice(3,35)})}),
+   nativeZomeCall:unused,probeSocket:unused,sendSocket:unused,encodeHash:unused,
+   canonicalHash:hash=>hash,
+ });
+ const record=(author,action)=>({
+   signed_action:{hashed:{hash:[...action],content:{header:{author:[...author]},data:{type:'Create'}}}},
+   entry:{Present:{entry_type:'App',entry:[0x80]}},
+ });
+ assert(await runtime.pinLobbyFromNativeRecord('0','create_lobby',record(host,lobby),
+   ()=>({code:'g1.test',player_count:3,impostor_count:1})));
+ assert(await runtime.pinLobbyFromNativeRecord('1','join_lobby',record(guest,commit(24)),
+   ()=>({lobby:[...lobby],player:[...guest],display_name:'Guest'})));
+ await assert.rejects(runtime.pinLobbyFromNativeRecord('1','join_lobby',record(host,commit(24)),unused),
+   /lacks signed Create action/);
+ const store=await openRoleStore();
+ assert.deepEqual(await store.getPinnedLobby(d,host),lobby);
+ assert.deepEqual(await store.getPinnedLobby(d,guest),lobby);
+ store.close();
+});
 test('cell key retains non-extractable X25519 identity across DB closure and reopening',async()=>{
  if(typeof indexedDB==='undefined')throw Error('IndexedDB test harness missing');
  const name='agent2-role-cell-restart-'+Date.now();

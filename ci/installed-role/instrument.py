@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Connect the existing native topology to an extension-worker-only observer."""
 from pathlib import Path
+import re
 import sys
 
 
@@ -13,19 +14,46 @@ def replace_once(source: str, old: str, new: str) -> str:
 background, bridge = map(Path, sys.argv[1:])
 source = background.read_text()
 source = replace_once(source, "let installedRoleRuntime: any = null;", """let installedRoleRuntime: any = null;
-// CI debugger only. Exposes no callable role, signer, native executor or mutation.
+// CI debugger only. No content-facing listener, plaintext, signing or native execution.
+let lastAcceptedCiphertext: string | null = null;
 Object.defineProperty(globalThis, "__imposterInstalledRoleEvidence", {
   value: () => installedRoleRuntime?.evidenceMetadata() ?? [],
+});
+Object.defineProperty(globalThis, "__imposterRoleCiphertext", {
+  value: () => lastAcceptedCiphertext,
+});
+Object.defineProperty(globalThis, "__imposterTryRoleCiphertext", {
+  value: async (frame: string) => {
+    await executor.initialize();
+    const response = await chrome.runtime.sendMessage({
+      target:"offscreen",type:"PRIVATE_ROLE_SESSION_PROBE"
+    });
+    if (!response?.roleSession?.lease) return "no-live-lease";
+    try {
+      await getInstalledRoleRuntime().receiveSocketFrame(frame, response.roleSession.lease);
+      return "accepted";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message === "forged remote caller signature") return "bad-signature";
+      if (message === "no unique enabled installed HWC game cell") return "wrong-recipient-cell";
+      if (message === "unsolicited, stale or uncorrelated role delivery") return "uncorrelated";
+      return "rejected";
+    }
+  },
 });""")
+source = replace_once(source, '    .then((r: unknown)=>sendResponse({success:true,result:r}))',
+                      '''    .then((r: any)=>{
+      if(r?.recipientReceipt===true)lastAcceptedCiphertext=msg.frame as string;
+      sendResponse({success:true,result:r});
+    })''')
 background.write_text(source)
 
 source = bridge.read_text()
 for label, permission in (
     ("'ephemeral-real-HWC-host'", "game_role_deliver"),
     ("'ephemeral-isolated-HWC-guest'", "game_role_request"),
+    ("'CI-controlled-integrity-invalid-lobby-author'", "game_role_request"),
 ):
-    # Keep the third profile restricted to DHT and network operations.
-    import re
     anchor = re.search(
         r"capabilities:\['dht_read','dht_write','k2'\],\s*label:" + label, source
     )
@@ -40,6 +68,16 @@ source = replace_once(source, "  record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS'
     pages:[page, guestPage, guestCPage],
     agents:pubkeys, dna:m.dna_hash, lobby:lobbyActionHash,
     seats:evidence.networked_players.full_views,
+    joinB:guestBJoin.action_hash,
+    restartGuestB:async()=>{
+      await guestContext.close();
+      guestContext=await chromium.launchPersistentContext(guestProfile,chromeOptions);
+      guestPage=await freshPage(guestContext);
+      must(await ownIdentity(guestPage)===pubkeys[1], 'Guest B Lair identity changed after receipt');
+      await signedSession(guestPage,'guest_b_after_receipt',pubkeys[1]);
+      await guestPage.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
+      return {profile:guestContext,page:guestPage};
+    },
     output:path.join(OUT_LOG,'installed-role-evidence.json'),
   }));
   record('NETWORKED_THREE_PLAYER_GAMEPLAY','PASS',""")

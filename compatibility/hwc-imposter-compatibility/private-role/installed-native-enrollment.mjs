@@ -62,5 +62,5 @@ export async function publishInstalledRecipientKey({
     observed.attestation.epoch!==a.epoch)
    throw Error('native indexed entry differs from locally held signed X25519 key');
  return Object.freeze({action:observed.action,epoch:a.epoch,
-   keyId:a.keyId,publicKey:a.publicKey,observedCurrentUnproven:true});
+   keyId:a.keyId,publicKey:a.publicKey,expiresAt:a.notAfter,observedCurrentUnproven:true});
 }

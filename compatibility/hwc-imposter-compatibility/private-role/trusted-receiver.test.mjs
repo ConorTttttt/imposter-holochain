@@ -148,6 +148,22 @@ test('native wrong round/host/seat and revoked session deny before plaintext dis
  f.game.seats[1].agent=f.b.agent;f.bSession.revoke();
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/live registered/);
 });
+test('a lost request can be retried after expiry without accepting its stale reply',async(t)=>{
+ const f=await fixture();
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ await f.guestSvc.requestRole({seat:1});
+ await assert.rejects(f.guestSvc.requestRole({seat:1}),/outstanding signed/);
+ await f.hostSvc.receiveFromSocket(f.bSession.sent[0]);
+ t.mock.timers.tick(10000);
+ await f.hostSvc.sendRole({seat:1});
+ // The first reply is still within its own lifetime when the request expires.
+ t.mock.timers.tick(20000);
+ await f.guestSvc.requestRole({seat:1});
+ await assert.rejects(f.guestSvc.receiveFromSocket(f.hostSession.sent[0]),/uncorrelated/);
+ await f.hostSvc.receiveFromSocket(f.bSession.sent[1]);
+ await f.hostSvc.sendRole({seat:1});
+ assert.equal((await f.guestSvc.receiveFromSocket(f.hostSession.sent[1])).seat,1);
+});
 test('signed message has no forged browser bool or generic remote API; absent native adapter rejects',async()=>{
  const f=await fixture();
  await assert.rejects(f.guestSvc.receiveFromSocket(JSON.stringify({verifiedRemoteCaller:true,nativeValidated:true})),/role frame/);
