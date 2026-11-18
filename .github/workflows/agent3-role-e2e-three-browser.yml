@@ -124,6 +124,8 @@ jobs:
 
       - name: Pin executable bytes, generating source and role gateway provenance
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh api repos/ConorTttttt/imposter-holochain/actions/artifacts/14428255589 | jq -e '.id == 14428255589 and .expired == false and .workflow_run.id == 44304976936 and .workflow_run.head_sha == "293563649f7fd18a6bc2e0d1426c31132bf2b8c7"' >/dev/null
