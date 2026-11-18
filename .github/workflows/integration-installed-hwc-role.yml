@@ -1,7 +1,7 @@
 name: Integration - installed HWC encrypted role receipt
 on:
   push:
-    branches: [integration/installed-hwc-role-receipt]
+    branches: [integration/installed-hwc-role-receipt, release/browser-alpha-rc1]
     paths:
       - '.github/workflows/integration-installed-hwc-role.yml'
       - 'ci/installed-role/**'

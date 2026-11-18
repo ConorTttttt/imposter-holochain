@@ -124,6 +124,74 @@ async function verifyRevocation(profile, page, agent) {
     ?.startsWith('Your verified role:'), null, {timeout:120000});
 }
 
+async function verifySignedRoleFaults({host, guest, page, dna, agent, evidence, save}) {
+  const hostWorker = await extensionWorker(host);
+  const guestWorker = await extensionWorker(guest);
+  const agentHex = raw(agent).toString('hex'), dnaHex = raw(dna).toString('hex');
+  const fixture = (worker, operation, ...args) => worker.evaluate(({operation, args}) =>
+    globalThis.__imposterRoleFixture[operation](...args), {operation, args});
+  const receipt = () => guestWorker.evaluate(() => globalThis.__imposterRoleCiphertext());
+  const configure = url => page.evaluate(linkerUrl =>
+    window.holochain.configureNetwork({linkerUrl}), url);
+  const row = async () => (await observe(guest)).find(item => item.installedAgent === agentHex);
+  const disconnect = async () => {
+    await configure('http://127.0.0.1:1').catch(() => {});
+    await until(() => page.evaluate(async () => !(await window.holochain.getConnectionStatus()).authenticated),
+      'Fault fixture could not disconnect Guest C', 15000);
+  };
+  const connect = () => configure(process.env.H2HC_BASE_URL);
+  const recover = () => until(async () => {
+    const current = await receipt();
+    return current && current !== lastGood && (await row())?.receipt && current;
+  }, 'Fresh legitimate delivery did not recover after a rejected frame');
+
+  let lastGood = await receipt();
+  assert(lastGood, 'Guest C requires a real positive receipt before fault tests');
+  evidence.signedRoleFaults = {};
+  for (const [kind, reason] of [
+    ['merkle', 'malformed-opening'],
+    ['expired', 'attestation-expired'],
+    ['rollback', 'epoch-disagrees-with-native-enrollment'],
+  ]) {
+    const status = evidence.signedRoleFaults[kind] = {attempts:[], freshRecovery:false};
+    save();
+    if (kind === 'rollback') {
+      await disconnect();
+      assert.equal(await fixture(guestWorker, 'rotate', dnaHex, agentHex), 2);
+      await connect();
+      lastGood = await recover();
+      assert.equal(await fixture(hostWorker, 'trustedEpoch', dnaHex, agentHex), 2,
+        'Host did not persist the native epoch-two floor');
+      status.nativeTrustedEpoch = 2;
+      save();
+    }
+    const sender = kind === 'merkle' ? hostWorker : guestWorker;
+    const target = kind === 'merkle' ? guestWorker : hostWorker;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await disconnect();
+      await fixture(sender, 'arm', kind, agentHex);
+      await connect();
+      const message = await until(() => fixture(sender, 'sent'), 'Signed fault frame was not sent');
+      assert.equal(message.kind, kind);
+      const denied = await until(() => fixture(target, 'denial', message.messageId),
+        'Signed frame missed its intended installed-receiver denial');
+      status.attempts.push(denied);
+      save();
+      assert.equal(denied, reason);
+      const guestState = await row();
+      assert(guestState?.sessionBound && guestState.receipt === null,
+        'Guest accepted a private role on the faulted lease');
+      assert(await receipt() === lastGood, 'A faulted exchange produced a new private receipt');
+    }
+    // A new lease sends an unmodified request after each rejection pair.
+    await disconnect();
+    await connect();
+    lastGood = await recover();
+    status.freshRecovery = true;
+    save();
+  }
+}
+
 export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, seats, joinB, restartGuestB, output}) {
   const evidence = {dna, lobby, host:agents[0], guestB:agents[1], guestC:agents[2]};
   const save = () => writeFileSync(output, JSON.stringify(evidence, null, 2) + '\n');
@@ -273,6 +341,9 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
   await verifyRevocation(profiles[2], pages[2], agents[2]);
   evidence.revokedPendingDeliveryAndStaleReauthorizationDenied = true;
   save();
+  await verifySignedRoleFaults({
+    host:profiles[0], guest:profiles[2], page:pages[2], dna, agent:agents[2], evidence, save,
+  });
 
   const crew = await until(async () => {
     for (const page of pages) {

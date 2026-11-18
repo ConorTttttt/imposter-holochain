@@ -12,15 +12,51 @@ def replace_once(source: str, old: str, new: str) -> str:
 
 
 background, bridge = map(Path, sys.argv[1:])
+role_dir = background.parent.parent / "private-role"
+(role_dir / "faults.mjs").write_text(Path(__file__).with_name("faults.mjs").read_text())
+receiver = role_dir / "trusted-receiver.mjs"
+worker = receiver.read_text()
+worker = "import {fixtureRoleOpening,fixtureRecipientAttestation,observeFixtureSend} from './faults.mjs';\n" + worker
+worker = replace_once(worker, "     const request=await makeRoleRequest(", """     const fixtureAttestation=await fixtureRecipientAttestation(own,
+       (pub,data)=>s.lair.signByPubKey(pub,data));
+     const request=await makeRoleRequest(""")
+worker = replace_once(worker, "roleBytes:encodeAttestationBody(own.attestation)", "roleBytes:encodeAttestationBody(fixtureAttestation)")
+worker = replace_once(worker, "       await s.session.sendRoleFrame(toRoleFrame(request));",
+                      "       observeFixtureSend(request);\n       await s.session.sendRoleFrame(toRoleFrame(request));")
+worker = replace_once(worker, "attestation,roleBytes:payload,", "attestation,roleBytes:fixtureRoleOpening(recipient,payload),")
+worker = replace_once(worker, "     await s.session.sendRoleFrame(toRoleFrame(packet));",
+                      "     observeFixtureSend(packet);\n     await s.session.sendRoleFrame(toRoleFrame(packet));")
+receiver.write_text(worker)
 source = background.read_text()
+source = """// @ts-ignore CI-only fixture module.
+import {armFault,lastFixtureSend,rotateFixtureKey,fixtureTrustedEpoch} from "../private-role/faults.mjs";
+""" + source
 source = replace_once(source, "let installedRoleRuntime: any = null;", """let installedRoleRuntime: any = null;
 // CI debugger only. No content-facing listener, plaintext, signing or native execution.
 let lastAcceptedCiphertext: string | null = null;
+const knownDenials = new Map([
+  ["invalid role Merkle proof", "malformed-opening"],
+  ["expired or not-yet-valid key attestation", "attestation-expired"],
+  ["native enrollment differs from signed recipient request", "epoch-disagrees-with-native-enrollment"],
+]);
+const fixtureDenials = new Map<string,string>();
+Object.defineProperty(globalThis, "__imposterRoleFixture", {value:Object.freeze({
+  arm:armFault, sent:lastFixtureSend, rotate:rotateFixtureKey, trustedEpoch:fixtureTrustedEpoch,
+  denial:(id:string) => fixtureDenials.get(id) ?? null,
+})});
 let pauseNextRoleDelivery = false;
 let pausedRole: {frame:string; resume:()=>void; outcome:string} | null = null;
 async function receiveRoleUnderTest(frame:string, lease:string) {
-  if (!pauseNextRoleDelivery || JSON.parse(frame).type !== "role_delivery_v1")
-    return getInstalledRoleRuntime().receiveSocketFrame(frame, lease);
+  if (!pauseNextRoleDelivery || JSON.parse(frame).type !== "role_delivery_v1") {
+    try {
+      return await getInstalledRoleRuntime().receiveSocketFrame(frame, lease);
+    } catch (error) {
+      const reason = error instanceof Error && knownDenials.get(error.message);
+      if (reason && fixtureDenials.size < 64)
+        fixtureDenials.set(JSON.parse(frame).envelope.message_id, reason);
+      throw error;
+    }
+  }
   pauseNextRoleDelivery = false;
   let resume!: () => void;
   const gate = new Promise<void>(resolve => { resume = resolve; });
