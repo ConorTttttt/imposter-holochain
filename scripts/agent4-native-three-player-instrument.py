@@ -62,7 +62,8 @@ replace_once('  const allP0Green=', r"""
   // processes and storage, the same host-bound .happ, and a signed H2HC WS.
   // Their identities are never shared via JavaScript or exported as private keys.
   const wait=ms=>new Promise(done=>setTimeout(done,ms));
-  const readGatewayLog=()=>fs.readFileSync(process.env.H2HC_SERVER_LOG,'utf8');
+  const readGatewayLog=()=>fs.readFileSync(process.env.H2HC_SERVER_LOG,'utf8')
+    .replace(/\x1b\[[0-9;]*m/g,'');
   const freshPage=async ctx=>{
     const x=ctx.pages()[0]||await ctx.newPage();
     await x.goto(ORIGIN,{waitUntil:'domcontentloaded'});
