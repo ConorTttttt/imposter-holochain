@@ -16,6 +16,33 @@ source = background.read_text()
 source = replace_once(source, "let installedRoleRuntime: any = null;", """let installedRoleRuntime: any = null;
 // CI debugger only. No content-facing listener, plaintext, signing or native execution.
 let lastAcceptedCiphertext: string | null = null;
+let pauseNextRoleDelivery = false;
+let pausedRole: {frame:string; resume:()=>void; outcome:string} | null = null;
+async function receiveRoleUnderTest(frame:string, lease:string) {
+  if (!pauseNextRoleDelivery || JSON.parse(frame).type !== "role_delivery_v1")
+    return getInstalledRoleRuntime().receiveSocketFrame(frame, lease);
+  pauseNextRoleDelivery = false;
+  let resume!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const delivery = {frame, resume, outcome:"pending"};
+  pausedRole = delivery;
+  await gate;
+  try {
+    const result = await getInstalledRoleRuntime().receiveSocketFrame(frame, lease);
+    delivery.outcome = "accepted";
+    return result;
+  } catch (error) {
+    delivery.outcome = "rejected";
+    throw error;
+  }
+}
+Object.defineProperty(globalThis, "__imposterPauseRoleDelivery", {
+  value: (command:string) => {
+    if (command === "arm") pauseNextRoleDelivery = true;
+    if (command === "release") pausedRole?.resume();
+    return pausedRole ? {frame:pausedRole.frame, outcome:pausedRole.outcome} : null;
+  },
+});
 Object.defineProperty(globalThis, "__imposterInstalledRoleEvidence", {
   value: () => installedRoleRuntime?.evidenceMetadata() ?? [],
 });
@@ -37,6 +64,7 @@ Object.defineProperty(globalThis, "__imposterTryRoleCiphertext", {
       if (message === "forged remote caller signature") return "bad-signature";
       if (message === "no unique enabled installed HWC game cell") return "wrong-recipient-cell";
       if (message === "unsolicited, stale or uncorrelated role delivery") return "uncorrelated";
+      if (message === "stale or invalid role timestamp") return "expired";
       return "rejected";
     }
   },
@@ -46,6 +74,8 @@ source = replace_once(source, '    .then((r: unknown)=>sendResponse({success:tru
       if(r?.recipientReceipt===true)lastAcceptedCiphertext=msg.frame as string;
       sendResponse({success:true,result:r});
     })''')
+source = replace_once(source, '  void getInstalledRoleRuntime().receiveSocketFrame(msg.frame,msg.lease)',
+                      '  void receiveRoleUnderTest(msg.frame,msg.lease)')
 background.write_text(source)
 
 source = bridge.read_text()

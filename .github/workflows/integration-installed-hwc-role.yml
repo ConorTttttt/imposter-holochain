@@ -2,6 +2,10 @@ name: Integration - installed HWC encrypted role receipt
 on:
   push:
     branches: [integration/installed-hwc-role-receipt]
+    paths:
+      - '.github/workflows/integration-installed-hwc-role.yml'
+      - 'ci/installed-role/**'
+      - 'compatibility/hwc-imposter-compatibility/**'
   workflow_dispatch:
 
 permissions:

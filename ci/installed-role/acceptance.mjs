@@ -52,6 +52,72 @@ async function until(check, reason, timeout = 120000) {
   throw Error(reason);
 }
 
+async function replayRecorded(profile, delivery) {
+  const envelope = delivery.envelope;
+  const id = [envelope.dna_hash, envelope.recipient_agent, envelope.sender_agent]
+    .map(value => raw(value).toString('hex')).concat(envelope.message_id).join(':');
+  const worker = await extensionWorker(profile);
+  return worker.evaluate(key => new Promise((resolve, reject) => {
+    const open = indexedDB.open('hwc-imposter-private-role-v1');
+    open.onerror = () => reject(Error('Extension role database unavailable'));
+    open.onsuccess = () => {
+      const db = open.result;
+      const record = db.transaction('replay').objectStore('replay').count(key);
+      record.onsuccess = () => { db.close(); resolve(record.result === 1); };
+      record.onerror = () => { db.close(); reject(Error('Replay reservation unavailable')); };
+    };
+  }), id);
+}
+
+async function verifyRevocation(profile, page, agent) {
+  const linker = process.env.H2HC_BASE_URL;
+  const admin = process.env.H2HC_LINKER_ADMIN_SECRET;
+  assert(linker && admin, 'Ephemeral gateway administration is required');
+  const worker = await extensionWorker(profile);
+  const pause = command => worker.evaluate(cmd => globalThis.__imposterPauseRoleDelivery(cmd), command);
+  const configure = url => page.evaluate(linkerUrl =>
+    window.holochain.configureNetwork({linkerUrl}), url);
+  const authenticated = () => page.evaluate(async () => {
+    const connection = await window.holochain.getConnectionStatus();
+    const session = await window.holochain.getNetworkStatus();
+    return connection.authenticated && connection.wsHealthy && session.hasSession;
+  });
+  const authorize = async (method, body) => {
+    const response = await fetch(linker + '/admin/agents', {
+      method, headers:{Authorization:'Bearer ' + admin, 'Content-Type':'application/json'},
+      body:JSON.stringify({agent_pubkey:agent, ...body}),
+    });
+    assert.equal(response.status, 204, 'Gateway rejected the CI admission change');
+  };
+  // Reconnect to obtain a fresh signed request while keeping the same cell and key.
+  await pause('arm');
+  await configure('http://127.0.0.1:1').catch(() => {});
+  await until(async () => !await authenticated(), 'Guest C did not disconnect', 15000);
+  await configure(linker);
+  const pending = await until(async () => {
+    const delivery = await pause('peek');
+    return delivery?.outcome === 'pending' && delivery;
+  }, 'No genuine delivery reached the paused installed receiver');
+  assert(JSON.parse(pending.frame).envelope.recipient_agent === agent,
+    'Pending ciphertext belongs to a different recipient');
+  try {
+    await authorize('DELETE');
+    await until(async () => !await authenticated(), 'Revocation left Guest C authenticated', 15000);
+  } finally {
+    await pause('release');
+  }
+  await until(async () => (await pause('peek'))?.outcome === 'rejected',
+    'A pending delivery survived server revocation', 15000);
+  await authorize('POST', {capabilities:['dht_read', 'dht_write', 'k2', 'game_role_request']});
+  await until(authenticated, 'Guest C did not complete fresh signed reauthorization', 15000);
+  assert(JSON.parse(pending.frame).envelope.expires_at_ms > Date.now(),
+    'Reauthorization missed the live stale-message window');
+  await until(async () => await tryCiphertext(profile, pending.frame) === 'uncorrelated',
+    'The resumed session did not reject the stale request correlation', 12000);
+  await page.waitForFunction(() => document.querySelector('#my-role')?.textContent
+    ?.startsWith('Your verified role:'), null, {timeout:120000});
+}
+
 export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, seats, joinB, restartGuestB, output}) {
   const evidence = {dna, lobby, host:agents[0], guestB:agents[1], guestC:agents[2]};
   const save = () => writeFileSync(output, JSON.stringify(evidence, null, 2) + '\n');
@@ -111,7 +177,7 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
       return (await observe(profile)).find(row => row.installedAgent === agent) ?? null;
     }));
   }
-  const [host, guestB, guestC] = await until(async () => {
+  const [host, guestB] = await until(async () => {
     const rows = await metadata();
     // Keep progress eligible for artifact upload even if one gate times out.
     evidence.progress = rows.map(row => row && ({
@@ -122,11 +188,10 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
       recipientReceipts:row.decryptedRoleReceipts,
     }));
     save();
-    if (!rows.every(row => row?.pinnedRoleCommit === commitHex && row.sessionBound)) return;
-    if (!rows.every(row => row.nativeEnrollmentPublished)) return;
-    if (rows[0].gatewayRoleDeliveryQueued < 2 ||
-        rows[1].gatewayRoleRequestQueued < 1 || rows[2].gatewayRoleRequestQueued < 1) return;
-    if (!rows[1].receipt || !rows[2].receipt) return;
+    if (!rows.slice(0, 2).every(row => row?.pinnedRoleCommit === commitHex && row.sessionBound
+      && row.nativeEnrollmentPublished)) return;
+    if (rows[0].gatewayRoleDeliveryQueued < 1 || rows[1].gatewayRoleRequestQueued < 1) return;
+    if (!rows[1].receipt) return;
     return rows;
   }, 'Timed out waiting for a gateway enqueue and independent Guest B extension receipt', 180000);
   assert.deepEqual(guestB.receipt, {
@@ -134,16 +199,11 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
     recipient:raw(agents[1]).toString('hex'), coordinatorInvoked:false,
   });
   assert.equal(host.decryptedRoleReceipts, 0);
-  assert.deepEqual(guestC.receipt, {
-    seat:seats.guest_c.my_seat, roleCommit:commitHex,
-    recipient:raw(agents[2]).toString('hex'), coordinatorInvoked:false,
-  });
   // The protected opener stays inaccessible even on the Host's authorized page.
   await assert.rejects(() => gameCall(pages[0], 'host_role_opening', query), /PRIVILEGED_ROLE_OPERATION_DENIED/);
   await assert.rejects(() => gameCall(pages[2], 'host_role_opening', query), /PRIVILEGED_ROLE_OPERATION_DENIED/);
   evidence.gatewayEnqueue = {requests:guestB.gatewayRoleRequestQueued, deliveries:host.gatewayRoleDeliveryQueued};
   evidence.guestBExtensionReceipt = guestB.receipt;
-  evidence.guestCExtensionReceipt = guestC.receipt;
   evidence.protectedOpeningDenied = true;
   save();
 
@@ -156,19 +216,37 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
   const delivery = JSON.parse(frame);
   assert(delivery.envelope.recipient_agent === agents[1] && delivery.envelope.role_commit === commit,
     'The captured delivery was for a different recipient or commitment');
-  assert.equal(await tryCiphertext(profiles[2], frame), 'wrong-recipient-cell');
+  evidence.liveCiphertextDenials = {};
+  const deny = async (probe, profile, payload, expected) => {
+    const result = await tryCiphertext(profile, payload);
+    evidence.liveCiphertextDenials[probe] = result;
+    save();
+    assert.equal(result, expected);
+  };
+  await deny('wrongRecipient', profiles[2], frame, 'wrong-recipient-cell');
   const signature = (delivery.signature[0] === 'A' ? 'B' : 'A') + delivery.signature.slice(1);
-  assert.equal(await tryCiphertext(profiles[1], JSON.stringify({...delivery, signature})), 'bad-signature');
-  assert.equal(await tryCiphertext(profiles[1], frame), 'uncorrelated');
-  evidence.liveCiphertextDenials = {wrongRecipient:true, forgedHostSignature:true, duplicate:true};
-  save();
+  await deny('forgedHostSignature', profiles[1], JSON.stringify({...delivery, signature}), 'bad-signature');
+  await deny('duplicate', profiles[1], frame, 'uncorrelated');
 
   const restarted = await restartGuestB();
   profiles[1] = restarted.profile;
   pages[1] = restarted.page;
   assert(delivery.envelope.expires_at_ms > Date.now(), 'Restart missed the live ciphertext replay window');
-  assert.equal(await tryCiphertext(profiles[1], frame), 'uncorrelated');
+  await deny('afterRestart', profiles[1], frame, 'uncorrelated');
+  assert(await replayRecorded(profiles[1], delivery), 'The exact replay reservation was lost on restart');
   evidence.liveCiphertextReplayDeniedAfterChromiumRestart = true;
+  save();
+
+  const guestC = await until(async () => {
+    const [, , row] = await metadata();
+    if (row?.receipt && row.pinnedRoleCommit === commitHex && row.gatewayRoleRequestQueued > 0)
+      return row;
+  }, 'Guest C did not independently receive its own role');
+  assert.deepEqual(guestC.receipt, {
+    seat:seats.guest_c.my_seat, roleCommit:commitHex,
+    recipient:raw(agents[2]).toString('hex'), coordinatorInvoked:false,
+  });
+  evidence.guestCExtensionReceipt = guestC.receipt;
   save();
 
   for (const page of pages) {
@@ -178,6 +256,10 @@ export async function verifyInstalledRole({profiles, pages, agents, dna, lobby, 
       /PRIVATE_ROLE_ORIGIN_OR_PAYLOAD_DENIED/);
   }
   evidence.ownRoleRenderedInAllThreeBrowsers = true;
+  save();
+
+  await verifyRevocation(profiles[2], pages[2], agents[2]);
+  evidence.revokedPendingDeliveryAndStaleReauthorizationDenied = true;
   save();
 
   const crew = await until(async () => {
