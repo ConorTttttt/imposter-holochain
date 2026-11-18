@@ -103,7 +103,17 @@ replace_once(" if(pathname==='/'||pathname==='/index.html'){", r"""  if(pathname
 # solely for independent native exact-op diagnostics.
 replace_once(" const createdLobby=await step('HOST_LOBBY_CREATION',async()=>{", r""" const demoUIAction=async(pg,kind,label,seed)=>{
    await pg.goto(ORIGIN+'/browser-demo.html',{waitUntil:'domcontentloaded'});
-   await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
+   try{
+     await pg.locator('#connection-state[data-status="ready"]').waitFor({timeout:45000});
+   }catch(e){
+     const details=await pg.evaluate(()=>({
+       status:document.querySelector('#connection-state')?.getAttribute('data-status'),
+       notice:document.querySelector('#notice')?.textContent,
+       extensionPresent:Boolean(window.holochain?.isWebConductor)
+     })).catch(()=>({status:'unavailable'}));
+     throw Error('Browser UI did not initialize with trusted HWC and authenticated H2HC: '+
+       JSON.stringify(details)+'; '+String(e).slice(0,150));
+   }
    await pg.locator('#player-name').fill(label);
    await pg.locator('#room-code').fill(seed);
    const receive=pg.evaluate(()=>new Promise((resolve,reject)=>{
