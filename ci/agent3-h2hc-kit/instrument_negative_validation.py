@@ -148,8 +148,8 @@ replace(
     matched_op_hashes:invalidRows.map(x=>x.op_hash),
     native_rows:invalidRows
   };
-  record('NATIVE_INTEGRITY_INVALID_LOBBY_REJECTION',
-    invalidRejected&&!invalidAccepted?'PASS':'BLOCKED',
+  record('LEGACY_SQL_INVALID_AUTHOR_DIAGNOSTIC',
+    invalidRejected&&!invalidAccepted?'LEGACY_SQL_REJECTED':'NOT_AUTHORITATIVE',
     invalidRejected&&!invalidAccepted?
       'Isolated signed invalid-game-lobby chain action rejected by native integrity':
       invalidAccepted?
