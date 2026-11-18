@@ -3118,7 +3118,7 @@ fn unique_native_lobby(records: &[Record]) -> ExternResult<(ActionHash, AgentPub
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NativeGameViewQuery {
     pub expected_lobby: ActionHash,
     pub expected_role_commit: Option<ActionHash>,
@@ -3126,7 +3126,7 @@ pub struct NativeGameViewQuery {
     pub expected_seat: Option<u16>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NativeSeatEvidence {
     pub seat: u16,
     pub agent: AgentPubKey,
@@ -3134,7 +3134,7 @@ pub struct NativeSeatEvidence {
     pub display_name: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NativeGameViewV1 {
     pub schema_version: u8,
     pub dna: DnaHash,
@@ -3290,7 +3290,7 @@ pub fn get_authoritative_game_view(input: NativeGameViewQuery) -> ExternResult<N
     })
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct HostRoleOpeningQuery {
     pub expected_lobby: ActionHash,
     pub expected_role_commit: ActionHash,
@@ -3298,7 +3298,7 @@ pub struct HostRoleOpeningQuery {
     pub expected_seat: u16,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct HostRoleOpening {
     pub role_commit: ActionHash,
     pub recipient: AgentPubKey,
