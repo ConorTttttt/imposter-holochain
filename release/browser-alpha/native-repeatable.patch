@@ -1,0 +1,713 @@
+diff --git a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee9232c901ee8f6973a25f668a08262232bebe08
+--- /dev/null
++++ b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
+@@ -0,0 +1,296 @@
++//! Browser alpha lifecycle within one host-bound cell. Legacy cloned games
++//! keep their original indexes and zome calls.
++use super::*;
++
++fn browser_error(why: &str) -> WasmError {
++    wasm_error!(WasmErrorInner::Guest(why.into()))
++}
++
++fn bound_host() -> ExternResult<AgentPubKey> {
++    match parse_game_seed(&dna_info()?.modifiers.network_seed) {
++        Ok(SeedOwner::Host(host)) if host == me()? => Ok(host),
++        _ => Err(browser_error("only the DNA-bound host can create or start a browser lobby")),
++    }
++}
++
++fn browser_root(lobby: ActionHash) -> ExternResult<Record> {
++    let root = must_get_valid_record(lobby)
++        .map_err(|_| browser_error("browser lobby not found or not yet visible"))?;
++    if !app_entry::<Lobby>(&root).is_some_and(|l| browser_lobby_code_valid(&l.code)) {
++        return Err(browser_error("invalid browser lobby action"));
++    }
++    Ok(root)
++}
++
++pub(super) fn records_for_browser_lobby(root: Record) -> ExternResult<Vec<Record>> {
++    let mut records = strict_native_index(root.action_address().clone().into(), LinkTypes::BrowserLobbyIndex)?;
++    records.push(root);
++    Ok(records)
++}
++
++fn resolve_code(code: &str) -> ExternResult<Record> {
++    if !browser_lobby_code_valid(code) {
++        return Err(browser_error("invalid browser lobby code"));
++    }
++    let mut records = strict_native_index(anchor_hash(code)?, LinkTypes::BrowserLobbyIndex)?;
++    match records.pop() {
++        Some(record) if records.is_empty()
++            && app_entry::<Lobby>(&record).is_some_and(|l| l.code == code) => Ok(record),
++        None => Err(browser_error("browser lobby not found or not yet visible")),
++        _ => Err(browser_error("conflicting actions for browser lobby code")),
++    }
++}
++
++fn ensure_index(base: AnyLinkableHash, action: &ActionHash) -> ExternResult<()> {
++    let target: AnyLinkableHash = action.clone().into();
++    let links = get_links(LinkQuery::try_new(base.clone(), LinkTypes::BrowserLobbyIndex)?, GetStrategy::Local)?;
++    if !links.iter().any(|l| l.target == target) {
++        create_link(base, target, LinkTypes::BrowserLobbyIndex, ())?;
++    }
++    Ok(())
++}
++
++pub(super) fn index_round_entry(lobby: &Lobby, root: &ActionHash, action: &ActionHash) -> ExternResult<()> {
++    if browser_lobby_code_valid(&lobby.code) {
++        ensure_index(root.clone().into(), action)
++    } else {
++        link_entry(action)
++    }
++}
++
++fn local_lobbies() -> ExternResult<Vec<Record>> {
++    let mut lobbies: Vec<_> = query(ChainQueryFilter::new().include_entries(true))?
++        .into_iter()
++        .filter(|r| app_entry::<Lobby>(r).is_some_and(|l| browser_lobby_code_valid(&l.code)))
++        .collect();
++    lobbies.sort_by_key(|r| r.action().action_seq());
++    Ok(lobbies)
++}
++
++fn local_join(lobby: &ActionHash, player: &AgentPubKey) -> ExternResult<Option<Record>> {
++    Ok(query(ChainQueryFilter::new().include_entries(true))?
++        .into_iter()
++        .filter(|r| app_entry::<PlayerJoin>(r).is_some_and(|j| &j.lobby == lobby && &j.player == player))
++        .min_by_key(|r| r.action().action_seq()))
++}
++
++fn record_join(lobby: ActionHash, player: AgentPubKey, display_name: String) -> ExternResult<Record> {
++    let join = if let Some(record) = local_join(&lobby, &player)? {
++        record.action_address().clone()
++    } else {
++        create_entry(EntryTypes::PlayerJoin(PlayerJoin { lobby: lobby.clone(), player, display_name }))?
++    };
++    ensure_index(lobby.into(), &join)?;
++    must_get_valid_record(join)
++}
++
++fn open_lobby(code: String, existing: Option<&Record>, display_name: String) -> ExternResult<Record> {
++    let root = if let Some(record) = existing {
++        record.action_address().clone()
++    } else {
++        create_entry(EntryTypes::Lobby(Lobby {
++            code: code.clone(), player_count: 3, impostor_count: 1, task_target: 1,
++        }))?
++    };
++    // Publish the host's seat before advertising the code to guests.
++    record_join(root.clone(), me()?, display_name)?;
++    ensure_index(anchor_hash(&code)?, &root)?;
++    must_get_valid_record(root)
++}
++
++#[hdk_extern]
++pub fn create_browser_lobby(input: JoinLobby) -> ExternResult<Record> {
++    bound_host()?;
++    let lobbies = local_lobbies()?;
++    if let Some(latest) = lobbies.last() {
++        let lobby = app_entry::<Lobby>(latest).ok_or_else(|| browser_error("invalid local lobby"))?;
++        return open_lobby(lobby.code, Some(latest), input.display_name);
++    }
++    let id: String = random_bytes(16)?.as_ref().iter().map(|b| format!("{b:02x}")).collect();
++    open_lobby(format!("{BROWSER_LOBBY_PREFIX}{id}"), None, input.display_name)
++}
++
++#[derive(Serialize, Deserialize, Debug)]
++pub struct NewBrowserGame {
++    pub previous_lobby: ActionHash,
++    pub display_name: String,
++}
++
++#[hdk_extern]
++pub fn new_browser_game(input: NewBrowserGame) -> ExternResult<Record> {
++    bound_host()?;
++    let lobbies = local_lobbies()?;
++    let latest = lobbies.last().ok_or_else(|| browser_error("create the first lobby before starting a new game"))?;
++    let root = browser_root(input.previous_lobby.clone())?;
++    let records = records_for_browser_lobby(root)?;
++    let results: Vec<_> = records.iter().filter(|r| app_entry::<GameResult>(r).is_some()).collect();
++    let [result] = results.as_slice() else {
++        return Err(browser_error("New Game requires one completed native game"));
++    };
++    // The predecessor's immutable result gives retries the very same code,
++    // including after a host restart or an interrupted Lobby/index write.
++    let code = format!("{BROWSER_LOBBY_PREFIX}{}", ActionHashB64::from(result.action_address().clone()));
++    if latest.action_address() != &input.previous_lobby {
++        if app_entry::<Lobby>(latest).is_some_and(|l| l.code == code) {
++            return open_lobby(code, Some(latest), input.display_name);
++        }
++        return Err(browser_error("stale lobby: open the host's latest game"));
++    }
++    open_lobby(code, None, input.display_name)
++}
++
++#[derive(Serialize, Deserialize, Debug)]
++pub struct JoinBrowserLobby {
++    pub code: String,
++    pub display_name: String,
++}
++
++#[hdk_extern]
++pub fn join_browser_lobby(input: JoinBrowserLobby) -> ExternResult<Record> {
++    let root = resolve_code(input.code.trim())?;
++    let lobby = app_entry::<Lobby>(&root).ok_or_else(|| browser_error("invalid browser lobby"))?;
++    let action = root.action_address().clone();
++    let host = root.action().author().clone();
++    let records = records_for_browser_lobby(root)?;
++    if records.iter().any(|r| app_entry::<GameResult>(r).is_some()) {
++        return Err(browser_error("this lobby is completed"));
++    }
++    if records.iter().any(|r| app_entry::<RoleCommit>(r).is_some()) {
++        return Err(browser_error("the game has already started"));
++    }
++    let player = me()?;
++    let seats = seated_joins(&records, &action, &host, lobby.player_count as usize);
++    if seats.len() >= lobby.player_count as usize && !seats.iter().any(|(k, _)| k == &player) {
++        return Err(browser_error("game full: all seats are taken"));
++    }
++    record_join(action, player, input.display_name)
++}
++
++/// Recover an existing seat by exact code without writing another join, even
++/// after the game has started or finished.
++#[hdk_extern]
++pub fn reopen_browser_lobby(code: String) -> ExternResult<Record> {
++    let root = resolve_code(code.trim())?;
++    let view = get_authoritative_game_view(NativeGameViewQuery {
++        expected_lobby: root.action_address().clone(),
++        expected_role_commit: None, expected_recipient: None, expected_seat: None,
++    })?;
++    let player = me()?;
++    let seat = view.seats.iter().find(|s| s.agent == player)
++        .ok_or_else(|| browser_error("this identity has no seat in that lobby"))?;
++    must_get_valid_record(seat.join_action.clone())
++}
++
++#[hdk_extern]
++pub fn get_browser_game_state(lobby: ActionHash) -> ExternResult<GameStateView> {
++    project_game_state(records_for_browser_lobby(browser_root(lobby)?)?, false)
++}
++
++#[hdk_extern]
++pub fn start_browser_round(action: ActionHash) -> ExternResult<CommitOnlyResult> {
++    let host = bound_host()?;
++    if !local_lobbies()?.last().is_some_and(|r| r.action_address() == &action) {
++        return Err(browser_error("stale lobby: only the host's latest lobby can start"));
++    }
++    let root = browser_root(action.clone())?;
++    let lobby = app_entry::<Lobby>(&root).ok_or_else(|| browser_error("invalid browser lobby"))?;
++    let records = records_for_browser_lobby(root)?;
++    if records.iter().any(|r| app_entry::<GameResult>(r).is_some()) {
++        return Err(browser_error("this lobby is completed"));
++    }
++    let dealt = ensure_role_commit_in(records, action.clone(), host, lobby)?;
++    let local = query(ChainQueryFilter::new().include_entries(true))?;
++    let task_list = if let Some(record) = local.iter()
++        .find(|r| app_entry::<TaskList>(r).is_some_and(|tasks| tasks.lobby == action)) {
++        record.action_address().clone()
++    } else {
++        create_entry(EntryTypes::TaskList(TaskList {
++            lobby: action.clone(),
++            tasks: vec![Task { id: 0, name: "Align Engine Output".into(), x: 1240, y: 1560 }],
++        }))?
++    };
++    ensure_index(action.into(), &task_list)?;
++    Ok(CommitOnlyResult { role_commit: dealt.role_commit, seats: dealt.seats })
++}
++
++#[hdk_extern]
++pub fn complete_browser_task(action: ActionHash) -> ExternResult<Record> {
++    let records = records_for_browser_lobby(browser_root(action.clone())?)?;
++    if records.iter().any(|r| app_entry::<GameResult>(r).is_some() || app_entry::<RolesReveal>(r).is_some()) {
++        return Err(browser_error("this lobby is completed"));
++    }
++    let mut commits = records.iter().filter_map(app_entry::<RoleCommit>);
++    let player = me()?;
++    if !commits.next().is_some_and(|c| c.seats.contains(&player)) || commits.next().is_some() {
++        return Err(browser_error("this identity has no committed seat in this lobby"));
++    }
++    let mut lists = records.iter().filter(|r| app_entry::<TaskList>(r).is_some());
++    let list = lists.next().ok_or_else(|| browser_error("waiting for the host to publish the task"))?;
++    if lists.next().is_some() {
++        return Err(browser_error("conflicting browser task lists"));
++    }
++    let task_list = list.action_address().clone();
++    let local = query(ChainQueryFilter::new().include_entries(true))?;
++    let completion = if let Some(record) = local.iter()
++        .find(|r| app_entry::<TaskComplete>(r).is_some_and(|t| t.task_list == task_list && t.task_id == 0)) {
++        record.action_address().clone()
++    } else {
++        create_entry(EntryTypes::TaskComplete(TaskComplete { task_list, task_id: 0 }))?
++    };
++    ensure_index(action.into(), &completion)?;
++    must_get_valid_record(completion)
++}
++
++#[hdk_extern]
++pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResultView>> {
++    let host = bound_host()?;
++    let root = browser_root(action.clone())?;
++    let lobby = app_entry::<Lobby>(&root).ok_or_else(|| browser_error("invalid browser lobby"))?;
++    let records = records_for_browser_lobby(root)?;
++    let local = query(ChainQueryFilter::new().include_entries(true))?;
++    if let Some((record, result)) = local.iter().find_map(|r| {
++        app_entry::<GameResult>(r).filter(|gr| gr.lobby == action).map(|gr| (r, gr))
++    }) {
++        ensure_index(action.into(), record.action_address())?;
++        return Ok(Some(result_view(&result)?));
++    }
++
++    let view = get_authoritative_game_view(NativeGameViewQuery {
++        expected_lobby: action.clone(),
++        expected_role_commit: None, expected_recipient: None, expected_seat: None,
++    })?;
++    if view.host != host || !matches!(view.phase, Phase::Playing) {
++        return Ok(None);
++    }
++    let commit = view.role_commit_action.ok_or_else(|| browser_error("role commitment missing"))?;
++    let rc = records.iter().find(|r| r.action_address() == &commit).and_then(app_entry::<RoleCommit>)
++        .ok_or_else(|| browser_error("role commitment changed"))?;
++    let seal = unique_host_seal(&action)?.ok_or_else(|| browser_error("host private seal missing"))?;
++    if commitment_root(&seal.roles, &seal.salt) != rc.merkle_root {
++        return Err(browser_error("host private seal does not match the role commitment"));
++    }
++
++    let tasks = task_completions(&records, real_tasks(&records, &lobby, &rc, &seal.roles, &seal.salt));
++    let tasks_done = tasks.len() as u32;
++    let impostors_alive = u32::from(lobby.impostor_count);
++    let crew_alive = u32::from(lobby.player_count - lobby.impostor_count);
++    let Some(outcome) = win_outcome(impostors_alive, crew_alive, tasks_done, lobby.task_target) else {
++        return Ok(None);
++    };
++    let reveal = if let Some(record) = local.iter().find(|r|
++        app_entry::<RolesReveal>(r).is_some_and(|rr| rr.role_commit == commit)) {
++        record.action_address().clone()
++    } else {
++        create_entry(EntryTypes::RolesReveal(RolesReveal { role_commit: commit, roles: seal.roles, salt: seal.salt }))?
++    };
++    ensure_index(action.clone().into(), &reveal)?;
++    let result = GameResult {
++        lobby: action.clone(), roles_reveal: reveal, outcome, impostors_alive, crew_alive,
++        tasks_done, tasks_total: lobby.task_target,
++        evidence: tasks.values().map(|r| r.action_address().clone()).collect(),
++        meltdown: None,
++    };
++    let record = create_entry(EntryTypes::GameResult(result.clone()))?;
++    ensure_index(action.into(), &record)?;
++    Ok(Some(result_view(&result)?))
++}
+diff --git a/dnas/game/zomes/coordinator/game/src/lib.rs b/dnas/game/zomes/coordinator/game/src/lib.rs
+index b605dac61dd5bbdd6641463c3317d2221afe6aa2..836ae2ac4dad09b1abcfae989fa212b8cccae826 100644
+--- a/dnas/game/zomes/coordinator/game/src/lib.rs
++++ b/dnas/game/zomes/coordinator/game/src/lib.rs
+@@ -15,6 +15,8 @@
+ 
+ use hdk::prelude::*;
+ mod rooms;
++mod browser_lobbies;
++pub use browser_lobbies::*;
+ mod recipient_keys;
+ use sha2::{Digest, Sha256};
+ 
+@@ -127,6 +129,9 @@ pub struct CreateLobby {
+ 
+ #[hdk_extern]
+ pub fn create_lobby(input: CreateLobby) -> ExternResult<Record> {
++    if input.code.starts_with(BROWSER_LOBBY_PREFIX) {
++        return Err(native_view_error("browser lobbies require the browser lifecycle"));
++    }
+     // Recover interrupted creation from the local chain, including an entry
+     // whose index link failed. A retry never opens a second lobby in this cell.
+     let local = query(ChainQueryFilter::new().include_entries(true))?;
+@@ -319,6 +324,12 @@ fn unique_host_seal(lobby: &ActionHash) -> ExternResult<Option<SealedRoles>> {
+ fn ensure_host_role_commit() -> ExternResult<DealResult> {
+     let indexed = strict_native_game_index()?;
+     let (lobby_hash, host, lobby) = unique_native_lobby(&indexed)?;
++    ensure_role_commit_in(indexed, lobby_hash, host, lobby)
++}
++
++fn ensure_role_commit_in(
++    indexed: Vec<Record>, lobby_hash: ActionHash, host: AgentPubKey, lobby: Lobby,
++) -> ExternResult<DealResult> {
+     if me()? != host {
+         return Err(wasm_error!(WasmErrorInner::Guest(
+             "only the lobby host can commit roles".into()
+@@ -366,7 +377,7 @@ fn ensure_host_role_commit() -> ExternResult<DealResult> {
+         }
+         // Recover a successful Create whose index-link write was interrupted.
+         if !public_commits.iter().any(|(h, _)| h == &action) {
+-            link_entry(&action)?;
++            index_round_entry(&lobby, &lobby_hash, &action)?;
+         }
+         return Ok(DealResult { role_commit: action, seats: rc.seats, roles: sealed.roles });
+     }
+@@ -394,8 +405,11 @@ fn ensure_host_role_commit() -> ExternResult<DealResult> {
+             let bytes = random_bytes(32)?;
+             let mut host_entropy = [0u8; 32];
+             host_entropy.copy_from_slice(bytes.as_ref());
+-            let seat_bytes: Vec<Vec<u8>> =
++            let mut seat_bytes: Vec<Vec<u8>> =
+                 seats.iter().map(|k| k.get_raw_39().to_vec()).collect();
++            if lobby.code.starts_with(BROWSER_LOBBY_PREFIX) {
++                seat_bytes.push(lobby_hash.get_raw_39().to_vec());
++            }
+             let salt = mix_seed(&host_entropy, &seat_bytes);
+             let roles = assign(seats.len(), lobby.impostor_count as usize, &salt)
+                 .map_err(|e| wasm_error!(WasmErrorInner::Guest(e.into())))?;
+@@ -413,14 +427,14 @@ fn ensure_host_role_commit() -> ExternResult<DealResult> {
+     }
+     let root = commitment_root(&sealed.roles, &sealed.salt);
+     let action = create_entry(EntryTypes::RoleCommit(RoleCommit {
+-        lobby: lobby_hash,
++        lobby: lobby_hash.clone(),
+         merkle_root: root,
+         player_count: lobby.player_count,
+         impostor_count: lobby.impostor_count,
+         seats: seats.clone(),
+         joins,
+     }))?;
+-    link_entry(&action)?;
++    index_round_entry(&lobby, &lobby_hash, &action)?;
+     Ok(DealResult { role_commit: action, seats, roles: sealed.roles })
+ }
+ 
+@@ -2760,8 +2774,11 @@ fn result_view(gr: &GameResult) -> ExternResult<GameResultView> {
+ 
+ #[hdk_extern]
+ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
++    project_game_state(all_records()?, true)
++}
++
++fn project_game_state(records: Vec<Record>, cell_features: bool) -> ExternResult<GameStateView> {
+     let my_key = me()?;
+-    let records = all_records()?;
+ 
+     let lobby = records.iter().find_map(|r| {
+         Some((r.action_address().clone(), r.action().author().clone(), app_entry::<Lobby>(r)?))
+@@ -2860,7 +2877,11 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
+         completions.values().filter(|r| r.action().timestamp() <= at).count() as u32
+     });
+ 
+-    let settings = current_settings(host.as_ref())?;
++    let settings = if cell_features {
++        current_settings(host.as_ref())?
++    } else {
++        GameSettings::default()
++    };
+ 
+     // meeting: the most recent one — the tie-breaker, once a vote has tied
+     let latest_meeting = records
+@@ -2962,29 +2983,29 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
+         _ => None,
+     };
+ 
+-    let (lights_out, lights_ready_at) = match (&host, &role_commit) {
+-        (Some(h), Some((_, rc))) => {
++    let (lights_out, lights_ready_at) = match (cell_features, &host, &role_commit) {
++        (true, Some(h), Some((_, rc))) => {
+             let (out, ready_at) = lights_state(&records, h, rc)?;
+             (out, Some(ready_at))
+         }
+         _ => (false, None),
+     };
+-    let (comms_out, comms_ready_at) = match (&host, &role_commit) {
+-        (Some(h), Some((_, rc))) => {
++    let (comms_out, comms_ready_at) = match (cell_features, &host, &role_commit) {
++        (true, Some(h), Some((_, rc))) => {
+             let (out, ready_at) = comms_state(&records, h, rc)?;
+             (out, Some(ready_at))
+         }
+         _ => (false, None),
+     };
+-    let (crisis, crisis_ready_at) = match (&host, &role_commit, &result) {
+-        (Some(h), Some((_, rc)), None) => {
++    let (crisis, crisis_ready_at) = match (cell_features, &host, &role_commit, &result) {
++        (true, Some(h), Some((_, rc)), None) => {
+             let state = crisis_state(&records, h, rc, now_ms()?)?;
+             (state.active, Some(state.ready_at))
+         }
+         _ => (None, None),
+     };
+-    let (doors_closed, doors_ready_at) = match (&host, &role_commit) {
+-        (Some(h), Some(_)) => {
++    let (doors_closed, doors_ready_at) = match (cell_features, &host, &role_commit) {
++        (true, Some(h), Some(_)) => {
+             let (shut, ready_at) = doors_state(h, now_ms()?)?;
+             (shut, Some(ready_at))
+         }
+@@ -2992,7 +3013,7 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
+     };
+ 
+     // bodies still on the map, and the emergency button
+-    let marks = body_marks()?;
++    let marks = if cell_features { body_marks()? } else { Default::default() };
+     let bodies: Vec<BodyView> = live_bodies(&records)
+         .into_iter()
+         .map(|(key, _)| BodyView {
+@@ -3088,8 +3109,12 @@ fn native_view_error(why: &str) -> WasmError {
+ /// Every referenced game-index record must be a native Valid action. Unlike
+ /// all_records, never silently skip an unresolvable index target.
+ fn strict_native_game_index() -> ExternResult<Vec<Record>> {
++    strict_native_index(anchor()?, LinkTypes::GameToEntry)
++}
++
++fn strict_native_index(base: AnyLinkableHash, link_type: LinkTypes) -> ExternResult<Vec<Record>> {
+     let links = get_links(
+-        LinkQuery::try_new(anchor()?, LinkTypes::GameToEntry)?,
++        LinkQuery::try_new(base, link_type)?,
+         GetStrategy::Network,
+     )?;
+     let mut seen = std::collections::BTreeSet::new();
+@@ -3175,7 +3200,13 @@ pub fn get_authoritative_game_view(input: NativeGameViewQuery) -> ExternResult<N
+     if input.expected_seat.is_some() && input.expected_role_commit.is_none() {
+         return Err(native_view_error("a recipient seat requires an exact pinned RoleCommit"));
+     }
+-    let records = strict_native_game_index()?;
++    let root = must_get_valid_record(input.expected_lobby.clone())
++        .map_err(|_| native_view_error("lobby action is unavailable or invalid"))?;
++    let records = if app_entry::<Lobby>(&root).is_some_and(|l| l.code.starts_with(BROWSER_LOBBY_PREFIX)) {
++        records_for_browser_lobby(root)?
++    } else {
++        strict_native_game_index()?
++    };
+     let (lobby_action, host, lobby) = unique_native_lobby(&records)?;
+     if lobby_action != input.expected_lobby {
+         return Err(native_view_error("wrong lobby action"));
+diff --git a/dnas/game/zomes/integrity/game_integrity/src/lib.rs b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
+index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd23fa50e72 100644
+--- a/dnas/game/zomes/integrity/game_integrity/src/lib.rs
++++ b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
+@@ -32,8 +32,8 @@ use imposter_core::{
+ 
+ // ------------------------------------------------------------------- entries
+ 
+-/// The host opens a lobby. `code` is also the DNA network seed, so agents in
+-/// different lobbies never share a DHT.
++/// The host opens a lobby. Desktop clones use their own DHT. Browser
++/// lobbies use a separate validated action index within the host-bound DNA.
+ #[hdk_entry_helper]
+ #[derive(Clone)]
+ pub struct Lobby {
+@@ -219,6 +219,19 @@ pub struct SealedRoles {
+ /// the seed can open a lobby in it, so nobody can open a game in someone
+ /// else's name, and two hosts can never open competing lobbies in one network.
+ pub const GAME_SEED_VERSION: &str = "g1";
++pub const BROWSER_LOBBY_PREFIX: &str = "b1.";
++
++pub fn browser_lobby_code_valid(code: &str) -> bool {
++    let Some(id) = code.strip_prefix(BROWSER_LOBBY_PREFIX) else { return false; };
++    (id.len() == GAME_SEED_ID_LEN && id.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
++        || browser_previous_result(code).is_some()
++}
++
++fn browser_previous_result(code: &str) -> Option<ActionHash> {
++    let id = code.strip_prefix(BROWSER_LOBBY_PREFIX)?;
++    let hash = ActionHashB64::from_b64_str(id).ok()?;
++    (hash.to_string() == id).then(|| hash.into())
++}
+ /// Hex digits in a game seed's random id.
+ pub const GAME_SEED_ID_LEN: usize = 32;
+ /// The room-code games the UI still finds by walking `room1.CODE`,
+@@ -442,6 +455,7 @@ pub enum LinkTypes {
+     GameToEntry,
+     RoomToPointer,
+     RecipientKeyByAgent,
++    BrowserLobbyIndex,
+ }
+ 
+ // ---------------------------------------------------------------- validate
+@@ -464,6 +478,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
+             LinkTypes::GameToEntry => validate_create_link(&action),
+             LinkTypes::RoomToPointer => validate_pointer_link(&action),
+             LinkTypes::RecipientKeyByAgent => validate_recipient_key_link(&action),
++            LinkTypes::BrowserLobbyIndex => validate_browser_lobby_link(&action),
+         },
+         FlatOp::Link(OpLink::DeleteLink { .. }) | FlatOp::CreateRecord(OpRecord::DeleteLink { .. }) => {
+             invalid("links are append-only")
+@@ -504,6 +519,10 @@ fn validate_create_link(action: &TypedAction<CreateLinkData>) -> ExternResult<Va
+         if pointer_from_record(&record)?.is_some() {
+             return invalid("room pointers require their room index");
+         }
++        if record.entry().to_app_option::<Lobby>().ok().flatten()
++            .is_some_and(|l| l.code.starts_with(BROWSER_LOBBY_PREFIX)) {
++            return invalid("browser lobbies require their own index");
++        }
+         let target = must_get_action(target)?;
+         if target.action().author() != author {
+             return invalid("you can only index your own entries");
+@@ -554,6 +573,46 @@ fn validate_create_link(action: &TypedAction<CreateLinkData>) -> ExternResult<Va
+     }
+ }
+ 
++fn validate_browser_lobby_link(action: &TypedAction<CreateLinkData>) -> ExternResult<ValidateCallbackResult> {
++    let Some(target) = action.target_address.clone().into_action_hash() else {
++        return invalid("browser index targets must be action hashes");
++    };
++    let record = must_get_valid_record(target)?;
++    if record.action().author() != action.author() || !action.tag.clone().into_inner().is_empty() {
++        return invalid("only the record author may index it, with an empty tag");
++    }
++
++    if let Some(lobby) = record.entry().to_app_option::<Lobby>().ok().flatten() {
++        return if browser_lobby_code_valid(&lobby.code) && action.base_address == anchor_hash(&lobby.code)? {
++            valid()
++        } else {
++            invalid("browser Lobby must be indexed under its exact code")
++        };
++    }
++
++    let entry = record.entry();
++    let lobby = if let Some(j) = entry.to_app_option::<PlayerJoin>().ok().flatten() {
++        j.lobby
++    } else if let Some(c) = entry.to_app_option::<RoleCommit>().ok().flatten() {
++        c.lobby
++    } else if let Some(t) = entry.to_app_option::<TaskList>().ok().flatten() {
++        t.lobby
++    } else if let Some(t) = entry.to_app_option::<TaskComplete>().ok().flatten() {
++        get_task_list(&t.task_list)?.lobby
++    } else if let Some(r) = entry.to_app_option::<RolesReveal>().ok().flatten() {
++        get_role_commit(&r.role_commit)?.0.lobby
++    } else if let Some(r) = entry.to_app_option::<GameResult>().ok().flatten() {
++        r.lobby
++    } else {
++        return invalid("unsupported browser round record");
++    };
++    if action.base_address != AnyLinkableHash::from(lobby.clone())
++        || !browser_lobby_code_valid(&get_lobby(&lobby)?.0.code) {
++        return invalid("record is for a different browser lobby");
++    }
++    valid()
++}
++
+ fn valid() -> ExternResult<ValidateCallbackResult> {
+     Ok(ValidateCallbackResult::Valid)
+ }
+@@ -585,6 +644,20 @@ fn validate_entry(
+                 }
+                 Ok(_) => {}
+             }
++            if l.code.starts_with(BROWSER_LOBBY_PREFIX) {
++                if !browser_lobby_code_valid(&l.code)
++                    || !matches!(parse_game_seed(&dna_info()?.modifiers.network_seed), Ok(SeedOwner::Host(_)))
++                    || (l.player_count, l.impostor_count, l.task_target) != (3, 1, 1) {
++                    return invalid("invalid host-bound browser lobby code or settings");
++                }
++                if let Some(previous) = browser_previous_result(&l.code) {
++                    let (result, result_author) = record_app_entry::<GameResult>(&previous)?;
++                    let (prior, prior_host) = get_lobby(&result.lobby)?;
++                    if result_author != author || prior_host != author || !browser_lobby_code_valid(&prior.code) {
++                        return invalid("a new browser lobby must follow this host's completed game");
++                    }
++                }
++            }
+             if l.player_count < 3 || l.player_count as usize > MAX_PLAYERS {
+                 return invalid("player_count must be 3..=64");
+             }
+@@ -610,6 +683,9 @@ fn validate_entry(
+             if rc.player_count != lobby.player_count || rc.impostor_count != lobby.impostor_count {
+                 return invalid("role commit disagrees with the lobby config");
+             }
++            if lobby.code.starts_with(BROWSER_LOBBY_PREFIX) && !rc.seats.contains(&host) {
++                return invalid("a browser RoleCommit must seat its host");
++            }
+             if rc.seats.len() != rc.player_count as usize {
+                 return invalid("seat list length must equal player_count");
+             }
+@@ -753,7 +829,7 @@ fn validate_entry(
+             valid()
+         }
+ 
+-        EntryTypes::GameResult(gr) => validate_game_result(gr, action.timestamp()),
++        EntryTypes::GameResult(gr) => validate_game_result(gr, &author, action.timestamp()),
+ 
+         // Private, local-only.
+         EntryTypes::SealedRoles(_) => valid(),
+@@ -809,10 +885,17 @@ fn validate_ejection(ej: Ejection) -> ExternResult<ValidateCallbackResult> {
+     valid()
+ }
+ 
+-fn validate_game_result(gr: GameResult, at: Timestamp) -> ExternResult<ValidateCallbackResult> {
++fn validate_game_result(gr: GameResult, author: &AgentPubKey, at: Timestamp) -> ExternResult<ValidateCallbackResult> {
+     let (lobby, host) = get_lobby(&gr.lobby)?;
+     let roles_reveal = get_roles_reveal(&gr.roles_reveal)?;
+     let (rc, _) = get_role_commit(&roles_reveal.role_commit)?;
++    let browser = lobby.code.starts_with(BROWSER_LOBBY_PREFIX);
++    if rc.lobby != gr.lobby {
++        return invalid("the result cites a RoleCommit for a different lobby");
++    }
++    if browser && (author != &host || gr.meltdown.is_some()) {
++        return invalid("only the host may finish a browser lobby with its task evidence");
++    }
+     let seats = &rc.seats;
+     let roles = &roles_reveal.roles;
+     if roles.len() != seats.len() {
+@@ -826,7 +909,21 @@ fn validate_game_result(gr: GameResult, at: Timestamp) -> ExternResult<ValidateC
+         let record = must_get_valid_record(h.clone())?;
+         let author = record.action().author().clone();
+         let entry = record.entry().as_option().cloned();
+-        let Some(entry) = entry else { continue };
++        let Some(entry) = entry else {
++            if browser { return invalid("browser result evidence must be a task completion"); }
++            continue;
++        };
++        if browser {
++            let Ok(task) = TaskComplete::try_from(&entry) else {
++                return invalid("browser result evidence must be a task completion");
++            };
++            if get_task_list(&task.task_list)?.lobby != gr.lobby {
++                return invalid("the result cites a task completion from a different lobby");
++            }
++            if !seats.iter().zip(roles).any(|(seat, role)| seat == &author && *role == ROLE_CREW) {
++                return invalid("browser result evidence must come from a committed crewmate");
++            }
++        }
+ 
+         if let Ok(kr) = KillReport::try_from(&entry) {
+             let _ = kr;
+diff --git a/scripts/browser-poc-build.sh b/scripts/browser-poc-build.sh
+index 26098714f7636a020ffc2a55e1d3d3805f10f842..ef0d1d8e1ac51eb177e2c5abf46d76e33e799bd9 100644
+--- a/scripts/browser-poc-build.sh
++++ b/scripts/browser-poc-build.sh
+@@ -19,23 +19,23 @@ for cmd in git npm cargo node sha256sum; do
+ done
+ git -C "$ROOT" cat-file -e "$PIN^{commit}" || fail 'pinned commit missing'
+ git -C "$ROOT" merge-base --is-ancestor "$PIN" HEAD || fail 'not based on pinned commit'
+-# Allow only the reviewed coordinator role-authorization source to change;
+-# preserve pinned native integrity, DNA manifests and build dependencies.
++# Allow only the reviewed native game lifecycle and role authorization source
++# to change. Keep manifests, dependencies, and other native source pinned.
+ INPUTS=(Cargo.toml Cargo.lock flake.nix flake.lock dnas/game scripts/in-nix.sh package.json
+   ':(exclude)dnas/game/zomes/coordinator/game/src/lib.rs'
+   ':(exclude)dnas/game/zomes/coordinator/game/src/recipient_keys.rs'
++  ':(exclude)dnas/game/zomes/coordinator/game/src/browser_lobbies.rs'
+   ':(exclude)dnas/game/zomes/integrity/game_integrity/src/lib.rs'
+   ':(exclude)dnas/game/zomes/integrity/game_integrity/src/recipient_keys.rs')
+ git -C "$ROOT" diff --quiet "$PIN" HEAD -- "${INPUTS[@]}" || fail 'pinned DNA/build dependencies changed; review first'
+ git -C "$ROOT" diff --quiet "$PIN" -- "${INPUTS[@]}" || fail 'working tree contains DNA/build source changes'
+-# Verify the legacy integrity rules are byte-identical to the original pin
+-# after removing ONLY the explicitly reviewed attestation glue.
++# Verify the immutable base source before adding the release-owned browser
++# lobby overlay. The release checkout supplies the only applied patch.
+ python3 - "$PIN" "$ROOT" <<'PY'
+-from pathlib import Path
+ import subprocess, sys
+ pin, root = sys.argv[1:]
+ path = "dnas/game/zomes/integrity/game_integrity/src/lib.rs"
+-current = (Path(root) / path).read_text()
++current = subprocess.check_output(["git", "-C", root, "show", f"HEAD:{path}"], text=True)
+ additions = [
+     "mod recipient_keys;\npub use recipient_keys::*;\n",
+     "    RecipientKeyAttestation(RecipientKeyAttestation),\n",
+@@ -48,7 +48,7 @@ for fragment in additions:
+     current = current.replace(fragment, "", 1)
+ pinned = subprocess.check_output(["git", "-C", root, "show", f"{pin}:{path}"], text=True)
+ assert current == pinned, "legacy native integrity rules changed; refuse unreviewed build"
+-print("Native legacy integrity byte-for-byte preservation: PASS")
++print("Native base integrity pin: PASS")
+ PY
+ REV=$(git -C "$ROOT" rev-parse HEAD)
+ TAG=$(printf %s "$SEED" | sha256sum | cut -c1-16)
