@@ -162,6 +162,7 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
         const view = await exactView(browser, lobby, commit);
         if (snapshot.phase !== 'ended' || snapshot.result?.outcome !== 'crew_win' ||
             snapshot.result.tasks_done !== 1 || view.phase !== 'ended') return null;
+        assert.equal(snapshot.my_role, roles[memberIndexes.indexOf(index)].role);
         assert.equal(view.seats.length, 3);
         return {result: snapshot.result, roster: view.seats.map(seat => hash(seat.agent))};
       })));
@@ -208,6 +209,8 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
     assert.equal(snapshot.tasks_done, 0);
     assert.equal(snapshot.tasks.length, 0);
     assert.equal(snapshot.role_reveals.length, 0);
+    const nativeLobby = await native(host, 'get_authoritative_game_view', {expected_lobby: raw(lobby)});
+    assert.equal(nativeLobby.role_commit_action, null);
     assert.equal(await native(host, 'get_browser_lobby_role', raw(first.lobby)), null);
     await until(async () => await text(host, 'active-code') === snapshot.code);
     return {lobby, code: snapshot.code};
@@ -234,6 +237,7 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
     await step('CROSS_LOBBY_COMMIT_AND_STALE_ROLE_READ_REJECTED', async () => {
       assert.notEqual(commit, old.commit);
       assert.notEqual(root, old.root);
+      await denied(browsers[0], 'new_browser_game', {previous_lobby: raw(first.lobby), display_name: 'Host'}, /stale lobby/i);
       await denied(browsers[0], 'get_authoritative_game_view', {
         expected_lobby: raw(second.lobby), expected_role_commit: raw(old.commit),
       }, /stale, missing, or substituted/i);
