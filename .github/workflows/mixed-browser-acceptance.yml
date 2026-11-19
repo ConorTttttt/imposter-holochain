@@ -110,9 +110,27 @@ jobs:
           bash release/browser-alpha/build-extension.sh hwc
           bash release/browser-alpha/build-firefox-extension.sh firefox "$RUNNER_TEMP/firefox-package"
           (cd hwc && npx --no-install playwright install chromium)
+      - name: Archive the stock extensions and write their checksums
+        run: |
+          packages="$RUNNER_TEMP/mixed-extension-packages"
+          mkdir "$packages"
+          cp "$RUNNER_TEMP/firefox-package/firefox-desktop-hwc.zip" "$packages/"
+          python3 - "$packages/chromium-hwc.zip" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "release/browser-alpha")
+          from package import archive_extension
+          archive_extension(Path("hwc/packages/extension/dist-chrome"), Path(sys.argv[1]))
+          PY
+          (cd "$packages" && sha256sum chromium-hwc.zip firefox-desktop-hwc.zip > SHA256SUMS && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixed-browser-extension-packages
+          path: ${{ runner.temp }}/mixed-extension-packages/
+          if-no-files-found: error
       - name: Run native Zome authorization regressions
         working-directory: game
-        run: nix develop --no-write-lock-file --command cargo test --locked -p imposter-core role_auth::tests
+        run: nix develop --no-write-lock-file --command cargo test --locked -p imposter-core
       - name: Run release and role validation tests
         run: |
           python3 -m unittest discover -v -s release/browser-alpha -p '*_test.py'
@@ -121,7 +139,8 @@ jobs:
           node --import "$PWD/firefox/node_modules/fake-indexeddb/auto/index.mjs" --test \
             compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
           npm --prefix firefox run test --workspace @hwc/extension -- \
-            src/background/firefox-restricted-role.test.ts --minWorkers=1 --maxWorkers=2
+            src/background/firefox-restricted-role.test.ts src/background/firefox-direct-executor.test.ts \
+            --minWorkers=1 --maxWorkers=2
       - name: Run the genuine mixed-browser round on a disposable network
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}

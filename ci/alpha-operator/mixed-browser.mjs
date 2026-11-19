@@ -6,6 +6,7 @@ import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
 const actionHash = /^uhCkk[A-Za-z0-9_-]{48}$/;
+const labels = ['CHROMIUM_HOST', 'CHROMIUM_GUEST', 'FIREFOX_GUEST'];
 const report = {suite: 'mixed-desktop', status: 'INCOMPLETE', stages: {}};
 let reportPath;
 let stage = 'CONFIGURATION';
@@ -78,11 +79,14 @@ async function setup(browser, label) {
 }
 
 function game(browser, fn, payload = null) {
-  return browser.evaluate(({fn, payload}) => {
+  return browser.evaluate(async ({fn, payload}) => {
     for (const field of ['expected_lobby', 'expected_role_commit', 'expected_recipient']) {
       if (payload?.[field]) payload[field] = Uint8Array.from(payload[field]);
     }
-    return window.holochain.callZome({zome_name: 'game', fn_name: fn, payload});
+    const result = await window.holochain.callZome({zome_name: 'game', fn_name: fn, payload});
+    // CDP and WebDriver serialize typed arrays differently.
+    return JSON.parse(JSON.stringify(result, (_key, value) =>
+      ArrayBuffer.isView(value) ? Array.from(value) : typeof value === 'bigint' ? value.toString() : value));
   }, {fn, payload});
 }
 
@@ -97,9 +101,52 @@ function session(browser, gateway) {
 }
 
 async function installed(browser, dna, agent) {
-  const info = await browser.evaluate(id => window.holochain.appInfo(id), appId).catch(() => null);
+  const info = await browser.evaluate(async id => {
+    const info = await window.holochain.appInfo(id);
+    return {status: info.status, cells: info.cells?.map(cell => cell.map(value =>
+      Array.isArray(value) || ArrayBuffer.isView(value) ? Array.from(value) : Object.values(value ?? {})))};
+  }, appId).catch(() => null);
   return info?.status === 'enabled' && info.cells?.length === 1 &&
     hash(info.cells[0][0]) === dna && hash(info.cells[0][1]) === agent;
+}
+
+async function provisionStatus(browser) {
+  return browser.evaluate(() => {
+    const status = document.getElementById('status');
+    if (status?.dataset.error !== 'true') return null;
+    const text = status.textContent;
+    // Report an allowlisted category. The raw page text is never returned.
+    if (text.includes('different or disabled game')) return 'HAPP_IDENTITY_OR_DNA';
+    if (text.includes('could not install')) return 'HAPP_INSTALLATION';
+    if (text.includes('could not read')) return 'HAPP_INVENTORY';
+    if (text.includes('checksum differs')) return 'HAPP_CHECKSUM';
+    if (text.includes('could not be downloaded')) return 'HAPP_DOWNLOAD';
+    if (text.includes('admission is pending')) return 'GATEWAY_ADMISSION';
+    if (text.includes('gateway is unreachable')) return 'GATEWAY_UNREACHABLE';
+    if (text.includes('could not connect to the gateway')) return 'GATEWAY_CONNECTION';
+    if (text.includes('setup files') || text.includes('settings')) return 'SITE_CONFIGURATION';
+    return 'PROVISIONING_ERROR';
+  }).catch(() => null);
+}
+
+async function waitForInstalled(browsers, config, agents) {
+  const results = await Promise.all(browsers.map(async (browser, index) => {
+    try {
+      await until(async () => {
+        if (await installed(browser, config.dna, agents[index])) return true;
+        const reason = await provisionStatus(browser);
+        return reason && {reason};
+      }, 60000).then(result => {
+        if (result.reason) throw new AcceptanceFailure(result.reason);
+      });
+      return true;
+    } catch (error) {
+      const reason = error instanceof AcceptanceFailure ? error.message : 'HAPP_QUERY';
+      console.log(labels[index] + '_' + reason + '=FAIL');
+      return false;
+    }
+  }));
+  requireCheck(results.every(Boolean));
 }
 
 async function allow(config, method, agent, host = false) {
@@ -144,7 +191,8 @@ async function round(config, agents) {
     requireCheck(!state.code && state.players.length === 0, 'OPERATOR_LOBBY_ALREADY_EXISTS');
     await until(() => host.evaluate(() => !document.getElementById('create-lobby').disabled));
     await action(host, 'create', 'create-lobby');
-    const lobby = hash(await until(() => host.evaluate(() => window.mixedBrowserAction)));
+    const lobby = hash(await until(() => host.evaluate(() =>
+      window.mixedBrowserAction && Object.values(window.mixedBrowserAction))));
     requireCheck(actionHash.test(lobby));
     return lobby;
   });
@@ -163,7 +211,8 @@ async function round(config, agents) {
   const commit = await step('START_ROUND_UI', async () => {
     await until(() => host.evaluate(() => !document.getElementById('start-round').disabled));
     await action(host, 'start', 'start-round');
-    const value = hash(await until(() => host.evaluate(() => window.mixedBrowserAction)));
+    const value = hash(await until(() => host.evaluate(() =>
+      window.mixedBrowserAction && Object.values(window.mixedBrowserAction))));
     requireCheck(actionHash.test(value) && value !== lobby);
     return value;
   });
@@ -259,8 +308,7 @@ async function main(config, command) {
     browsers.push(await launchFirefox(config, config.profiles[2]));
   });
   const agents = await step('DISTINCT_LAIR_IDENTITIES_AND_BOUND_HOST', async () => {
-    const agents = await Promise.all(browsers.map((browser, index) =>
-      setup(browser, ['CHROMIUM_HOST', 'CHROMIUM_GUEST', 'FIREFOX_GUEST'][index])));
+    const agents = await Promise.all(browsers.map((browser, index) => setup(browser, labels[index])));
     requireCheck(agents.every(agent => publicKey.test(agent)) && new Set(agents).size === 3);
     requireCheck(agents[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
     return agents;
@@ -289,7 +337,7 @@ async function main(config, command) {
     await Promise.all(browsers.map(browser => until(() => tap(browser, 'provision'), 40000)));
   }
   await step('EXACT_HAPP_INSTALLED', async () => {
-    await Promise.all(browsers.map((browser, index) => until(() => installed(browser, config.dna, agents[index]), 60000)));
+    await waitForInstalled(browsers, config, agents);
   });
   await step('THREE_AUTHENTICATED_GATEWAY_SESSIONS', async () => {
     await Promise.all(browsers.map(browser => until(() => session(browser, config.gateway), 90000)));
