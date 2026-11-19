@@ -59,18 +59,6 @@ jobs:
           node-version: ${{ steps.pins.outputs.node_version }}
           cache: npm
           cache-dependency-path: hwc/package-lock.json
-      - name: Retrieve the previously accepted public extension packages
-        uses: actions/download-artifact@v4
-        with:
-          run-id: 44428605059
-          name: mixed-browser-extension-packages
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/accepted-desktop-packages
-      - name: Check the previously accepted extension ZIP checksums
-        run: |
-          cd "$RUNNER_TEMP/accepted-desktop-packages"
-          sha256sum --check SHA256SUMS
-          cat SHA256SUMS
       - uses: actions/download-artifact@v4
         with:
           run-id: ${{ steps.pins.outputs.gateway_run }}

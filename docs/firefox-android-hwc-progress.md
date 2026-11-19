@@ -62,9 +62,9 @@ Before the task, all three browsers must independently read the exact native Lob
 
 ### Operator runner
 
-Use a trusted Linux runner with authorized access to both private HTTPS origins, a verified release, and three dedicated, closed acceptance profiles. Use the exact Chromium host profile bound to that hApp and two distinct admitted guests, one for Chromium and one for Firefox. Approve the site and install the exact hApp in each profile before staging it. The Chromium extension path must be the same unpacked directory used to provision those profiles. The Firefox development package has a fixed add-on ID and uses Mozilla’s temporary add-on storage settings for the test profile.
+Use a trusted Linux runner with authorized access to both private HTTPS origins. Keep the three dedicated browser profiles closed before the run. Use the bound Chromium host and two distinct admitted guests, one Chromium and one Firefox. Approve the exact site and install its verified hApp in each profile before staging. Keep Chromium’s original unpacked extension path and packaged bytes unchanged for the run. The Firefox development package has a fixed add-on ID. Geckodriver uses Mozilla’s temporary add-on storage settings in the dedicated profile.
 
-The runner takes a read-only view of the existing gateway SQLite admission database. It never needs the gateway admin secret. Keep the input file and referenced profiles and database owner-only. Supply the accepted release manifest SHA-256 and the Firefox ZIP SHA-256 from their trusted build outputs. The configuration looks like this:
+The launcher needs only a read-only SQLite view of `allowed_agents` with `agent_pubkey` and JSON `capabilities` columns. The gateway operator can supply the current admission-only snapshot on the trusted runner. Keep it outside CI with the owner-only input file and profiles. Host admission requires `game_role_deliver`. Both guests require `game_role_request`. Every identity also needs `dht_read`, `dht_write`, and `k2`. The launcher checks the snapshot and then requires actual authenticated browser sessions. It needs no gateway administrator credentials and removes inherited H2HC gateway variables before launching the browser process.
 
 ```json
 {
@@ -88,23 +88,36 @@ The runner takes a read-only view of the existing gateway SQLite admission datab
 }
 ```
 
-The trusted runner needs Node 22.22.0, Python 3, the pinned HWC checkout with its Playwright dependencies and Chromium installed, and Firefox 130 or later with Geckodriver bound to `127.0.0.1:4444`. Use `FIREFOX_BIN` if Firefox is outside the runner’s normal executable path. Keep the normal certificate trust settings for both browsers.
+The trusted runner needs Node 22.22.0, Python 3, the pinned HWC checkout with its Playwright dependencies and Chromium installed, and Firefox 130 or later with Geckodriver bound to `127.0.0.1:4444`. Use `FIREFOX_BIN` if Firefox is outside the runner’s normal executable path. Keep the normal certificate trust settings for both browsers. Confirm the approved Firefox profile can sign after a cold restart with its existing local Lair setup. The headless runner has no interactive unlock prompt.
+
+### Build-to-deployment provenance
+
+The accepted hosted package pair was built at `df3014eb09acf42d305d641aa358d53317cd4302`. Its GitHub artifact container SHA-256 is `ae27a585cc09fd140ff01a8409c6898809eed00e0c35686bc793838ec7d5b414`. Verify the ZIPs inside it against the accompanying `SHA256SUMS`. Use the verified Firefox ZIP SHA-256 as `firefox_sha256`. The preflight snapshots that ZIP before verification and accepts the directory from the combined package download. [Accepted hosted package pair](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44428605059/artifacts/14485083795)
+
+Run `44487415864` rechecked both accepted ZIPs, reproduced the same two digests, and passed the hosted mixed round and operator preflight regressions. [Checksum audit and regression run](https://github.com/ConorTttttt/imposter-holochain/actions/runs/44487415864)
+
+| Extension ZIP | SHA-256 |
+| --- | --- |
+| `chromium-hwc.zip` | `8af423c2512d88fde1ae47fecc6a53861c683a085341b02c60c2296e1d9396df` |
+| `firefox-desktop-hwc.zip` | `172dc951121f5d815def01b36d7a9b9c36af21e2684c45533e3878de25852d3e` |
+
+Build the operator release with the operator’s host-bound seed and the unchanged release pins. The build checks that the hApp embeds the native-verified DNA bytes. Record the full release source commit and `release-manifest.json` SHA-256 in a trusted operator record. Preflight verifies that record against the release, checks the hApp, DNA and pinned gateway executable hashes, and compares the unpacked Chromium extension’s packaged files with the manifest’s Chromium ZIP. It checks the exact frontend file bytes, the installed cell binding, the gateway health and admin-route isolation, and the WSS upgrade. Confirm through the deployment record that the running gateway service uses the pinned executable and both native authorities use the verified hApp. [Release pins](../release/browser-alpha/pins.json)
+
+### Live checklist
+
+1. Stage the unused verified deployment on the authorized runner and confirm both private origins, certificates, and native authorities. Keep the private release metadata, profiles and admission snapshot on that runner.
+2. Stage the three closed, distinct profiles with their verified extensions, exact pre-installed hApp and existing site approval. Confirm admission and the host and guest capabilities before the run.
+3. Run preflight with a fresh owner-only report path.
 
 ```sh
 python3 ci/alpha-operator/mixed-browser-run.py operator \
   --config /srv/imposter/test/private-input.json --report /srv/imposter/test/preflight.json
 ```
 
-The preflight checks the served release and gateway reachability over HTTPS/WSS before starting profiles. It reports separate failures for an offline local Tailscale client, endpoint reachability, certificate trust, missing profile credentials, absent admission, a missing or different installed hApp, and failure to acquire an authenticated session. After a passing preflight, run the same command with `--round` and a new report path. This creates the first lobby in the deployed host-bound DNA and plays it once. A deployment that has already hosted a lobby needs a separately built, unused host-bound game with the same release pins. The runner refuses an existing lobby and leaves the original deployment intact. The hosted job handles only disposable infrastructure. Keep the private route and profiles on the trusted runner.
+4. Once the report says `PREFLIGHT_VERIFIED`, run the same command with `--round` and a different report path. The runner checks the native game state for an unused deployment during preflight and rechecks the host before creating the lobby. Use a newly built, unused host-bound hApp if a prior run already created a lobby. Preflight performs no lobby writes and uses the pre-installed hApps.
+5. Confirm `ROUND_VERIFIED` before recording live acceptance. The report must show two independent guest receipts, an actual Firefox process exit and relaunch of the same profile, renewed gateway authentication and a fresh Firefox receipt for the same round. It must also show all three browsers reached `Ended · Crew wins` with `Task completions: 1/1` after **Align Engine Output**. Share only the sanitized stage report.
 
-### Live checklist
-
-- [ ] With the operator, reserve a fresh lobby on the existing private Tailscale HTTPS deployment. Use a Chromium host, Chromium guest and Firefox Desktop guest in three distinct profiles.
-- [ ] Open each profile’s setup page, connect HWC and approve the exact site. Record that the three public identities differ and have been admitted. Keep the identities and deployment address out of shared evidence.
-- [ ] Provision each profile and check that the setup page confirms the installed host-bound DNA and an authenticated gateway session. Record these stages separately.
-- [ ] Join the same lobby, see `3/3`, and start as the host. Check in each profile that its own role becomes verified. Record the receipt outcome without recording the role values, opening, ciphertext, session or signing material.
-- [ ] Complete **Align Engine Output** as a crewmate. Capture sanitized evidence that each browser shows `Ended · Crew wins` and `Task completions: 1/1`.
-- [ ] Exit Firefox. Open the same profile and reload the temporary add-on if needed. Confirm the same public identity, same installed game, fresh gateway authentication and a verified role when a current game permits one.
+For `OPERATOR_FRONTEND_*` or `OPERATOR_GATEWAY_*` errors, check the named origin’s Tailscale route, certificate trust, or served release and WSS response. `HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT` identifies a host profile from a different release. `GATEWAY_ADMISSION_MISSING` or `GATEWAY_ROLE_CAPABILITY_MISSING` calls for the current approved admission state. An installed-hApp error names the affected browser. `OPERATOR_LOBBY_ALREADY_EXISTS` requires an unused deployment. A Firefox restart stage failure leaves live acceptance pending.
 
 ## Android test procedure after Desktop acceptance
 
