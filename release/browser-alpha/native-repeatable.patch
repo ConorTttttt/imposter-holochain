@@ -309,16 +309,16 @@ index b605dac61dd5bbdd6641463c3317d2221afe6aa2..836ae2ac4dad09b1abcfae989fa212b8
 --- a/dnas/game/zomes/coordinator/game/src/lib.rs
 +++ b/dnas/game/zomes/coordinator/game/src/lib.rs
 @@ -15,6 +15,8 @@
- 
+
  use hdk::prelude::*;
  mod rooms;
 +mod browser_lobbies;
 +pub use browser_lobbies::*;
  mod recipient_keys;
  use sha2::{Digest, Sha256};
- 
+
 @@ -127,6 +129,9 @@ pub struct CreateLobby {
- 
+
  #[hdk_extern]
  pub fn create_lobby(input: CreateLobby) -> ExternResult<Record> {
 +    if input.code.starts_with(BROWSER_LOBBY_PREFIX) {
@@ -378,9 +378,9 @@ index b605dac61dd5bbdd6641463c3317d2221afe6aa2..836ae2ac4dad09b1abcfae989fa212b8
 +    index_round_entry(&lobby, &lobby_hash, &action)?;
      Ok(DealResult { role_commit: action, seats, roles: sealed.roles })
  }
- 
+
 @@ -2760,8 +2774,11 @@ fn result_view(gr: &GameResult) -> ExternResult<GameResultView> {
- 
+
  #[hdk_extern]
  pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
 +    project_game_state(all_records()?, true)
@@ -389,26 +389,26 @@ index b605dac61dd5bbdd6641463c3317d2221afe6aa2..836ae2ac4dad09b1abcfae989fa212b8
 +fn project_game_state(records: Vec<Record>, cell_features: bool) -> ExternResult<GameStateView> {
      let my_key = me()?;
 -    let records = all_records()?;
- 
+
      let lobby = records.iter().find_map(|r| {
          Some((r.action_address().clone(), r.action().author().clone(), app_entry::<Lobby>(r)?))
 @@ -2860,7 +2877,11 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
          completions.values().filter(|r| r.action().timestamp() <= at).count() as u32
      });
- 
+
 -    let settings = current_settings(host.as_ref())?;
 +    let settings = if cell_features {
 +        current_settings(host.as_ref())?
 +    } else {
 +        GameSettings::default()
 +    };
- 
+
      // meeting: the most recent one — the tie-breaker, once a vote has tied
      let latest_meeting = records
 @@ -2962,29 +2983,29 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
          _ => None,
      };
- 
+
 -    let (lights_out, lights_ready_at) = match (&host, &role_commit) {
 -        (Some(h), Some((_, rc))) => {
 +    let (lights_out, lights_ready_at) = match (cell_features, &host, &role_commit) {
@@ -445,7 +445,7 @@ index b605dac61dd5bbdd6641463c3317d2221afe6aa2..836ae2ac4dad09b1abcfae989fa212b8
          }
 @@ -2992,7 +3013,7 @@ pub fn get_game_state(_: ()) -> ExternResult<GameStateView> {
      };
- 
+
      // bodies still on the map, and the emergency button
 -    let marks = body_marks()?;
 +    let marks = if cell_features { body_marks()? } else { Default::default() };
@@ -486,9 +486,9 @@ index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd2
 --- a/dnas/game/zomes/integrity/game_integrity/src/lib.rs
 +++ b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
 @@ -32,8 +32,8 @@ use imposter_core::{
- 
+
  // ------------------------------------------------------------------- entries
- 
+
 -/// The host opens a lobby. `code` is also the DNA network seed, so agents in
 -/// different lobbies never share a DHT.
 +/// The host opens a lobby. Desktop clones use their own DHT. Browser
@@ -522,7 +522,7 @@ index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd2
      RecipientKeyByAgent,
 +    BrowserLobbyIndex,
  }
- 
+
  // ---------------------------------------------------------------- validate
 @@ -464,6 +478,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
              LinkTypes::GameToEntry => validate_create_link(&action),
@@ -546,7 +546,7 @@ index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd2
 @@ -554,6 +573,46 @@ fn validate_create_link(action: &TypedAction<CreateLinkData>) -> ExternResult<Va
      }
  }
- 
+
 +fn validate_browser_lobby_link(action: &TypedAction<CreateLinkData>) -> ExternResult<ValidateCallbackResult> {
 +    let Some(target) = action.target_address.clone().into_action_hash() else {
 +        return invalid("browser index targets must be action hashes");
@@ -624,16 +624,16 @@ index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd2
 @@ -753,7 +829,7 @@ fn validate_entry(
              valid()
          }
- 
+
 -        EntryTypes::GameResult(gr) => validate_game_result(gr, action.timestamp()),
 +        EntryTypes::GameResult(gr) => validate_game_result(gr, &author, action.timestamp()),
- 
+
          // Private, local-only.
          EntryTypes::SealedRoles(_) => valid(),
 @@ -809,10 +885,17 @@ fn validate_ejection(ej: Ejection) -> ExternResult<ValidateCallbackResult> {
      valid()
  }
- 
+
 -fn validate_game_result(gr: GameResult, at: Timestamp) -> ExternResult<ValidateCallbackResult> {
 +fn validate_game_result(gr: GameResult, author: &AgentPubKey, at: Timestamp) -> ExternResult<ValidateCallbackResult> {
      let (lobby, host) = get_lobby(&gr.lobby)?;
@@ -669,7 +669,7 @@ index 847b19a5212b718aaafae34bb5056ad795839ec4..51cfad254fd717f51da535d4f20c2bd2
 +                return invalid("browser result evidence must come from a committed crewmate");
 +            }
 +        }
- 
+
          if let Ok(kr) = KillReport::try_from(&entry) {
              let _ = kr;
 diff --git a/scripts/browser-poc-build.sh b/scripts/browser-poc-build.sh
