@@ -24,7 +24,15 @@ Run the relay on the frontend server with the exact public frontend origin and a
 node /path/to/new-gameplay-output/movement-relay.cjs https://your-frontend.example 8092
 ```
 
-Render the frontend proxy configuration with `deploy.py render-proxy --movement-port 8092` and the usual `--public` and `--operator` inputs. Publish the new release with the usual `deploy.py publish` command and the gameplay branch commit and release checksum. Keep the relay process running while playing.
+Render the frontend proxy configuration, then use it with the existing Caddy service. Publish the verified host-bound release using its independently recorded manifest checksum. Keep the relay process running while playing.
+
+```sh
+python3 release/browser-alpha/deploy.py render-proxy --public "$PUBLIC_CONFIG" \
+  --operator "$OPERATOR_CONFIG" --movement-port 8092
+python3 release/browser-alpha/deploy.py publish --public "$PUBLIC_CONFIG" \
+  --operator "$OPERATOR_CONFIG" --release /path/to/new-release \
+  --release-commit "$(git rev-parse HEAD)" --manifest-sha256 "$REVIEWED_MANIFEST_SHA256"
+```
 
 ## Test the map with Chrome and Firefox
 
@@ -43,6 +51,8 @@ Movement uses a same-origin WebSocket through the frontend proxy. The relay veri
 
 After the emergency cooldown, approach the red emergency button in Commons and choose **Call emergency meeting**. All browsers should show the discussion timer, followed by the ballot. Choose **Skip** in all three profiles. After the native coordinator resolves the meeting, each browser should show three skip votes and **No player ejected**. Choose **Back to the game** to resume walking and completing consoles.
 
-With a fresh disposable lobby, vote for a player instead to verify ejection and ghost visibility. The **Report body** action appears when the native state contains a body position and is enabled in reach of it. Creating a kill from a browser requires a native kill path compatible with the verified-role receiver.
+With a fresh disposable lobby, vote for a player instead to verify ejection and the shared result. The **Report body** action appears when the native state contains a body position and is enabled in reach of it. Creating a kill from a browser requires a native kill path compatible with the verified-role receiver.
+
+The mixed-browser workflow runs a task victory after a skip vote and an independent round that ends after a native ejection.
 
 Lobby and meeting chat use the same frontend relay as movement and keep messages in memory. Send a message from Chrome and Firefox and check that the other profiles receive it while they are in the same lobby or meeting. During meetings, ghost profiles can read the chat. Chat reconnects independently of the native ballot.

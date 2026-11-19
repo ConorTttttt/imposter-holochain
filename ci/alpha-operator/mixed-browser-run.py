@@ -203,6 +203,7 @@ def fixture(args, scratch):
     config = {
         "mode": "fixture", "frontend": front, "gateway": gateway, "fixtureSpki": spki,
         "gameplay": bool(args.gameplay),
+        "gameplayEjection": args.ejection,
         "fixtureSecret": str(paths["admin_secret_file"]), "hostFile": str(host_file),
         "fixtureAdmissionDb": str(paths["gateway_session_db"]),
         "profiles": list(map(str, profiles)), "hwc": str(args.hwc),
@@ -437,6 +438,7 @@ def main():
     for field in ("game", "hwc", "firefox", "gateway", "caddy", "report"):
         cloud.add_argument("--" + field, type=lambda path: Path(path).resolve(), required=True)
     cloud.add_argument("--gameplay", type=lambda path: Path(path).resolve())
+    cloud.add_argument("--ejection", action="store_true")
     live = sub.add_parser("operator")
     live.add_argument("--config", type=Path, required=True)
     live.add_argument("--report", type=Path, required=True)
@@ -455,6 +457,8 @@ def main():
         return
     if args.report.exists():
         raise SystemExit("Use a new evidence path")
+    if args.ejection and not args.gameplay:
+        parser.error("--ejection requires the gameplay candidate")
     try:
         with tempfile.TemporaryDirectory(prefix="imposter-mixed-") as folder:
             fixture(args, Path(folder))

@@ -24,6 +24,10 @@ jobs:
   cloud-fixture:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        round: ${{ fromJSON(github.ref == 'refs/heads/feature/browser-full-gameplay' && '["tasks","ejection"]' || '["tasks"]') }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -127,7 +131,7 @@ jobs:
           cat "$packages/SHA256SUMS"
       - uses: actions/upload-artifact@v4
         with:
-          name: mixed-browser-extension-packages
+          name: mixed-browser-extension-packages${{ matrix.round == 'ejection' && '-ejection' || '' }}
           path: ${{ runner.temp }}/mixed-extension-packages/
           if-no-files-found: error
       - name: Run native Zome authorization regressions
@@ -154,12 +158,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: github.ref == 'refs/heads/feature/browser-full-gameplay'
         with:
-          name: browser-gameplay-candidate
+          name: browser-gameplay-candidate${{ matrix.round == 'ejection' && '-ejection' || '' }}
           path: ${{ runner.temp }}/browser-gameplay/
           if-no-files-found: error
       - name: Run the genuine mixed-browser round on a disposable network
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+          GAMEPLAY_ROUND: ${{ matrix.round }}
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/geckodriver" --host 127.0.0.1 --port 4444 >"$RUNNER_TEMP/geckodriver.local.log" 2>&1 &
@@ -169,6 +174,9 @@ jobs:
           gameplay=()
           if [[ "$GITHUB_REF" == refs/heads/feature/browser-full-gameplay ]]; then
             gameplay=(--gameplay "$RUNNER_TEMP/browser-gameplay")
+            if [[ "$GAMEPLAY_ROUND" == ejection ]]; then
+              gameplay+=(--ejection)
+            fi
           fi
           python3 ci/alpha-operator/mixed-browser-run.py fixture --game game --hwc hwc --firefox firefox \
             --gateway gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 \
@@ -177,6 +185,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mixed-browser-cloud-evidence
+          name: mixed-browser-cloud-evidence${{ matrix.round == 'ejection' && '-ejection' || '' }}
           path: ${{ runner.temp }}/mixed-browser-evidence.json
           if-no-files-found: warn
