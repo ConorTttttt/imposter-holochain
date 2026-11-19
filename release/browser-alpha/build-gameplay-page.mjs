@@ -8,10 +8,12 @@ const [input, output] = process.argv.slice(2);
 if (!input || !output) throw new Error("Usage: node build-gameplay-page.mjs <patched-demo> <gameplay-demo>");
 
 const bundle = await build({
+  absWorkingDir: root,
   stdin: {
     contents: `export { mountBrowserMap } from "./ui/src/browser/map.ts";
       export { BROWSER_TASK_COUNTS, BROWSER_DEFAULT_TASK_COUNT, browserTaskList } from "./ui/src/browser/tasks.ts";
-      export { mountBrowserMeetings } from "./ui/src/browser/meetings.ts";`,
+      export { mountBrowserMeetings } from "./ui/src/browser/meetings.ts";
+      export { mountBrowserChat } from "./ui/src/browser/chat.ts";`,
     resolveDir: root,
   },
   bundle: true, write: false, platform: "browser", format: "iife",
@@ -43,6 +45,13 @@ const map = `<section id="gameplay-map" class="panel" aria-label="Ship map" hidd
   <p id="meeting-vote-status" role="status"></p>
   <div class="actions" id="meeting-ballot"></div>
   <button id="meeting-back" type="button" hidden>Back to the game</button>
+</section>
+<section id="browser-chat" class="panel" aria-label="Chat" hidden>
+  <h2>Lobby chat</h2>
+  <div id="browser-chat-log" role="log" aria-live="polite"></div>
+  <p id="browser-chat-status" role="status"></p>
+  <form><input aria-label="Chat message" placeholder="Write a message" autocomplete="off" disabled>
+    <button type="submit" class="secondary" disabled>Send</button></form>
 </section>`;
 
 function replaceOnce(html, needle, replacement) {
@@ -73,7 +82,8 @@ for(const count of imposterBrowserMap.BROWSER_TASK_COUNTS){
 const code = bundle.outputFiles[0].text;
 html = replaceOnce(html, '<script type="module">', '<script type="module">\n' + code +
   '\nconst browserMap = imposterBrowserMap.mountBrowserMap();' +
-  '\nconst browserMeeting = imposterBrowserMap.mountBrowserMeetings(updateButtons);');
+  '\nconst browserMeeting = imposterBrowserMap.mountBrowserMeetings(updateButtons);' +
+  '\nconst browserChat = imposterBrowserMap.mountBrowserChat();');
 const taskButtons = ` task.hidden=!(verifiedRole===0&&latestState?.phase==='playing'&&
    latestState.tasks?.some(item=>item.id===demoTask.id));
  task.disabled=!ready||task.hidden||Boolean(latestState?.my_tasks_done?.includes(demoTask.id));`;
@@ -81,11 +91,17 @@ html = replaceOnce(html, taskButtons, `
  $('task-count-label').hidden=identity!==meta?.host_agent_pub_key||Boolean(latestState?.code);
  taskCount.disabled=!ready;
  const authenticated=badge.dataset.status==='ready';
- const paused=browserMeeting.render(authenticated&&identity&&latestState?.code===meta?.network_seed?
+ const sameGame=authenticated&&identity&&latestState?.code===meta?.network_seed;
+ const paused=browserMeeting.render(sameGame?
    {state:latestState,dna:meta.dna_hash,agent:identity,call:callMeeting,hash:holoHash,toBytes}:null);
+ const sign=hc?.signJoiningNonce?.bind(hc);
  browserMap.update({authenticated, state: paused?null:latestState,
    dna: meta?.dna_hash, seed: meta?.network_seed, identity, hash: holoHash,
-   sign: hc?.signJoiningNonce?.bind(hc), role: verifiedRole, submit: completeConsoleTask, callMeeting, toBytes});
+   sign, role: verifiedRole, submit: completeConsoleTask, callMeeting, toBytes});
+ browserChat.update(sameGame&&sign&&['lobby','meeting'].includes(latestState.phase)?
+   {identity,dna:meta.dna_hash,code:meta.network_seed,phase:latestState.phase,sign,
+    meeting:latestState.active_meeting?holoHash(latestState.active_meeting.meeting):null,
+    players:latestState.players.map(p=>({keyB64:holoHash(p.key),name:p.name,color:p.color,dead:p.dead}))}:null);
 `);
 html = replaceOnce(html, "async function roundAction(kind){", "async function roundAction(){");
 html = replaceOnce(html, `  if(kind==='start'){

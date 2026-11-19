@@ -44,3 +44,5 @@ Movement uses a same-origin WebSocket through the frontend proxy. The relay veri
 After the emergency cooldown, approach the red emergency button in Commons and choose **Call emergency meeting**. All browsers should show the discussion timer, followed by the ballot. Choose **Skip** in all three profiles. After the native coordinator resolves the meeting, each browser should show three skip votes and **No player ejected**. Choose **Back to the game** to resume walking and completing consoles.
 
 With a fresh disposable lobby, vote for a player instead to verify ejection and ghost visibility. The **Report body** action appears when the native state contains a body position and is enabled in reach of it. Creating a kill from a browser requires a native kill path compatible with the verified-role receiver.
+
+Lobby and meeting chat use the same frontend relay as movement and keep messages in memory. Send a message from Chrome and Firefox and check that the other profiles receive it while they are in the same lobby or meeting. During meetings, ghost profiles can read the chat. Chat reconnects independently of the native ballot.

@@ -85,6 +85,26 @@ export async function callEmergencyMeeting(browser, name, until) {
   }));
 }
 
+export async function checkChat(browsers, until, scope) {
+  await Promise.all(browsers.map(browser => until(() => browser.evaluate(() => {
+    const chat = document.getElementById('browser-chat');
+    return !chat.hidden && !chat.querySelector('input').disabled;
+  }), 15000)));
+  const send = (browser, text) => browser.evaluate(text => {
+    const form = document.querySelector('#browser-chat form');
+    form.querySelector('input').value = text;
+    form.requestSubmit();
+  }, text);
+  const fromFirefox = scope + ' from Firefox <b>literal text</b>';
+  const fromChromium = scope + ' from Chromium';
+  await send(browsers[2], fromFirefox);
+  await send(browsers[0], fromChromium);
+  await Promise.all(browsers.map(browser => until(() => browser.evaluate(({fromFirefox, fromChromium}) => {
+    const log = document.getElementById('browser-chat-log');
+    return log.textContent.includes(fromFirefox) && log.textContent.includes(fromChromium) && !log.querySelector('b');
+  }, {fromFirefox, fromChromium}), 15000)));
+}
+
 export async function completeEngineTask(browser, name, until) {
   await walk(browser, name, until, [
     [0, 1200], [1, 465], [0, 1240], [1, 900], [0, 1060], [1, 1250],

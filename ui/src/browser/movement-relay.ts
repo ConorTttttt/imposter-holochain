@@ -1,7 +1,7 @@
 import { randomBytes, verify } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { MOVEMENT_PATH, movementChallenge, movementDigest, validPosition } from "./movement-wire.js";
+import { MOVEMENT_PATH, movementChallenge, movementDigest, validChat, validPosition } from "./movement-wire.js";
 
 const [origin, port] = process.argv.slice(2);
 if (!origin || new URL(origin).origin !== origin || !/^https?:\/\//.test(origin) ||
@@ -17,7 +17,7 @@ function rawHash(value: unknown, prefix: string) {
 }
 
 const http = createServer((_request, response) => response.writeHead(404).end());
-const server = new WebSocketServer({ noServer: true, maxPayload: 512, perMessageDeflate: false });
+const server = new WebSocketServer({ noServer: true, maxPayload: 1536, perMessageDeflate: false });
 const rooms = new Map<string, Map<string, WebSocket>>();
 
 http.on("upgrade", (request, socket, head) => {
@@ -33,6 +33,7 @@ server.on("connection", (connection) => {
   let seat: { dna: string; agent: string; room: Map<string, WebSocket> } | null = null;
   let verifying = false;
   let last = 0;
+  let lastChat = 0;
   let alive = true;
   const deadline = setTimeout(() => connection.close(1008), 7000);
   const heartbeat = setInterval(() => {
@@ -63,11 +64,19 @@ server.on("connection", (connection) => {
       return connection.close(1007);
     }
     if (seat) {
-      if (!validPosition(packet)) return connection.close(1008);
       const now = Date.now();
-      if (now - last < 50) return;
-      last = now;
-      const frame = JSON.stringify([seat.agent, ...packet]);
+      let frame: string;
+      if (validPosition(packet)) {
+        if (now - last < 50) return;
+        last = now;
+        frame = JSON.stringify([seat.agent, ...packet]);
+      } else if (validChat(packet)) {
+        if (now - lastChat < 400) return;
+        lastChat = now;
+        frame = JSON.stringify({ ...packet, hc: seat.agent, t: now });
+      } else {
+        return connection.close(1008);
+      }
       for (const peer of seat.room.values()) {
         if (peer !== connection && peer.readyState === WebSocket.OPEN && peer.bufferedAmount < 4096) peer.send(frame);
       }

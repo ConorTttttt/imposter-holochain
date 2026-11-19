@@ -66,6 +66,12 @@ test("movement relay binds coordinates to a signed agent and rejects replay and 
   const updates = once(recipient, "message");
   sender.send(JSON.stringify([1200, 200]));
   assert.deepEqual(JSON.parse((await updates)[0].toString()), [alice.agent, 1200, 200]);
+  const chat = { k: "chat", id: "0123456789abcdef", meeting: "lobby:g1." + alice.agent + "." + "1".repeat(32), text: "Hello!" };
+  const incoming = once(recipient, "message");
+  sender.send(JSON.stringify(chat));
+  const received = JSON.parse((await incoming)[0].toString());
+  assert.equal(typeof received.t, "number");
+  assert.deepEqual({ ...received, t: undefined }, { ...chat, hc: alice.agent, t: undefined });
 
   const { socket: replay } = await open();
   const rejected = once(replay, "close");
@@ -79,4 +85,7 @@ test("movement relay binds coordinates to a signed agent and rejects replay and 
   const next = once(recipient, "message");
   resumed.socket.send(JSON.stringify([1200, 210]));
   assert.deepEqual(JSON.parse((await next)[0].toString()), [alice.agent, 1200, 210]);
+  const spoof = once(resumed.socket, "close");
+  resumed.socket.send(JSON.stringify({ ...chat, hc: bob.agent }));
+  assert.equal((await spoof)[0], 1008);
 });

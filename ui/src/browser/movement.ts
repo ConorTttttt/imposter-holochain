@@ -1,11 +1,13 @@
 import {
   MOVEMENT_PATH, POSITION_INTERVAL_MS, POSITION_TIMEOUT_MS,
-  movementChallenge, movementDigest, validPosition, type Point,
+  movementChallenge, movementDigest, validChat, validPosition, type Point,
 } from "./movement-wire.js";
+import { isChatMsg, type ChatMsg } from "../game/chat.js";
 
 export type SignMovement = (message: Uint8Array) => Promise<Uint8Array>;
 
 export class BrowserMovement {
+  onChat: ((message: ChatMsg) => void) | null = null;
   private socket: WebSocket | null = null;
   private authenticated = false;
   private retryAt = 0;
@@ -29,7 +31,7 @@ export class BrowserMovement {
     this.positions.delete(agent);
   }
 
-  tick(now: number, point: Point, peers: ReadonlySet<string>) {
+  tick(now: number, point: Point | null, peers: ReadonlySet<string>) {
     if (!this.socket && now >= this.retryAt) {
       const url = new URL(MOVEMENT_PATH, location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -47,11 +49,19 @@ export class BrowserMovement {
       if (this.socket && now - this.openedAt > 8000) this.stop();
       return;
     }
-    if (now - this.sentAt >= POSITION_INTERVAL_MS && this.socket?.readyState === WebSocket.OPEN &&
+    if (point && now - this.sentAt >= POSITION_INTERVAL_MS && this.socket?.readyState === WebSocket.OPEN &&
         this.socket.bufferedAmount < 1024) {
       this.socket.send(JSON.stringify([point.x, point.y]));
       this.sentAt = now;
     }
+  }
+
+  sendChat({ k, id, meeting, text }: ChatMsg): boolean {
+    const frame = { k, id, meeting, text };
+    if (!this.authenticated || this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount >= 4096 ||
+        !validChat(frame)) return false;
+    this.socket.send(JSON.stringify(frame));
+    return true;
   }
 
   stop() {
@@ -64,7 +74,7 @@ export class BrowserMovement {
   }
 
   private async receive(socket: WebSocket, raw: unknown, peers: ReadonlySet<string>) {
-    if (typeof raw !== "string" || raw.length > 512) return;
+    if (typeof raw !== "string" || raw.length > 1536) return;
     try {
       const packet = JSON.parse(raw);
       if (!this.authenticated) {
@@ -86,6 +96,9 @@ export class BrowserMovement {
       if (Array.isArray(packet) && packet.length === 3 && peers.has(packet[0]) && validPosition(packet.slice(1))) {
         const [agent, x, y] = packet;
         this.positions.set(agent, { x, y, received: performance.now() });
+      } else if (this.onChat && isChatMsg(packet) && peers.has(packet.hc) && Number.isFinite(packet.t) &&
+          validChat({ k: packet.k, id: packet.id, meeting: packet.meeting, text: packet.text })) {
+        this.onChat(packet);
       }
     } catch {
       // Failure to sign a challenge or parse a packet affects only movement.

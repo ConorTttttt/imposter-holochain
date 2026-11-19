@@ -1,10 +1,20 @@
 import { MAP_H, MAP_W, PLAYER_R } from "../game/world.js";
+import { CHAT_MAX_LEN, type ChatMsg } from "../game/chat.js";
 
 export const MOVEMENT_PATH = "/gameplay-movement";
 export const POSITION_INTERVAL_MS = 100;
 export const POSITION_TIMEOUT_MS = 3500;
 
 export type Point = { x: number; y: number };
+export type OutgoingChat = Pick<ChatMsg, "k" | "id" | "meeting" | "text">;
+
+export function validChat(value: unknown): value is OutgoingChat {
+  if (!value || typeof value !== "object" || Object.keys(value).length !== 4) return false;
+  const { k, id, meeting, text } = value as OutgoingChat;
+  return k === "chat" && typeof id === "string" && /^[a-f0-9]{16}$/.test(id) &&
+    typeof text === "string" && text.length <= CHAT_MAX_LEN && !!text.trim() && !/[\u0000-\u001f\u007f]/.test(text) &&
+    typeof meeting === "string" && /^(?:uhCkk[A-Za-z0-9_-]{48}|lobby:g1\.uhCAk[A-Za-z0-9_-]{48}\.[a-f0-9]{32})$/.test(meeting);
+}
 
 export function validPosition(value: unknown): value is [number, number] {
   if (!Array.isArray(value) || value.length !== 2) return false;

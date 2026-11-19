@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
-import {callEmergencyMeeting, checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
+import {callEmergencyMeeting, checkChat, checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -288,6 +288,9 @@ async function round(config, agents) {
       await lobbyContains(browser, agents) && await browser.evaluate(() =>
         document.getElementById('seat-count')?.textContent === '3/3'))));
   });
+  if (config.gameplay) {
+    await step('CROSS_BROWSER_LOBBY_CHAT', () => checkChat(browsers, until, 'Lobby'));
+  }
   const commit = await step('START_ROUND_UI', async () => {
     await until(() => host.evaluate(() => !document.getElementById('start-round').disabled));
     await action(host, 'start', 'start-round');
@@ -403,6 +406,7 @@ async function round(config, agents) {
         return state.phase === 'meeting' && state.active_meeting?.trigger === 'emergency' &&
           await browser.evaluate(() => document.getElementById('meeting-timer').textContent.includes('Discussion'));
       }, 12000)));
+      await checkChat(browsers, until, 'Meeting');
       await Promise.all(browsers.map(browser => until(() => tap(browser, 'vote-skip'), 35000)));
       await Promise.all(browsers.map(browser => until(async () => {
         const state = await game(browser, 'get_game_state');

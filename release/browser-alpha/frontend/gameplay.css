@@ -25,3 +25,7 @@ main { max-width: 940px; }
 .mg-map { position: relative; height: 170px; margin: 10px 0; background: #0d1524; border-radius: 8px; }
 .mg-point { position: absolute; transform: translate(-50%, -50%); padding: 4px 9px; }
 .mg-point.done { background: #238636; border-color: #3fb950; }
+#browser-chat-log { max-height: 14rem; overflow-y: auto; overflow-wrap: anywhere; }
+#browser-chat form { display: flex; gap: .5rem; margin-top: .75rem; }
+#browser-chat input { margin: 0; min-width: 0; }
+#browser-chat-status:empty { display: none; }

@@ -14,6 +14,8 @@
 import type { Model, StateV } from "./ui.js";
 import { colorHex } from "./colors.js";
 
+type ChatRoster = { state: { players: Pick<StateV["players"][number], "keyB64" | "dead" | "name" | "color">[] } | null };
+
 export const CHAT_MAX_LEN = 200;
 const MAX_LINES_PER_MEETING = 200;
 
@@ -49,7 +51,9 @@ export class ChatLog {
   private session: string[] = []; // meeting hashes (b64) of the current discussion
 
   /** Follow the on-chain phase; call after every state refresh. */
-  sync(s: StateV | null): void {
+  sync(s: (Pick<StateV, "phase" | "code"> & {
+    active_meeting: Pick<NonNullable<StateV["active_meeting"]>, "meetingB64"> | null;
+  }) | null): void {
     if (s?.phase === "lobby" && s.code) {
       const lobby = `lobby:${s.code}`;
       if (this.session.length !== 1 || this.session[0] !== lobby) {
@@ -104,7 +108,7 @@ export class ChatLog {
 
   /** Lines to show: senders must be players in this lobby and alive on-chain
    *  (dead players are muted). */
-  visible(m: Model): ChatMsg[] {
+  visible(m: ChatRoster): ChatMsg[] {
     const alive = new Set((m.state?.players ?? []).filter((p) => !p.dead).map((p) => p.keyB64));
     return this.sessionLines()
       .filter((c) => alive.has(c.hc))
@@ -129,7 +133,7 @@ export function chatView(m: Model): ChatView {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
-export function chatLogHtml(m: Model, log: ChatLog): string {
+export function chatLogHtml(m: ChatRoster & Pick<Model, "myKeyB64">, log: ChatLog): string {
   const lines = log.visible(m);
   if (lines.length === 0) return `<p class="muted">No messages yet.</p>`;
   const players = new Map((m.state?.players ?? []).map((p) => [p.keyB64, p]));
