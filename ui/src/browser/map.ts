@@ -6,6 +6,7 @@ import {
 } from "../game/world.js";
 import { BrowserMovement, type SignMovement } from "./movement.js";
 import type { Point } from "./movement-wire.js";
+import { browserAssignments, mountBrowserTasks } from "./tasks.js";
 
 type Player = {
   key: unknown;
@@ -24,6 +25,8 @@ type State = {
   my_tasks_done: number[];
   tasks_done: number;
   task_target: number;
+  player_count: number;
+  impostor_count: number;
   doors_closed: { room: number; until_ms: number }[];
   settings: { player_speed: number };
 };
@@ -35,6 +38,8 @@ type MapUpdate = {
   seed?: string;
   identity: string | null;
   sign?: SignMovement;
+  role: 0 | 1 | null;
+  submit?: (id: number) => Promise<void>;
   hash: (value: unknown) => string;
 };
 
@@ -49,6 +54,7 @@ export function mountBrowserMap() {
   const status = panel.querySelector<HTMLElement>("#movement-status")!;
   const location = panel.querySelector<HTMLElement>("#ship-location")!;
   const roster = panel.querySelector<HTMLOListElement>("#movement-players")!;
+  const tasks = mountBrowserTasks(panel, canvas);
   const keys = new Set<string>();
   let state: State | null = null;
   let self: Point = spawnFor(null);
@@ -56,6 +62,7 @@ export function mountBrowserMap() {
   let scope: string | null = null;
   let movement: BrowserMovement | null = null;
   let players: (Omit<Player, "key"> & { agent: string })[] = [];
+  let assigned: number[] = [];
   const peers = new Set<string>();
   let airlock: Airlock = { phase: "idle" };
   let previous = 0;
@@ -89,7 +96,7 @@ export function mountBrowserMap() {
     const dx = Number(keys.has("d") || keys.has("arrowright")) - Number(keys.has("a") || keys.has("arrowleft"));
     const dy = Number(keys.has("s") || keys.has("arrowdown")) - Number(keys.has("w") || keys.has("arrowup"));
     const direction = Math.hypot(dx, dy);
-    if (direction) {
+    if (direction && !tasks.active) {
       const distance = WALK_SPEED * state.settings.player_speed / 100 * elapsed / (1000 / 60);
       const steps = Math.ceil(distance / WALK_SPEED);
       for (let i = 0; i < steps; i++) {
@@ -97,6 +104,7 @@ export function mountBrowserMap() {
         self = moveWithin(self.x, self.y, dx * step, dy * step, local.dead, walls);
       }
     }
+    tasks.tick(self, walls, now);
     movement?.tick(now, self, peers);
     const dots: CanvasView["dots"] = [];
     const rows = [];
@@ -114,7 +122,7 @@ export function mountBrowserMap() {
       dots, walls, airlockDoors, closedDoors: DOORS.filter((door) => closed.includes(door.room)).map((door) => door.wall),
       bodies: [], atEmergency: false, lightsOut: false, atLights: false, atComms: false, commsOut: false,
       atVitals: false, atSecurity: false, crisis: null, killRadius: 0, nearVent: null,
-      myTasks: state.tasks.map((task) => task.id), myDone: state.my_tasks_done,
+      myTasks: assigned, myDone: tasks.done,
       taskHold: null, tasksDoneTotal: state.tasks_done, taskTarget: state.task_target, vision: null,
     });
     const transportStatus = movement?.connected ? "Movement connected" : "Movement reconnecting · you can still explore";
@@ -134,7 +142,7 @@ export function mountBrowserMap() {
   }
 
   return {
-    update({ authenticated, state: latest, dna, seed, identity: agent, sign, hash }: MapUpdate) {
+    update({ authenticated, state: latest, dna, seed, identity: agent, sign, hash, role, submit }: MapUpdate) {
       const usable = authenticated && dna && agent && latest && latest.code === seed &&
         latest.phase === "playing" && Number.isInteger(latest.my_seat);
       if (!usable || !latest || !agent || !dna) {
@@ -143,6 +151,7 @@ export function mountBrowserMap() {
         if (frame) cancelAnimationFrame(frame);
         frame = 0;
         movement?.stop();
+        tasks.update(null);
         state = null;
         return;
       }
@@ -161,6 +170,11 @@ export function mountBrowserMap() {
       }));
       peers.clear();
       for (const player of players) if (player.agent !== identity) peers.add(player.agent);
+      const objectives = browserAssignments(latest.tasks, latest.task_target, latest.player_count - latest.impostor_count);
+      assigned = role != null ? objectives.map((task) => task.id) : [];
+      tasks.update({
+        scope: nextScope, role, assigned: objectives, done: latest.my_tasks_done, submit,
+      });
       panel.hidden = false;
       if (!frame) {
         previous = performance.now();

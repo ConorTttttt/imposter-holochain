@@ -6,6 +6,8 @@ export async function prepareMovement(browser, name) {
   await browser.evaluate(name => {
     const input = document.getElementById('player-name');
     input.value = name;
+    const taskCount = document.getElementById('task-count');
+    if (taskCount) taskCount.value = '1';
     const points = {};
     window.gameplayObservedPoints = points;
     const prototype = CanvasRenderingContext2D.prototype;
@@ -51,4 +53,45 @@ export async function checkMovement(browsers, until) {
     return rows.every((row, index) => row && names.every(name =>
       row[name]?.[1] > before[index][name][1] + 14 && Math.abs(row[name][0] - before[index][name][0]) < 1));
   }, 15000);
+}
+
+export async function completeEngineTask(browser, name, until) {
+  await browser.evaluate(() => document.querySelector('#gameplay-map canvas').focus());
+  const local = async () => {
+    const pos = (await positions(browser))?.[name];
+    // The observed name baseline is 27.5 map pixels above the player centre.
+    if (pos) return [pos[0], pos[1] + 27.5];
+  };
+  const waypoints = [
+    [0, 1200], [1, 465], [0, 1240], [1, 900], [0, 1060], [1, 1250],
+    [0, 1120], [1, 1420], [0, 1280], [1, 1555], [0, 1245],
+  ];
+  for (const [axis, target] of waypoints) {
+    await until(async () => {
+      const point = await local();
+      if (!point) return false;
+      const remaining = target - point[axis];
+      if (Math.abs(remaining) <= 8) return true;
+      const key = axis === 0 ? (remaining > 0 ? 'd' : 'a') : (remaining > 0 ? 's' : 'w');
+      await browser.holdKey(key, Math.max(35, Math.min(1400, Math.round(Math.abs(remaining) * (1000 / 192)))));
+      return false;
+    }, 12000);
+  }
+  await until(() => browser.evaluate(() => !document.getElementById('use-console').disabled));
+  await browser.holdKey('e', 50);
+  await until(() => browser.evaluate(() => {
+    const dialog = document.getElementById('console-game');
+    return dialog.open && dialog.querySelector('h3').textContent === 'Align Engine Output';
+  }));
+  const completed = await browser.evaluate(() => {
+    const slider = document.getElementById('mg-slider');
+    const marker = document.querySelector('#console-game .mg-target');
+    const lock = document.querySelector('#console-game [data-mg="lock"]');
+    if (!slider || !marker || !lock) return false;
+    slider.value = parseFloat(marker.style.left);
+    slider.dispatchEvent(new Event('input', {bubbles:true}));
+    lock.click();
+    return true;
+  });
+  if (!completed) throw Error('The engine mini-game could not be completed');
 }

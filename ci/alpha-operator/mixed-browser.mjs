@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
-import {checkMovement, names, prepareMovement} from './gameplay-checks.mjs';
+import {checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -394,16 +394,31 @@ async function round(config, agents) {
       await views();
     });
   }
+  if (config.gameplay) {
+    const crew = [2, 0, 1].filter(index => roles[index].isCrew);
+    await step(crew[0] === 2 ? 'FIREFOX_CREW_COMPLETES_ENGINE_MINIGAME' : 'CHROMIUM_CREW_COMPLETES_ENGINE_MINIGAME', async () => {
+      await completeEngineTask(browsers[crew[0]], names[crew[0]], until);
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        return state.tasks_done === 1 && state.task_target === 2 && state.phase === 'playing' &&
+          await browser.evaluate(() => document.getElementById('task-progress').textContent === 'Task completions: 1/2');
+      })));
+    });
+    await step('SECOND_CREW_COMPLETES_ENGINE_MINIGAME', () => completeEngineTask(browsers[crew[1]], names[crew[1]], until));
+  }
   await step('ALIGN_ENGINE_OUTPUT_AND_AUTHORITATIVE_CREW_WIN', async () => {
-    const crew = browsers[roles.findIndex(role => role.isCrew)];
-    await until(() => tap(crew, 'complete-task'));
+    const target = config.gameplay ? 2 : 1;
+    if (!config.gameplay) {
+      const crew = browsers[roles.findIndex(role => role.isCrew)];
+      await until(() => tap(crew, 'complete-task'));
+    }
     await Promise.all(browsers.map(browser => until(async () => {
-      const rendered = await browser.evaluate(() =>
+      const rendered = await browser.evaluate(target =>
         document.getElementById('round-state')?.textContent === 'Phase: Ended · Crew wins'
-        && document.getElementById('task-progress')?.textContent === 'Task completions: 1/1');
+        && document.getElementById('task-progress')?.textContent === `Task completions: ${target}/${target}`, target);
       if (!rendered) return false;
       const state = await game(browser, 'get_game_state');
-      return state.phase === 'ended' && state.tasks_done === 1 && state.task_target === 1
+      return state.phase === 'ended' && state.tasks_done === target && state.task_target === target
         && state.result?.outcome === 'crew_win';
     })));
   });

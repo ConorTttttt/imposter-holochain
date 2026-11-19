@@ -29,10 +29,12 @@ Render the frontend proxy configuration with `deploy.py render-proxy --movement-
 ## Test the map with Chrome and Firefox
 
 1. In three distinct browser profiles, install the approved HWC builds and follow `/browser-setup.html` to unlock, authorize, and install the exact host-bound hApp. Use Chrome or Chromium for the host and one guest and Firefox Desktop for the other guest.
-2. Open `/browser-demo.html`. Give each browser a distinct name, create the lobby in the host profile and join from both guests.
-3. Select **Start round** in the host profile. Check that all three clients show the same three seats and phase, and that each displays its own verified role.
+2. Open `/browser-demo.html`. Give each browser a distinct name. Choose 1, 3, 6 or 18 tasks per player, create the lobby in the host profile, and join from both guests.
+3. Select **Start round** after all players have joined. Check that all three clients show the same three seats and phase, and that each displays its own verified role.
 4. Focus each ship map and move using WASD or the arrow keys. Check that all three avatars move from their own spawns, the camera follows the local player, and the walls block movement through room boundaries.
 5. Reload Firefox. The same seat should resume from its spawn. The movement roster should show that player offline if the interruption lasts more than 3.5 seconds and connected after fresh positions arrive.
-6. In this milestone, use the existing **Align Engine Output** demo control in a crewmate profile to check the native shared result.
+6. For a short task test, choose one task when creating the lobby. Walk from the Navigator Bridge through Communications and Commons to Core Engine. Approach the marked **Align Engine Output** console and press **E** or choose **Use Align Engine Output**. Align the slider with its marker and choose **Lock**. Check that the count updates to 1/2 in all profiles. When both crewmates finish, all profiles should show 2/2 and **Crew wins**.
+
+The browser task pool is sized to the native per-seat quota, so every seat receives the same consoles. This works without desktop private task assignment calls. Impostors can play the console games as cover. Crewmate completions go through the native coordinator and count toward the native result. Medical Scan uses the original timed mini-game and records ordinary task completion.
 
 Movement uses a same-origin WebSocket through the frontend proxy. The relay verifies a fresh, domain-separated signature from the existing HWC identity, then accepts coordinate updates. The map uses native seats for player names, colours and roster membership. Coordinates are transient player-supplied data. If the movement relay is unavailable, local movement and native round status continue.

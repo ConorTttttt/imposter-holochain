@@ -6,3 +6,22 @@ main { max-width: 940px; }
 #gameplay-map canvas:focus-visible { outline: 3px solid #8bbcff; outline-offset: 3px; }
 #movement-players { list-style: none; display: flex; flex-wrap: wrap; gap: .75rem; padding: 0; margin-bottom: 0; }
 #movement-players li { border-left: 4px solid var(--player-color); padding: .25rem .55rem; background: #0b1426; }
+#task-count-label { margin: 0; align-self: center; }
+#task-count { margin-left: .5rem; font: inherit; }
+#console-status { min-height: 1.5rem; margin: .5rem 0; }
+#console-tasks { margin: .5rem 0; }
+#console-tasks:empty { display: none; }
+#console-game { width: min(440px, 92%); color: inherit; background: #152037; border: 1px solid #546e99; border-radius: 12px; }
+#console-game::backdrop { background: rgb(0 0 0 / 60%); }
+.mg-track { position: relative; height: 10px; margin: 14px 0 6px; background: #1c2431; border-radius: 5px; }
+.mg-target { position: absolute; top: -5px; width: 4px; height: 20px; margin-left: -2px; background: #d0a72c; border-radius: 2px; }
+.mg-gauge { height: 16px; margin: 10px 0; background: #1c2431; border-radius: 8px; overflow: hidden; }
+.mg-fill { height: 100%; background: #d0a72c; }
+.mg-dial { position: relative; width: 150px; height: 150px; margin: 10px auto; border-radius: 50%; border: 2px solid #30363d; }
+.mg-needle { position: absolute; left: 71.5px; top: 8px; width: 3px; height: 65px; background: #e6edf3; transform-origin: 1.5px 65px; }
+.mg-cells { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+.mg-cell { height: 44px; }
+.mg-cell.red { background: #b62324; border-color: #ff6b6b; }
+.mg-map { position: relative; height: 170px; margin: 10px 0; background: #0d1524; border-radius: 8px; }
+.mg-point { position: absolute; transform: translate(-50%, -50%); padding: 4px 9px; }
+.mg-point.done { background: #238636; border-color: #3fb950; }
