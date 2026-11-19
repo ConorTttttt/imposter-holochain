@@ -174,10 +174,10 @@ def browser_fixture_tls(scratch, firefox, log):
 
 def fixture(args, scratch):
     log = scratch / "fixture.log"
-    profiles = [scratch / name for name in ("host", "chromium-guest", "firefox-guest")]
+    profiles = [scratch / name for name in ("host", "chromium-guest-a", "chromium-guest-b", "firefox-guest")]
     for profile in profiles:
         profile.mkdir(mode=0o700)
-    cert, key, authority, spki = browser_fixture_tls(scratch, profiles[2], log)
+    cert, key, authority, spki = browser_fixture_tls(scratch, profiles[3], log)
     front_port, gateway_port = free_port(), free_port()
     while gateway_port == front_port:
         gateway_port = free_port()

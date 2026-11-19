@@ -28,6 +28,7 @@ python3 "$kit/private-role/apply_restricted_hwc_handler.py" "$hwc" --write
 python3 "$kit/private-role/apply_installed_hwc_receiver.py" "$hwc" --write
 git -C "$hwc" apply --check "$kit/private-role/firefox-desktop.patch"
 git -C "$hwc" apply "$kit/private-role/firefox-desktop.patch"
+python3 "$kit/private-role/apply_browser_lobbies.py" "$hwc"
 git -C "$hwc" diff --check
 
 (

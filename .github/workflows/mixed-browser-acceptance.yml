@@ -1,8 +1,8 @@
-name: Mixed Chromium and Firefox Desktop acceptance
+name: Repeatable Chromium and Firefox browser lobbies
 
 on:
   push:
-    branches: [feature/firefox-android-hwc]
+    branches: [integration/repeatable-browser-lobbies-firefox]
     paths:
       - '.github/workflows/mixed-browser-acceptance.yml'
       - 'ci/alpha-operator/**'
@@ -142,7 +142,7 @@ jobs:
           npm --prefix firefox run test --workspace @hwc/extension -- \
             src/background/firefox-restricted-role.test.ts src/background/firefox-direct-executor.test.ts \
             --minWorkers=1 --maxWorkers=2
-      - name: Run the genuine mixed-browser round on a disposable network
+      - name: Complete two rounds on the same native network
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
         run: |

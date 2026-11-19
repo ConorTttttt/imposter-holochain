@@ -4,6 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
+import {acceptRepeatableBrowserLobbies} from './repeatable-browser-acceptance.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -414,10 +415,14 @@ async function main(config, command) {
     return;
   }
   requireCheck(['preflight', 'round'].includes(command));
+  const fixture = config.mode === 'fixture';
+  const profileLabels = fixture
+    ? ['CHROMIUM_HOST', 'CHROMIUM_GUEST_A', 'CHROMIUM_GUEST_B', 'FIREFOX_GUEST'] : labels;
   await step('EXTENSIONS_LOADED', async () => {
     browsers.push(await launchChromium(config, config.profiles[0]));
     browsers.push(await launchChromium(config, config.profiles[1]));
-    browsers.push(await launchFirefox(config, config.profiles[2]));
+    if (fixture) browsers.push(await launchChromium(config, config.profiles[2]));
+    browsers.push(await launchFirefox(config, config.profiles[fixture ? 3 : 2]));
   });
   let preinstalled;
   if (config.mode === 'operator') {
@@ -434,8 +439,8 @@ async function main(config, command) {
   }
   const agents = await step('DISTINCT_LAIR_IDENTITIES_AND_BOUND_HOST', async () => {
     const agents = await Promise.all(browsers.map((browser, index) =>
-      preinstalled ? connect(browser, labels[index]) : setup(browser, labels[index])));
-    requireCheck(agents.every(agent => publicKey.test(agent)) && new Set(agents).size === 3);
+      preinstalled ? connect(browser, profileLabels[index]) : setup(browser, profileLabels[index])));
+    requireCheck(agents.every(agent => publicKey.test(agent)) && new Set(agents).size === profileLabels.length);
     requireCheck(agents[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
     if (preinstalled)
       requireCheck(agents.every((agent, index) => agent === preinstalled[index]), 'OPERATOR_LAIR_IDENTITY_CHANGED');
@@ -454,11 +459,11 @@ async function main(config, command) {
   await step('EXACT_HAPP_INSTALLED', async () => {
     await waitForInstalled(browsers, config, agents);
   });
-  await step('THREE_AUTHENTICATED_GATEWAY_SESSIONS', async () => {
+  await step(fixture ? 'FOUR_AUTHENTICATED_GATEWAY_SESSIONS' : 'THREE_AUTHENTICATED_GATEWAY_SESSIONS', async () => {
     await Promise.all(browsers.map(browser => until(() => session(browser, config.gateway), 90000)));
   });
   if (config.mode === 'fixture') {
-    await step('THREE_ACKNOWLEDGED_DNA_REGISTRATIONS', async () => {
+    await step('FOUR_ACKNOWLEDGED_DNA_REGISTRATIONS', async () => {
       const {DatabaseSync} = await import('node:sqlite');
       const db = new DatabaseSync(config.fixtureAdmissionDb, {readOnly: true});
       try {
@@ -474,8 +479,31 @@ async function main(config, command) {
       states.forEach((state, index) => checkUnusedOperatorGame(state, agents[index]));
     });
   }
-  if (command === 'round') await round(config, agents);
-  report.status = command === 'round' ? 'ROUND_VERIFIED' : 'PREFLIGHT_VERIFIED';
+  if (command === 'round' && fixture) {
+    await acceptRepeatableBrowserLobbies({
+      agents, browsers, dna: config.dna, step, until,
+      async restart(index, label) {
+        await browsers[index].close();
+        const browser = await launchChromium(config, config.profiles[index]);
+        browsers[index] = browser;
+        requireCheck(await setup(browser, label) === agents[index], label + '_LAIR_IDENTITY_CHANGED');
+        requireCheck(await installed(browser, config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');
+        await until(() => session(browser, config.gateway), 90000);
+        await browser.navigate('/browser-demo.html');
+      },
+      async reconnect(index, label, whileDisconnected) {
+        await allow(config, 'DELETE', agents[index]);
+        await until(async () => !await session(browsers[index], config.gateway), 40000);
+        await whileDisconnected();
+        await allow(config, 'POST', agents[index]);
+        await until(() => session(browsers[index], config.gateway), 95000);
+        requireCheck(await installed(browsers[index], config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');
+      },
+    });
+  } else if (command === 'round') await round(config, agents);
+  report.status = command === 'round'
+    ? fixture ? 'REPEATABLE_ROUNDS_VERIFIED' : 'ROUND_VERIFIED'
+    : 'PREFLIGHT_VERIFIED';
   save();
 }
 
