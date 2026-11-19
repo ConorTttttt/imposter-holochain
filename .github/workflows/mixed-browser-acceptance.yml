@@ -2,13 +2,14 @@ name: Mixed Chromium and Firefox Desktop acceptance
 
 on:
   push:
-    branches: [feature/firefox-android-hwc]
+    branches: [feature/firefox-android-hwc, feature/browser-full-gameplay]
     paths:
       - '.github/workflows/mixed-browser-acceptance.yml'
       - 'ci/alpha-operator/**'
       - 'ci/installed-role/browser-demo.patch'
       - 'compatibility/hwc-imposter-compatibility/**'
       - 'release/browser-alpha/**'
+      - 'ui/**'
   workflow_dispatch:
 
 permissions:
@@ -142,6 +143,20 @@ jobs:
           npm --prefix firefox run test --workspace @hwc/extension -- \
             src/background/firefox-restricted-role.test.ts src/background/firefox-direct-executor.test.ts \
             --minWorkers=1 --maxWorkers=2
+      - name: Test and build the browser gameplay candidate
+        if: github.ref == 'refs/heads/feature/browser-full-gameplay'
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui run typecheck
+          npm --prefix ui test
+          bash release/browser-alpha/build-gameplay.sh game "$RUNNER_TEMP/browser-gameplay"
+          (cd "$RUNNER_TEMP/browser-gameplay" && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/feature/browser-full-gameplay'
+        with:
+          name: browser-gameplay-candidate
+          path: ${{ runner.temp }}/browser-gameplay/
+          if-no-files-found: error
       - name: Run the genuine mixed-browser round on a disposable network
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
@@ -151,9 +166,13 @@ jobs:
           driver=$!
           trap 'kill "$driver" 2>/dev/null || true' EXIT
           curl --retry 6 --retry-connrefused --retry-delay 1 --fail --silent http://127.0.0.1:4444/status >/dev/null
+          gameplay=()
+          if [[ "$GITHUB_REF" == refs/heads/feature/browser-full-gameplay ]]; then
+            gameplay=(--gameplay "$RUNNER_TEMP/browser-gameplay")
+          fi
           python3 ci/alpha-operator/mixed-browser-run.py fixture --game game --hwc hwc --firefox firefox \
             --gateway gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 \
-            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json"
+            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json" "${gameplay[@]}"
       - name: Upload only anonymous stage evidence
         if: always()
         uses: actions/upload-artifact@v4

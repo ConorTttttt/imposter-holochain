@@ -4,6 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
+import {checkMovement, names, prepareMovement} from './gameplay-checks.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -251,6 +252,7 @@ async function round(config, agents) {
       document.getElementById('connection-state')?.dataset.status === 'ready'), 45000)));
   });
   const [host, ...guests] = browsers;
+  if (config.gameplay) await Promise.all(browsers.map((browser, i) => prepareMovement(browser, names[i])));
   const lobby = await step('HOST_CREATED_LOBBY', async () => {
     // A dedicated fixture or unused operator lobby is required. Never resume a played round.
     const state = await game(host, 'get_game_state');
@@ -330,6 +332,9 @@ async function round(config, agents) {
       document.getElementById('my-role')?.textContent.startsWith('Your verified role:')))));
     return values;
   });
+  if (config.gameplay) {
+    await step('THREE_BROWSERS_RENDER_AND_MOVE_NATIVE_SEATS', () => checkMovement(browsers, until));
+  }
   if (config.mode === 'fixture') {
     const firefox = browsers[2];
     await step('FIREFOX_GATEWAY_REVOCATION_AND_FRESH_RECEIPT', async () => {
@@ -337,6 +342,11 @@ async function round(config, agents) {
       await until(async () => !await session(firefox, config.gateway), 40000);
       const revoked = await own(firefox).catch(() => null);
       requireCheck(revoked !== 0 && revoked !== 1);
+      if (config.gameplay) {
+        await until(() => firefox.evaluate(() => document.getElementById('gameplay-map').hidden), 20000);
+        await until(() => host.evaluate(() => [...document.querySelectorAll('#movement-players li')]
+          .some(row => row.textContent === 'Map Firefox · Offline')), 20000);
+      }
       requireCheck(await session(host, config.gateway) && await session(guests[0], config.gateway));
       await allow(config, 'POST', agents[2]);
       await until(() => session(firefox, config.gateway), 95000);
@@ -346,6 +356,9 @@ async function round(config, agents) {
       }, 180000);
       await views();
     });
+    if (config.gameplay) {
+      await step('FIREFOX_REJOINS_MOVEMENT_AFTER_REAUTHORIZATION', () => checkMovement(browsers, until));
+    }
   } else {
     const previous = browsers[2];
     let firefox;

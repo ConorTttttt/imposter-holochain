@@ -1,0 +1,8 @@
+main { max-width: 940px; }
+.gameplay-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.gameplay-header h2 { margin: 0 0 .5rem; }
+#movement-status { font-size: .875rem; color: #aebfd7; }
+#gameplay-map canvas { display: block; width: 100%; height: auto; background: #0b1120; border-radius: 8px; }
+#gameplay-map canvas:focus-visible { outline: 3px solid #8bbcff; outline-offset: 3px; }
+#movement-players { list-style: none; display: flex; flex-wrap: wrap; gap: .75rem; padding: 0; margin-bottom: 0; }
+#movement-players li { border-left: 4px solid var(--player-color); padding: .25rem .55rem; background: #0b1426; }

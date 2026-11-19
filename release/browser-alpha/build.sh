@@ -76,8 +76,13 @@ mv "$scratch/browser-demo.html" "$scratch/ui/browser-demo.html"
   cd "$scratch"
   git apply --unidiff-zero "$repo/ci/installed-role/browser-demo.patch"
 )
+demo="$scratch/ui/browser-demo.html"
+if [[ ${BROWSER_ALPHA_GAMEPLAY:-0} == 1 ]]; then
+  node "$rc/build-gameplay-page.mjs" "$demo" "$scratch/gameplay-demo.html"
+  demo="$scratch/gameplay-demo.html"
+fi
 python3 "$rc/package.py" assemble "$output" --native "$native" \
   --extension "$scratch/hwc/packages/extension/dist-chrome" --gateway "$gateway" \
-  --demo "$scratch/ui/browser-demo.html" --release-commit "$(git -C "$repo" rev-parse HEAD)" \
+  --demo "$demo" --release-commit "$(git -C "$repo" rev-parse HEAD)" \
   --identity "$package_identity" \
   --node-version "$(node --version)" --npm-version "$(npm --version)"

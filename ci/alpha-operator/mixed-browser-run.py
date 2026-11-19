@@ -183,6 +183,9 @@ def fixture(args, scratch):
         gateway_port = free_port()
     front, gateway = (f"https://localhost:{port}" for port in (front_port, gateway_port))
     public = {**TEST_NETWORK, "frontend_origin": front, "gateway_origin": gateway}
+    movement_port = free_port() if args.gameplay else None
+    while movement_port in (front_port, gateway_port, 8090):
+        movement_port = free_port()
     paths = {
         "static_root": scratch / "site", "admin_secret_file": scratch / "gateway-secret",
         "gateway_identity_file": scratch / "gateway-key", "gateway_session_db": scratch / "sessions.sqlite",
@@ -192,30 +195,42 @@ def fixture(args, scratch):
     activate_site(paths["static_root"], {name: (RELEASE / "frontend" / name).read_bytes() for name in SETUP})
     caddyfile = scratch / "Caddyfile"
     caddyfile.write_text("{\n    admin off\n    auto_https disable_redirects\n}\n" +
-                         proxy_config(public, paths).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
+                         proxy_config(public, paths, movement_port).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
                          .replace(gateway + " {\n", f"{gateway} {{\n    tls {cert} {key}\n    bind 127.0.0.1\n"))
     caddy_env = {**os.environ, "XDG_DATA_HOME": str(scratch / "caddy-data"),
                  "XDG_CONFIG_HOME": str(scratch / "caddy-config")}
     host_file = scratch / "host.pub"
     config = {
         "mode": "fixture", "frontend": front, "gateway": gateway, "fixtureSpki": spki,
+        "gameplay": bool(args.gameplay),
         "fixtureSecret": str(paths["admin_secret_file"]), "hostFile": str(host_file),
         "fixtureAdmissionDb": str(paths["gateway_session_db"]),
         "profiles": list(map(str, profiles)), "hwc": str(args.hwc),
         "chromiumExtension": str(args.hwc / "packages/extension/dist-chrome"),
         "firefoxExtension": str(args.firefox / "packages/extension/dist-firefox"),
     }
-    with service([str(args.caddy), "run", "--config", str(caddyfile), "--adapter", "caddyfile"],
-                 front_port, scratch, caddy_env):
+    with ExitStack() as services:
+        if args.gameplay:
+            services.enter_context(service(
+                ["node", str(args.gameplay / "movement-relay.cjs"), front, str(movement_port)],
+                movement_port, scratch, os.environ,
+            ))
+        services.enter_context(service([str(args.caddy), "run", "--config", str(caddyfile), "--adapter", "caddyfile"],
+                                       front_port, scratch, caddy_env))
         launch("bootstrap", config, scratch, args.report)
         host = host_file.read_text().strip()
         seed = "g1." + host + "." + secrets.token_hex(16)
         release = scratch / "release"
         env = {**os.environ, "BROWSER_ALPHA_CI_PROFILE": "1"}
+        if args.gameplay:
+            env["BROWSER_ALPHA_GAMEPLAY"] = "1"
         run_checked(["bash", str(RELEASE / "build.sh"), str(args.game), str(args.hwc), host,
                      seed, str(args.gateway), str(release)], "EXACT_FIXTURE_RELEASE_BUILD", log, env=env)
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         manifest = verify(release, revision, "EPHEMERAL_CI_ONLY")
+        if args.gameplay:
+            gate("EXACT_GAMEPLAY_PAGE", digest(args.gameplay / "browser-demo.html") ==
+                 digest(release / "frontend/browser-demo.html"))
         archive = scratch / "chromium-runtime.zip"
         archive_extension(Path(config["chromiumExtension"]), archive)
         gate("EXACT_CHROMIUM_RELEASE_BUILD", digest(archive) == digest(release / EXTENSION))
@@ -421,6 +436,7 @@ def main():
     cloud = sub.add_parser("fixture")
     for field in ("game", "hwc", "firefox", "gateway", "caddy", "report"):
         cloud.add_argument("--" + field, type=lambda path: Path(path).resolve(), required=True)
+    cloud.add_argument("--gameplay", type=lambda path: Path(path).resolve())
     live = sub.add_parser("operator")
     live.add_argument("--config", type=Path, required=True)
     live.add_argument("--report", type=Path, required=True)
