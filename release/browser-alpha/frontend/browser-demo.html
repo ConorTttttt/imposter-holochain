@@ -68,7 +68,7 @@ const controls = {
   retry: $('retry-connection'), start: $('start-round'), task: $('complete-task'),
 };
 const validCode = /^b1\.(?:[0-9a-f]{32}|uhCkk[A-Za-z0-9_-]{48})$/;
-let client, deployment, identity, lobby, state, poll;
+let client, deployment, gateway, identity, lobby, state, poll;
 let busy = false, refreshing = false, generation = 0;
 let role = null, rolePending = false, nextRoleRead = 0;
 
@@ -208,7 +208,7 @@ async function refresh() {
   try {
     const status = await hwc.getConnectionStatus();
     if (version !== generation) return;
-    if (!status?.authenticated || !status.wsHealthy) {
+    if (status?.linkerUrl !== gateway || !status.authenticated || !status.wsHealthy) {
       clearRole();
       setStatus('error', 'Connection unavailable');
       buttons();
@@ -243,7 +243,7 @@ async function refresh() {
   }
 }
 
-async function init() {
+async function init(retry = false) {
   if (busy) return;
   generation++;
   clearInterval(poll);
@@ -258,9 +258,15 @@ async function init() {
       await new Promise(resolve => setTimeout(resolve, 200));
     const hwc = window.holochain;
     if (!hwc?.isWebConductor) throw Error('Holochain browser extension not detected. Install the verified HWC extension.');
-    const response = await fetch('/deployment.json', {cache: 'no-store'});
-    if (!response.ok) throw Error('The verified hApp deployment manifest is unavailable.');
+    const [response, settings] = await Promise.all(['/deployment.json', '/browser-config.json']
+      .map(path => fetch(path, {cache: 'no-store', redirect: 'error'})));
+    if (!response.ok || !settings.ok) throw Error('The verified deployment settings are unavailable.');
     deployment = await response.json();
+    const config = await settings.json();
+    const endpoint = new URL(config.gateway_origin);
+    if (config.frontend_origin !== location.origin || endpoint.protocol !== 'https:' ||
+        endpoint.origin !== config.gateway_origin) throw Error('Invalid HTTPS gateway configuration.');
+    gateway = endpoint.origin;
     if (!deployment.network_seed || !deployment.dna_hash || !deployment.host_agent_pub_key)
       throw Error('Invalid deployment manifest.');
     await hwc.connect();
@@ -270,10 +276,16 @@ async function init() {
       throw Error('Install the verified Imposter hApp in this browser profile first.');
     if (hash(info.cells[0][0]) !== deployment.dna_hash || hash(info.cells[0][1]) !== key)
       throw Error('This profile has a different DNA or identity. Install the verified host-bound hApp.');
+    if (retry) {
+      const existing = await hwc.getConnectionStatus().catch(() => null);
+      if (existing?.linkerUrl !== gateway || !existing.authenticated || !existing.wsHealthy)
+        await hwc.configureNetwork({linkerUrl: gateway});
+    }
     for (let attempt = 0; attempt < 70; attempt++) {
       const connection = await hwc.getConnectionStatus();
       const network = await hwc.getNetworkStatus();
-      if (connection?.authenticated && connection.wsHealthy && network?.hasSession) {
+      if (connection?.linkerUrl === gateway && network?.linkerUrl === gateway &&
+          connection.authenticated && connection.wsHealthy && network.hasSession) {
         client = hwc;
         identity = key;
         break;
@@ -334,7 +346,7 @@ async function act(kind) {
 
 for (const kind of ['create', 'new', 'join', 'reopen', 'start', 'task'])
   controls[kind].addEventListener('click', () => void act(kind));
-controls.retry.addEventListener('click', () => void init());
+controls.retry.addEventListener('click', () => void init(true));
 code.addEventListener('input', buttons);
 void init();
 </script>
