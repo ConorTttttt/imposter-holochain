@@ -1,9 +1,9 @@
 diff --git a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..ee9232c901ee8f6973a25f668a08262232bebe08
+index 0000000000000000000000000000000000000000..20e7b489e6678501bbdf22a38a6de2f8fffc49ee
 --- /dev/null
 +++ b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,300 @@
 +//! Browser alpha lifecycle within one host-bound cell. Legacy cloned games
 +//! keep their original indexes and zome calls.
 +use super::*;
@@ -137,7 +137,11 @@ index 0000000000000000000000000000000000000000..ee9232c901ee8f6973a25f668a082622
 +    // including after a host restart or an interrupted Lobby/index write.
 +    let code = format!("{BROWSER_LOBBY_PREFIX}{}", ActionHashB64::from(result.action_address().clone()));
 +    if latest.action_address() != &input.previous_lobby {
-+        if app_entry::<Lobby>(latest).is_some_and(|l| l.code == code) {
++        if app_entry::<Lobby>(latest).is_some_and(|l| l.code == code)
++            && !query(ChainQueryFilter::new().include_entries(true))?.iter().any(|r| {
++                app_entry::<RoleCommit>(r).is_some_and(|c| &c.lobby == latest.action_address())
++            })
++        {
 +            return open_lobby(code, Some(latest), input.display_name);
 +        }
 +        return Err(browser_error("stale lobby: open the host's latest game"));
