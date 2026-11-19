@@ -1,7 +1,7 @@
 name: Verify browser alpha packaging
 on:
   push:
-    branches: [release/browser-alpha-rc1, followup/browser-alpha-operator]
+    branches: [release/browser-alpha-rc1, followup/browser-alpha-operator, feature/repeatable-browser-lobbies]
     paths:
       - '.github/workflows/browser-alpha-package.yml'
       - 'release/browser-alpha/**'

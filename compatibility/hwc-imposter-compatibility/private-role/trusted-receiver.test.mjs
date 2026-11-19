@@ -22,8 +22,8 @@ async function identity(){
      return new Uint8Array(await crypto.subtle.sign('Ed25519',k.privateKey,data));
    }}};
 }
-async function roleProof(seat=1,role=1){
- const salt=new Uint8Array(16).fill(8);
+async function roleProof(seat=1,role=1,saltByte=8){
+ const salt=new Uint8Array(16).fill(saltByte);
  const leaf=await sha(cat(new Uint8Array([0]),utf8('imposter:role:v1'),
    new Uint8Array([seat>>8,seat&255,role]),salt));
  const pad=await sha(cat(new Uint8Array([0]),utf8('imposter:pad:v1')));
@@ -141,9 +141,16 @@ test('native wrong round/host/seat and revoked session deny before plaintext dis
  const frame=f.hostSession.sent[0];
  f.game.phase='ended';
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/committed phase/);
- f.game.phase='playing';f.game.role_commit_action=hash(42);
+ f.game.phase='playing';
+ f.game.lobby_action=hash(41);
+ f.game.role_commit_action=hash(42);
+ f.game.merkle_root=(await roleProof(1,1,9)).root;
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/RoleCommit/);
- f.game.role_commit_action=hash(2);f.game.seats[1].agent=f.c.agent;
+ await assert.rejects(verifyRoleOpening({payload:f.proof.payload,seat:1,root:f.game.merkle_root}),/Merkle/);
+ f.game.lobby_action=hash(1);
+ f.game.role_commit_action=hash(2);
+ f.game.merkle_root=f.proof.root;
+ f.game.seats[1].agent=f.c.agent;
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/noncanonical|seat/);
  f.game.seats[1].agent=f.b.agent;f.bSession.revoke();
  await assert.rejects(f.guestSvc.receiveFromSocket(frame),/live registered/);
