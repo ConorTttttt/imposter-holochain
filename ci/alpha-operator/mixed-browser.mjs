@@ -167,14 +167,17 @@ async function allow(config, method, agent, host = false) {
 
 function action(browser, kind, id) {
   return browser.evaluate(({kind, id}) => {
-    window.addEventListener('imposter:action', ({detail}) => {
-      if (detail.kind === kind) {
-        // The event carries a public native action. Keep only its hash.
-        window.mixedBrowserAction = kind === 'start'
-          ? detail.record.role_commit
-          : detail.record.signed_action?.hashed?.hash;
-      }
-    });
+    // Clear the preceding action before the new asynchronous zome call.
+    delete window.mixedBrowserAction;
+    const receive = ({detail}) => {
+      if (detail.kind !== kind) return;
+      window.removeEventListener('imposter:action', receive);
+      // The event carries a public native action. Keep only its hash.
+      window.mixedBrowserAction = kind === 'start'
+        ? detail.record.role_commit
+        : detail.record.signed_action?.hashed?.hash;
+    };
+    window.addEventListener('imposter:action', receive);
     document.getElementById(id).click();
   }, {kind, id});
 }
