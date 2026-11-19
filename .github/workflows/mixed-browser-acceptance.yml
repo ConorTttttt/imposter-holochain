@@ -1,0 +1,163 @@
+name: Mixed Chromium and Firefox Desktop acceptance
+
+on:
+  push:
+    branches: [feature/firefox-android-hwc]
+    paths:
+      - '.github/workflows/mixed-browser-acceptance.yml'
+      - 'ci/alpha-operator/**'
+      - 'ci/installed-role/browser-demo.patch'
+      - 'compatibility/hwc-imposter-compatibility/**'
+      - 'release/browser-alpha/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mixed-browser-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cloud-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: pins
+        name: Read the unchanged operator pins
+        run: |
+          for key in game_commit hwc_commit node_version; do
+            printf '%s=%s\n' "$key" "$(jq -er ".${key}" release/browser-alpha/pins.json)" >> "$GITHUB_OUTPUT"
+          done
+          printf 'gateway_run=%s\n' "$(jq -er '.gateway.run_id' release/browser-alpha/pins.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pins.outputs.game_commit }}
+          path: game
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: ${{ steps.pins.outputs.hwc_commit }}
+          path: hwc
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Holo-Host/holo-web-conductor
+          ref: ${{ steps.pins.outputs.hwc_commit }}
+          path: firefox
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.pins.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: hwc/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.pins.outputs.gateway_run }}
+          name: agent3-h2hc-p0-security-${{ steps.pins.outputs.gateway_run }}
+          github-token: ${{ github.token }}
+          path: gateway-artifact
+      - name: Verify the exact operator gateway
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo_pins=release/browser-alpha/pins.json
+          artifact=$(jq -er .gateway.artifact_id "$repo_pins")
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" | jq -e --slurpfile pin "$repo_pins" '
+            (.expired | not) and
+            .workflow_run.id == $pin[0].gateway.run_id and
+            .workflow_run.head_sha == $pin[0].gateway.recipe_commit' >/dev/null
+          binary=gateway-artifact/role-gateway/h2hc-linker-linux-x86_64
+          printf '%s  %s\n' "$(jq -er .gateway.sha256 "$repo_pins")" "$binary" | sha256sum --check
+          test "$(cat gateway-artifact/role-gateway/h2hc-applied-source-commit.txt)" = "$(jq -er .gateway.source_commit "$repo_pins")"
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            substituters = https://holochain-ci.cachix.org https://cache.nixos.org
+            trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            max-jobs = 2
+            cores = 2
+      - uses: browser-actions/setup-firefox@v1
+        id: firefox
+      - name: Prepare Firefox and local HTTPS tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! command -v certutil >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y libnss3-tools
+          fi
+          gh release download v0.36.0 -R mozilla/geckodriver -p geckodriver-v0.36.0-linux64.tar.gz -D "$RUNNER_TEMP"
+          printf '%s  %s\n' 0bde38707eb0a686a20c6bd50f4adcc7d60d4f73c60eb83ee9e0db8f65823e04 "$RUNNER_TEMP/geckodriver-v0.36.0-linux64.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/geckodriver-v0.36.0-linux64.tar.gz" -C "$RUNNER_TEMP" geckodriver
+          gh release download v2.10.2 -R caddyserver/caddy -p caddy_2.10.2_linux_amd64.tar.gz -D "$RUNNER_TEMP"
+          printf '%s  %s\n' 747df7ee74de188485157a383633a1a963fd9233b71fbb4a69ddcbcc589ce4e2cc82dacf5dbbe136cb51d17e14c59daeb5d9bc92487610b0f3b93680b2646546 "$RUNNER_TEMP/caddy_2.10.2_linux_amd64.tar.gz" | sha512sum --check
+          tar -xzf "$RUNNER_TEMP/caddy_2.10.2_linux_amd64.tar.gz" -C "$RUNNER_TEMP" caddy
+      - name: Build the uninstrumented browser extensions
+        run: |
+          bash release/browser-alpha/build-extension.sh hwc
+          bash release/browser-alpha/build-firefox-extension.sh firefox "$RUNNER_TEMP/firefox-package"
+          (cd hwc && npx --no-install playwright install chromium)
+      - name: Archive the stock extensions and write their checksums
+        run: |
+          packages="$RUNNER_TEMP/mixed-extension-packages"
+          mkdir "$packages"
+          cp "$RUNNER_TEMP/firefox-package/firefox-desktop-hwc.zip" "$packages/"
+          python3 - "$packages/chromium-hwc.zip" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "release/browser-alpha")
+          from package import archive_extension
+          archive_extension(Path("hwc/packages/extension/dist-chrome"), Path(sys.argv[1]))
+          PY
+          (cd "$packages" && sha256sum chromium-hwc.zip firefox-desktop-hwc.zip > SHA256SUMS && sha256sum --check SHA256SUMS)
+          cat "$packages/SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mixed-browser-extension-packages
+          path: ${{ runner.temp }}/mixed-extension-packages/
+          if-no-files-found: error
+      - name: Run native Zome authorization regressions
+        working-directory: game
+        run: nix develop --no-write-lock-file --command cargo test --locked -p imposter-core
+      - name: Run release and role validation tests
+        run: |
+          python3 -m unittest discover -v -s release/browser-alpha -p '*_test.py'
+          python3 -m unittest discover -v -s ci/alpha-operator -p 'mixed_preflight_test.py'
+          node --test ci/alpha-operator/browser-setup.test.mjs ci/alpha-operator/operator-browser.test.mjs
+          node --import "$PWD/firefox/node_modules/fake-indexeddb/auto/index.mjs" --test \
+            compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
+          npm --prefix firefox run test --workspace @hwc/extension -- \
+            src/background/firefox-restricted-role.test.ts src/background/firefox-direct-executor.test.ts \
+            --minWorkers=1 --maxWorkers=2
+      - name: Run the genuine mixed-browser round on a disposable network
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/geckodriver" --host 127.0.0.1 --port 4444 >"$RUNNER_TEMP/geckodriver.local.log" 2>&1 &
+          driver=$!
+          trap 'kill "$driver" 2>/dev/null || true' EXIT
+          curl --retry 6 --retry-connrefused --retry-delay 1 --fail --silent http://127.0.0.1:4444/status >/dev/null
+          python3 ci/alpha-operator/mixed-browser-run.py fixture --game game --hwc hwc --firefox firefox \
+            --gateway gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 \
+            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json"
+      - name: Upload only anonymous stage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixed-browser-cloud-evidence
+          path: ${{ runner.temp }}/mixed-browser-evidence.json
+          if-no-files-found: warn

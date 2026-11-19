@@ -240,8 +240,8 @@ def https_request(origin, path, headers=None):
         raise
 
 
-def remote_preflight(public, release):
-    front, gateway = public["frontend_origin"], public["gateway_origin"]
+def preflight_frontend(public, release):
+    front = public["frontend_origin"]
     for path in ("/browser-setup.html", "/browser-setup.js", "/browser-demo.html", "/deployment.json",
                  "/" + Path(HAPP).name, "/browser-config.json"):
         connection, response = https_request(front, path)
@@ -254,6 +254,10 @@ def remote_preflight(public, release):
                         f"Served release bytes differ for {path}")
         finally:
             connection.close()
+
+
+def preflight_gateway(public):
+    front, gateway = public["frontend_origin"], public["gateway_origin"]
     for path, expected in (("/health", 200), ("/admin/agents", 404)):
         connection, response = https_request(gateway, path)
         try:
@@ -271,6 +275,11 @@ def remote_preflight(public, release):
                 "Gateway WSS upgrade failed")
     finally:
         connection.close()
+
+
+def remote_preflight(public, release):
+    preflight_frontend(public, release)
+    preflight_gateway(public)
     print("HTTPS assets, gateway health, admin isolation and WSS upgrade PASS")
     print("External three-player acceptance NOT EXECUTED")
 
