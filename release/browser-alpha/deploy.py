@@ -180,10 +180,23 @@ def verify_native_cli():
     require(re.search(r"\b0\.7\.0\b", hc_version), "Run native commands inside the pinned Holochain 0.7.0 Nix shell")
 
 
-def authority_cells(dna):
+DEFAULT_AUTHORITY_PORTS = (33555, 33557)
+
+
+def authority_ports(value):
+    ports = value.split(",")
+    if (len(ports) != 2 or any(not re.fullmatch(r"[0-9]{1,5}", item) for item in ports)):
+        raise ValueError("Specify two comma-separated native admin ports")
+    first, second = map(int, ports)
+    if first == second or not all(1024 <= port <= 65535 for port in (first, second)):
+        raise ValueError("Choose two distinct native admin ports between 1024 and 65535")
+    return first, second
+
+
+def authority_cells(dna, ports=DEFAULT_AUTHORITY_PORTS):
     verify_native_cli()
     agents = []
-    for port in (33555, 33557):
+    for port in ports:
         cells = json.loads(subprocess.check_output(
             ["hc", "client", "call", "--port", str(port), "list-cells"], text=True, timeout=20
         ))
@@ -194,7 +207,7 @@ def authority_cells(dna):
     return tuple(agents)
 
 
-def native_command(operation, release, public, root):
+def native_command(operation, release, public, root, ports=DEFAULT_AUTHORITY_PORTS):
     verify_native_cli()
     binding = root / ".imposter-authority.json"
     config = {
@@ -215,7 +228,7 @@ def native_command(operation, release, public, root):
                 "Native authorities were initialized for different release bytes or endpoints")
         # Holochain persists app interfaces. Attaching the same ports on
         # every restart can fail and the authorities only need private admin.
-        args = ["--force-admin-ports", "33555,33557", "run", "--all"]
+        args = ["--force-admin-ports", ",".join(map(str, ports)), "run", "--all"]
     password = getpass("Native authority Lair passphrase: ")
     require(bool(password), "Native authority passphrase is required")
     env = {key: value for key, value in os.environ.items() if not key.startswith("H2HC_LINKER_")}
@@ -285,6 +298,8 @@ def main():
     parser.add_argument("--release", type=Path)
     parser.add_argument("--release-commit")
     parser.add_argument("--manifest-sha256", help="Independently recorded release manifest checksum")
+    parser.add_argument("--native-admin-ports", type=authority_ports, default=DEFAULT_AUTHORITY_PORTS,
+                        help="Private admin ports for the two authorities (default: 33555,33557)")
     parser.add_argument("--agent")
     parser.add_argument("--role", choices=["host", "guest"])
     args = parser.parse_args()
@@ -315,10 +330,10 @@ def main():
         if args.operation == "gateway":
             run_gateway(release, public, paths)
         if args.operation in ("init-native", "run-native"):
-            native_command(args.operation, release, public, paths["native_authority_root"])
+            native_command(args.operation, release, public, paths["native_authority_root"], args.native_admin_ports)
         if args.operation == "native-status":
             dna = manifest["game"]["dna_hash"]
-            authority_cells(dna)
+            authority_cells(dna, args.native_admin_ports)
             print(f"Two separate local native authorities reported installed DNA {dna}")
         if args.operation in ("admit", "revoke"):
             require(args.agent and (args.operation == "revoke" or args.role), "Specify the public agent and admission role")

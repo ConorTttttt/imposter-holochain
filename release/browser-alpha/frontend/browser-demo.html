@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Imposter — Browser lobby</title>
+<style>
+:root{color-scheme:dark;font:16px/1.5 system-ui,-apple-system,sans-serif;background:#0b1120;color:#eef4ff}
+*{box-sizing:border-box}body{margin:0;padding:24px}main{max-width:780px;margin:auto}
+h1{margin:.2em 0;font-size:2rem;letter-spacing:.06em}p{color:#adbed8}
+header{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap}
+.badge{border:1px solid #546e99;padding:6px 12px;border-radius:50px;font-size:.87rem}
+.badge[data-status=ready]{color:#7be4ad;border-color:#348458}
+.badge[data-status=error]{color:#ffb3b3;border-color:#b64848}
+.panel{border:1px solid #344563;border-radius:16px;background:#152037;padding:22px;margin:20px 0}
+label{display:block;margin:0 0 15px;color:#d6e2f8;font-weight:600}
+input{width:100%;padding:12px 14px;margin-top:6px;border-radius:8px;border:1px solid #587095;background:#0b1426;color:#fff;font:inherit}
+input:focus-visible,button:focus-visible{outline:3px solid #8bbcff}
+.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
+button{padding:12px 20px;background:#3378e9;border:0;border-radius:8px;color:white;font:700 1rem system-ui;cursor:pointer}
+button.secondary{background:#304461}button:disabled{opacity:.4;cursor:not-allowed}
+#notice{min-height:24px;margin-top:12px;color:#bcd2fa}#notice[data-error=true]{color:#ffb3b3}
+#seat-list{display:grid;gap:10px;list-style:none;padding:0}
+#seat-list li{display:flex;justify-content:space-between;gap:10px;border:1px solid #405273;border-radius:8px;padding:10px 14px}
+#my-role{font-weight:600;color:#e3edff}
+#active-code{font-size:1.1rem;color:#eef4ff}
+[hidden]{display:none!important}
+small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
+</style>
+</head>
+<body><main>
+<header><div><h1>IMPOSTER</h1><p>Three-player browser demo</p></div>
+<span id="connection-state" class="badge" data-status="connecting" role="status">Connecting…</span></header>
+<section class="panel" aria-label="Join or host lobby">
+<label for="player-name">Your display name<input id="player-name" maxlength="24" autocomplete="nickname" placeholder="Player name"></label>
+<label for="room-code">Lobby code<input id="room-code" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Paste the host's lobby code"></label>
+<div class="actions">
+<button id="create-lobby" type="button" hidden disabled>Create Lobby</button>
+<button id="new-game" type="button" hidden disabled>New Game</button>
+<button id="join-lobby" type="button" disabled>Join Lobby</button>
+<button id="reopen-lobby" class="secondary" type="button" disabled>Open Joined Lobby</button>
+<button id="retry-connection" class="secondary" type="button">Retry Connection</button>
+</div>
+<p id="notice" aria-live="polite">Checking the Holochain browser extension…</p>
+</section>
+<section class="panel" aria-label="Lobby players">
+<h2>Lobby <span id="seat-count">0/3</span></h2>
+<p id="active-code-row" hidden>Lobby code <strong><code id="active-code"></code></strong></p>
+<p id="lobby-phase" aria-live="polite">Waiting for verified network state…</p>
+<ol id="seat-list" aria-live="polite"></ol>
+</section>
+<section class="panel" aria-label="Game phase and your private role">
+<h2>Round status</h2>
+<p id="round-state" aria-live="polite">Waiting for verified game phase…</p>
+<p id="my-role" aria-live="polite">Not assigned — roles stay private until the host deals.</p>
+<div class="actions">
+<button id="start-round" type="button" hidden disabled>Start round</button>
+<button id="complete-task" class="secondary" type="button" hidden disabled>Align Engine Output</button>
+</div>
+<p id="task-progress" aria-live="polite" hidden></p>
+</section>
+<p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. Share the active lobby code with your guests. Open Joined Lobby recovers a seat you already hold.</small></p>
+</main>
+<script type="module">
+const $ = id => document.getElementById(id);
+const code = $('room-code'), name = $('player-name'), notice = $('notice'), badge = $('connection-state');
+const controls = {
+  create: $('create-lobby'), new: $('new-game'), join: $('join-lobby'), reopen: $('reopen-lobby'),
+  retry: $('retry-connection'), start: $('start-round'), task: $('complete-task'),
+};
+const validCode = /^b1\.(?:[0-9a-f]{32}|uhCkk[A-Za-z0-9_-]{48})$/;
+let client, deployment, gateway, identity, lobby, state, poll;
+let busy = false, refreshing = false, generation = 0;
+let role = null, rolePending = false, nextRoleRead = 0;
+
+function bytes(value) {
+  if (value instanceof Uint8Array) return value;
+  if (Array.isArray(value)) return Uint8Array.from(value);
+  if (Array.isArray(value?.data)) return Uint8Array.from(value.data);
+  const keys = Object.keys(value ?? {});
+  if (keys.length === 39 && keys.every((key, index) => key === String(index))) {
+    return Uint8Array.from(keys.map(key => value[key]));
+  }
+  throw Error('The extension returned invalid Holochain data.');
+}
+
+function hash(value) {
+  const data = bytes(value);
+  if (data.length !== 39) throw Error('The extension returned an incomplete Holochain hash.');
+  return 'u' + btoa(String.fromCharCode(...data)).replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function setStatus(status, label) {
+  badge.dataset.status = status;
+  badge.textContent = label;
+}
+
+function message(label, error = false) {
+  notice.dataset.error = String(error);
+  notice.textContent = label;
+}
+
+function errorText(error) {
+  const value = String(error?.message || error || 'Unknown error');
+  if (/lobby not found|not yet visible/i.test(value)) return 'Lobby not found yet. Check the code and try again.';
+  if (/game full/i.test(value)) return 'This lobby is full.';
+  if (/lobby is completed/i.test(value)) return 'This lobby is completed. Use Open Joined Lobby if you already have a seat.';
+  if (/already started/i.test(value)) return 'This round has started. Use Open Joined Lobby if you already have a seat.';
+  if (/no seat/i.test(value)) return 'This identity has no seat in that lobby.';
+  if (/stale lobby/i.test(value)) return 'Open the latest lobby code before starting another game.';
+  if (/only the DNA-bound host/i.test(value)) return 'Only the authenticated host can do that.';
+  if (/network|socket|connect|time.?out|auth|session|fetch/i.test(value))
+    return 'Connection unavailable. Check gateway access and try Retry Connection.';
+  return value.slice(0, 220);
+}
+
+function buttons() {
+  const ready = client && identity && badge.dataset.status === 'ready' && !busy;
+  const host = identity && identity === deployment?.host_agent_pub_key;
+  controls.create.hidden = !host || Boolean(lobby);
+  controls.create.disabled = !ready || controls.create.hidden;
+  controls.new.hidden = !host || state?.phase !== 'ended';
+  controls.new.disabled = !ready || controls.new.hidden;
+  controls.join.disabled = controls.reopen.disabled = !ready || !validCode.test(code.value.trim());
+  controls.retry.disabled = busy;
+  const publish = state?.phase === 'playing' && !state.tasks?.length;
+  controls.start.hidden = !state?.is_host || state.players.length !== state.player_count ||
+    (state.phase !== 'lobby' && !publish);
+  controls.start.disabled = !ready || controls.start.hidden;
+  controls.start.textContent = publish ? 'Publish task' : 'Start round';
+  controls.task.hidden = role !== 0 || state?.phase !== 'playing' || !state.tasks?.some(task => task.id === 0);
+  controls.task.disabled = !ready || controls.task.hidden || state?.my_tasks_done?.includes(0);
+}
+
+function render() {
+  const count = state?.player_count ?? 3;
+  const players = state?.players ?? [];
+  $('active-code-row').hidden = !state?.code;
+  $('active-code').textContent = state?.code ?? '';
+  $('seat-count').textContent = players.length + '/' + count;
+  const phase = state?.phase;
+  const labels = {lobby: 'Lobby', playing: 'Playing', ended: 'Ended'};
+  const result = {crew_win: 'Crew wins', impostors_win: 'Impostors win'}[state?.result?.outcome];
+  $('round-state').textContent = phase
+    ? 'Phase: ' + (labels[phase] ?? phase) + (result ? ' · ' + result : '')
+    : 'Waiting for an active lobby.';
+  const lobbyStatus = {
+    lobby: players.length === count ? 'Lobby full' : 'Waiting for players',
+    playing: 'Round in progress', ended: 'Lobby ended',
+  };
+  $('lobby-phase').textContent = phase ? lobbyStatus[phase] +
+    (state.my_seat == null ? ' · No seat' : ' · Your seat: ' + (state.my_seat + 1))
+    : 'Create a lobby or enter a lobby code to join.';
+  const progress = $('task-progress');
+  progress.hidden = !state?.tasks?.length;
+  progress.textContent = progress.hidden ? '' : `Task completions: ${state.result?.tasks_done ?? state.tasks_done}/${state.task_target}`;
+  const visibleRole = phase === 'ended' ? state.my_role : role;
+  $('my-role').textContent = visibleRole === 0 || visibleRole === 1
+    ? 'Your verified role: ' + (visibleRole === 0 ? 'Crewmate' : 'Impostor')
+    : phase === 'playing' && state.my_seat != null
+      ? 'Awaiting verified private role delivery.'
+      : 'No private role assigned.';
+  const seats = $('seat-list');
+  seats.replaceChildren();
+  for (let index = 0; index < count; index++) {
+    const player = players[index];
+    const row = document.createElement('li');
+    const playerName = document.createElement('span');
+    const seat = document.createElement('small');
+    playerName.textContent = player?.name ?? 'Open seat';
+    seat.textContent = 'Seat ' + (index + 1) + (player?.is_host ? ' · Host' : '');
+    row.append(playerName, seat);
+    seats.append(row);
+  }
+  buttons();
+}
+
+function call(hwc, fn_name, payload = null) {
+  return hwc.callZome({zome_name: 'game', fn_name, payload});
+}
+
+function clearRole() {
+  role = null;
+  nextRoleRead = 0;
+}
+
+async function readRole(hwc, action, version) {
+  if (rolePending || Date.now() < nextRoleRead) return;
+  rolePending = true;
+  nextRoleRead = Date.now() + 3500;
+  let value;
+  try {
+    value = await call(hwc, 'get_browser_lobby_role', action);
+  } catch {
+    value = null;
+  } finally {
+    rolePending = false;
+  }
+  if (version === generation && lobby && hash(action) === hash(lobby) && state?.phase === 'playing') {
+    role = value === 0 || value === 1 ? value : null;
+    render();
+  }
+}
+
+async function refresh() {
+  if (!client || busy || refreshing) return;
+  const hwc = client, version = generation;
+  refreshing = true;
+  try {
+    const status = await hwc.getConnectionStatus();
+    if (version !== generation) return;
+    if (status?.linkerUrl !== gateway || !status.authenticated || !status.wsHealthy) {
+      clearRole();
+      setStatus('error', 'Connection unavailable');
+      buttons();
+      $('my-role').textContent = 'Waiting for an authenticated gateway session.';
+      return;
+    }
+    setStatus('ready', 'Securely connected');
+    const selected = await call(hwc, 'get_selected_browser_lobby');
+    if (version !== generation) return;
+    const action = selected ? bytes(selected) : null;
+    if ((action && hash(action)) !== (lobby && hash(lobby))) {
+      clearRole();
+      state = null;
+      lobby = action;
+      render();
+    }
+    const snapshot = action ? await call(hwc, 'get_browser_game_state', action) : null;
+    if (version !== generation) return;
+    state = snapshot;
+    render();
+    if (state?.phase === 'playing' && state.my_seat != null) void readRole(hwc, action, version);
+    if (state?.phase === 'playing' && state.is_host && state.tasks_done >= state.task_target)
+      await call(hwc, 'finish_browser_round', action);
+  } catch (error) {
+    if (version === generation) {
+      clearRole();
+      render();
+      message(errorText(error), true);
+    }
+  } finally {
+    refreshing = false;
+  }
+}
+
+async function init(retry = false) {
+  if (busy) return;
+  generation++;
+  clearInterval(poll);
+  busy = true;
+  client = identity = lobby = state = null;
+  clearRole();
+  setStatus('connecting', 'Connecting…');
+  message('Connecting to the HWC extension…');
+  render();
+  try {
+    for (let attempt = 0; attempt < 100 && !window.holochain?.isWebConductor; attempt++)
+      await new Promise(resolve => setTimeout(resolve, 200));
+    const hwc = window.holochain;
+    if (!hwc?.isWebConductor) throw Error('Holochain browser extension not detected. Install the verified HWC extension.');
+    const [response, settings] = await Promise.all(['/deployment.json', '/browser-config.json']
+      .map(path => fetch(path, {cache: 'no-store', redirect: 'error'})));
+    if (!response.ok || !settings.ok) throw Error('The verified deployment settings are unavailable.');
+    deployment = await response.json();
+    const config = await settings.json();
+    const endpoint = new URL(config.gateway_origin);
+    if (config.frontend_origin !== location.origin || endpoint.protocol !== 'https:' ||
+        endpoint.origin !== config.gateway_origin) throw Error('Invalid HTTPS gateway configuration.');
+    gateway = endpoint.origin;
+    if (!deployment.network_seed || !deployment.dna_hash || !deployment.host_agent_pub_key)
+      throw Error('Invalid deployment manifest.');
+    await hwc.connect();
+    const key = hash(hwc.myPubKey);
+    const info = await hwc.appInfo('imposter-browser-poc');
+    if (info?.status !== 'enabled' || info.cells?.length !== 1)
+      throw Error('Install the verified Imposter hApp in this browser profile first.');
+    if (hash(info.cells[0][0]) !== deployment.dna_hash || hash(info.cells[0][1]) !== key)
+      throw Error('This profile has a different DNA or identity. Install the verified host-bound hApp.');
+    if (retry) {
+      const existing = await hwc.getConnectionStatus().catch(() => null);
+      if (existing?.linkerUrl !== gateway || !existing.authenticated || !existing.wsHealthy)
+        await hwc.configureNetwork({linkerUrl: gateway});
+    }
+    for (let attempt = 0; attempt < 70; attempt++) {
+      const connection = await hwc.getConnectionStatus();
+      const network = await hwc.getNetworkStatus();
+      if (connection?.linkerUrl === gateway && network?.linkerUrl === gateway &&
+          connection.authenticated && connection.wsHealthy && network.hasSession) {
+        client = hwc;
+        identity = key;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    if (!client) throw Error('Gateway session unavailable. Ask the operator to authorize your identity.');
+    setStatus('ready', 'Securely connected');
+    message('Browser identity verified.');
+    busy = false;
+    await refresh();
+    poll = setInterval(() => void refresh(), 1200);
+  } catch (error) {
+    client = identity = null;
+    setStatus('error', 'Connection unavailable');
+    message(errorText(error), true);
+  } finally {
+    busy = false;
+    buttons();
+  }
+}
+
+async function act(kind) {
+  if (!client || busy || controls[kind].disabled) return;
+  const display_name = name.value.trim() || 'Player';
+  const enteredCode = code.value.trim();
+  const calls = {
+    create: ['create_browser_lobby', {display_name}, 'Creating lobby…'],
+    new: ['new_browser_game', {previous_lobby: lobby, display_name}, 'Creating a new game…'],
+    join: ['join_browser_lobby', {code: enteredCode, display_name}, 'Joining lobby…'],
+    reopen: ['reopen_browser_lobby', enteredCode, 'Opening joined lobby…'],
+    start: ['start_browser_round', lobby, 'Starting round…'],
+    task: ['complete_browser_task', lobby, 'Completing task…'],
+  };
+  const [fn, payload, pending] = calls[kind];
+  const selection = ['create', 'new', 'join', 'reopen'].includes(kind);
+  generation++;
+  busy = true;
+  buttons();
+  message(pending);
+  try {
+    const record = await call(client, fn, payload);
+    if (selection) {
+      lobby = state = null;
+      clearRole();
+      render();
+    }
+    window.dispatchEvent(new CustomEvent('imposter:action', {detail: {kind, record}}));
+    message(selection ? 'Lobby selected.' : kind === 'start' ? 'Round started.' : 'Task complete.');
+  } catch (error) {
+    message(errorText(error), true);
+  } finally {
+    busy = false;
+    buttons();
+    await refresh();
+  }
+}
+
+for (const kind of ['create', 'new', 'join', 'reopen', 'start', 'task'])
+  controls[kind].addEventListener('click', () => void act(kind));
+controls.retry.addEventListener('click', () => void init(true));
+code.addEventListener('input', buttons);
+void init();
+</script>
+</body></html>

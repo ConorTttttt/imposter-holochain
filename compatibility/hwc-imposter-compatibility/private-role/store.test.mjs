@@ -226,3 +226,29 @@ test('existing version-2 trusted recipient records survive the version-3 action 
  assert.deepEqual(await upgraded.getPinnedRoleCommit(d,a),c);
  upgraded.close();
 });
+
+test('browser lobby selection retains distinct immutable commitments and the cell replay ledger', async () => {
+ const name = 'imposter-browser-repeatable-pins';
+ const d = dna(73), a = agent(74), sender = agent(75);
+ const first = commit(76), second = commit(77), firstRound = commit(78), secondRound = commit(79);
+ const store = await openRoleStore(name);
+ await store.pinNativeLobby(d, a, first, {browser: true});
+ await store.pinTrustedRoleCommit(d, a, first, firstRound);
+ await store.reserve(replay(d, a, sender, firstRound, 1));
+ await store.pinNativeLobby(d, a, second, {browser: true});
+ assert.deepEqual(await store.getSelectedBrowserLobby(d, a), second);
+ assert.equal(await store.getPinnedRoleCommit(d, a), null);
+ await assert.rejects(store.pinTrustedRoleCommit(d, a, first, firstRound), /Lobby or RoleCommit/);
+ await assert.rejects(store.reserve(replay(d, a, sender, secondRound, 1)), /replay/);
+ await store.pinTrustedRoleCommit(d, a, second, secondRound);
+ store.close();
+
+ const reopened = await openRoleStore(name);
+ assert.deepEqual(await reopened.getSelectedBrowserLobby(d, a), second);
+ assert.deepEqual(await reopened.getPinnedRoleCommit(d, a, second), secondRound);
+ assert.equal(await reopened.getPinnedRoleCommit(d, a, first), null);
+ await reopened.pinNativeLobby(d, a, first, {browser: true});
+ assert.deepEqual(await reopened.getPinnedRoleCommit(d, a, first), firstRound);
+ await assert.rejects(reopened.pinTrustedRoleCommit(d, a, first, secondRound), /Lobby or RoleCommit/);
+ reopened.close();
+});
