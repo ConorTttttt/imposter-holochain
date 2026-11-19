@@ -203,14 +203,14 @@ export function courseGame(taskId: number, title: string, rng: Rng): MiniGame {
 
 export const SCAN_HOLD_MS = 2200;
 
-export function scanGame(taskId: number, title: string, now: number): MiniGame {
+export function scanGame(taskId: number, title: string, now: number, publicReveal = true): MiniGame {
   const startedAt = now;
   const pct = (n: number) => Math.min(100, ((n - startedAt) / SCAN_HOLD_MS) * 100);
   const ready = (n: number) => n - startedAt >= SCAN_HOLD_MS;
   return {
     taskId,
     title,
-    html: (now) => `<p class="muted">Stand still in the scanner. This shows everyone your role — for good.</p>
+    html: (now) => `<p class="muted">Stand still in the scanner.${publicReveal ? " This shows everyone your role — for good." : ""}</p>
       <div class="mg-gauge"><div class="mg-fill" style="width:${pct(now)}%"></div></div>
       <button class="primary" data-act="mg" data-mg="scan" ${ready(now) ? "" : "disabled"}>${
         ready(now) ? "Confirm scan" : "Scanning…"

@@ -77,11 +77,19 @@ def browser_config(public):
     return {key: public[key] for key in ("frontend_origin", "gateway_origin")}
 
 
-def proxy_config(public, paths):
+def proxy_config(public, paths, movement_port=None):
     routes = " ".join("/" + file for file in sorted(FRONTEND))
+    movement = ""
+    if movement_port is not None:
+        require(type(movement_port) is int and 1 <= movement_port <= 65535 and movement_port != 8090,
+                "Use a separate local port for the browser movement relay")
+        movement = f"""
+    handle /gameplay-movement {{
+        reverse_proxy 127.0.0.1:{movement_port}
+    }}"""
     return f"""{public['frontend_origin']} {{
     header X-Content-Type-Options nosniff
-    redir / /browser-setup.html 302
+    redir / /browser-setup.html 302{movement}
     @alpha path {routes}
     handle @alpha {{
         header Cache-Control "no-store"
@@ -294,6 +302,7 @@ def main():
     parser.add_argument("--release", type=Path)
     parser.add_argument("--release-commit")
     parser.add_argument("--manifest-sha256", help="Independently recorded release manifest checksum")
+    parser.add_argument("--movement-port", type=int, help="Enable the optional local gameplay movement relay in render-proxy")
     parser.add_argument("--agent")
     parser.add_argument("--role", choices=["host", "guest"])
     args = parser.parse_args()
@@ -305,7 +314,7 @@ def main():
             print("Strict URL and filesystem separation checks PASS")
             return
         if args.operation == "render-proxy":
-            print(proxy_config(public, paths), end="")
+            print(proxy_config(public, paths, args.movement_port), end="")
             return
         if args.operation == "bootstrap-site":
             version = activate_site(root, {name: (HERE / "frontend" / name).read_bytes() for name in SETUP})

@@ -2,13 +2,14 @@ name: Mixed Chromium and Firefox Desktop acceptance
 
 on:
   push:
-    branches: [feature/firefox-android-hwc]
+    branches: [feature/firefox-android-hwc, feature/browser-full-gameplay]
     paths:
       - '.github/workflows/mixed-browser-acceptance.yml'
       - 'ci/alpha-operator/**'
       - 'ci/installed-role/browser-demo.patch'
       - 'compatibility/hwc-imposter-compatibility/**'
       - 'release/browser-alpha/**'
+      - 'ui/**'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +24,10 @@ jobs:
   cloud-fixture:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        round: ${{ fromJSON(github.ref == 'refs/heads/feature/browser-full-gameplay' && '["tasks","ejection"]' || '["tasks"]') }}
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -126,7 +131,7 @@ jobs:
           cat "$packages/SHA256SUMS"
       - uses: actions/upload-artifact@v4
         with:
-          name: mixed-browser-extension-packages
+          name: mixed-browser-extension-packages${{ matrix.round == 'ejection' && '-ejection' || '' }}
           path: ${{ runner.temp }}/mixed-extension-packages/
           if-no-files-found: error
       - name: Run native Zome authorization regressions
@@ -142,22 +147,44 @@ jobs:
           npm --prefix firefox run test --workspace @hwc/extension -- \
             src/background/firefox-restricted-role.test.ts src/background/firefox-direct-executor.test.ts \
             --minWorkers=1 --maxWorkers=2
+      - name: Test and build the browser gameplay candidate
+        if: github.ref == 'refs/heads/feature/browser-full-gameplay'
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui run typecheck
+          npm --prefix ui test
+          bash release/browser-alpha/build-gameplay.sh game "$RUNNER_TEMP/browser-gameplay"
+          (cd "$RUNNER_TEMP/browser-gameplay" && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/feature/browser-full-gameplay'
+        with:
+          name: browser-gameplay-candidate${{ matrix.round == 'ejection' && '-ejection' || '' }}
+          path: ${{ runner.temp }}/browser-gameplay/
+          if-no-files-found: error
       - name: Run the genuine mixed-browser round on a disposable network
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+          GAMEPLAY_ROUND: ${{ matrix.round }}
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/geckodriver" --host 127.0.0.1 --port 4444 >"$RUNNER_TEMP/geckodriver.local.log" 2>&1 &
           driver=$!
           trap 'kill "$driver" 2>/dev/null || true' EXIT
           curl --retry 6 --retry-connrefused --retry-delay 1 --fail --silent http://127.0.0.1:4444/status >/dev/null
+          gameplay=()
+          if [[ "$GITHUB_REF" == refs/heads/feature/browser-full-gameplay ]]; then
+            gameplay=(--gameplay "$RUNNER_TEMP/browser-gameplay")
+            if [[ "$GAMEPLAY_ROUND" == ejection ]]; then
+              gameplay+=(--ejection)
+            fi
+          fi
           python3 ci/alpha-operator/mixed-browser-run.py fixture --game game --hwc hwc --firefox firefox \
             --gateway gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 \
-            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json"
+            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json" "${gameplay[@]}"
       - name: Upload only anonymous stage evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mixed-browser-cloud-evidence
+          name: mixed-browser-cloud-evidence${{ matrix.round == 'ejection' && '-ejection' || '' }}
           path: ${{ runner.temp }}/mixed-browser-evidence.json
           if-no-files-found: warn

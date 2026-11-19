@@ -4,6 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
+import {callEmergencyMeeting, checkChat, checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -251,6 +252,7 @@ async function round(config, agents) {
       document.getElementById('connection-state')?.dataset.status === 'ready'), 45000)));
   });
   const [host, ...guests] = browsers;
+  if (config.gameplay) await Promise.all(browsers.map((browser, i) => prepareMovement(browser, names[i])));
   const lobby = await step('HOST_CREATED_LOBBY', async () => {
     // A dedicated fixture or unused operator lobby is required. Never resume a played round.
     const state = await game(host, 'get_game_state');
@@ -286,6 +288,9 @@ async function round(config, agents) {
       await lobbyContains(browser, agents) && await browser.evaluate(() =>
         document.getElementById('seat-count')?.textContent === '3/3'))));
   });
+  if (config.gameplay) {
+    await step('CROSS_BROWSER_LOBBY_CHAT', () => checkChat(browsers, until, 'Lobby'));
+  }
   const commit = await step('START_ROUND_UI', async () => {
     await until(() => host.evaluate(() => !document.getElementById('start-round').disabled));
     await action(host, 'start', 'start-round');
@@ -330,6 +335,9 @@ async function round(config, agents) {
       document.getElementById('my-role')?.textContent.startsWith('Your verified role:')))));
     return values;
   });
+  if (config.gameplay) {
+    await step('THREE_BROWSERS_RENDER_AND_MOVE_NATIVE_SEATS', () => checkMovement(browsers, until));
+  }
   if (config.mode === 'fixture') {
     const firefox = browsers[2];
     await step('FIREFOX_GATEWAY_REVOCATION_AND_FRESH_RECEIPT', async () => {
@@ -337,6 +345,11 @@ async function round(config, agents) {
       await until(async () => !await session(firefox, config.gateway), 40000);
       const revoked = await own(firefox).catch(() => null);
       requireCheck(revoked !== 0 && revoked !== 1);
+      if (config.gameplay) {
+        await until(() => firefox.evaluate(() => document.getElementById('gameplay-map').hidden), 20000);
+        await until(() => host.evaluate(() => [...document.querySelectorAll('#movement-players li')]
+          .some(row => row.textContent === 'Map Firefox · Offline')), 20000);
+      }
       requireCheck(await session(host, config.gateway) && await session(guests[0], config.gateway));
       await allow(config, 'POST', agents[2]);
       await until(() => session(firefox, config.gateway), 95000);
@@ -346,6 +359,9 @@ async function round(config, agents) {
       }, 180000);
       await views();
     });
+    if (config.gameplay) {
+      await step('FIREFOX_REJOINS_MOVEMENT_AFTER_REAUTHORIZATION', () => checkMovement(browsers, until));
+    }
   } else {
     const previous = browsers[2];
     let firefox;
@@ -381,16 +397,71 @@ async function round(config, agents) {
       await views();
     });
   }
+  if (config.gameplay) {
+    const voteStage = config.gameplayEjection ? 'EMERGENCY_MEETING_NATIVE_EJECTION'
+      : 'EMERGENCY_MEETING_NATIVE_VOTE_COMMIT_REVEAL_AND_SKIP';
+    await step(voteStage, async () => {
+      const caller = roles.findIndex(role => !role.isCrew);
+      const targetSeat = config.gameplayEjection ? (await game(browsers[caller], 'get_game_state')).my_seat : null;
+      await callEmergencyMeeting(browsers[caller], names[caller], until);
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        return state.phase === 'meeting' && state.active_meeting?.trigger === 'emergency' &&
+          await browser.evaluate(() => document.getElementById('meeting-timer').textContent.includes('Discussion'));
+      }, 12000)));
+      await checkChat(browsers, until, 'Meeting');
+      const ballot = targetSeat === null ? 'vote-skip' : 'vote-seat-' + targetSeat;
+      await Promise.all(browsers.map(browser => until(() => tap(browser, ballot), 35000)));
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        const vote = state.active_meeting;
+        const resolved = targetSeat === null
+          ? state.phase === 'playing' && vote?.resolved?.kind === 'no_ejection'
+          : ['playing', 'ended'].includes(state.phase) && vote?.resolved?.kind === 'ejected' && vote.resolved.seat === targetSeat;
+        return resolved &&
+          vote.committed.length === 3 && vote.revealed.length === 3 &&
+          vote.votes.length === 3 && vote.votes.every(vote => vote.choice === targetSeat);
+      }, 45000)));
+      await Promise.all(browsers.map(browser => until(() => browser.evaluate(targetSeat => {
+        const status = document.getElementById('meeting-vote-status').textContent;
+        return targetSeat === null ? status.startsWith('No player ejected.') : status.includes(' was ejected.');
+      }, targetSeat), 15000)));
+      await Promise.all(browsers.map(browser => until(() => tap(browser, 'meeting-back'), 15000)));
+    });
+    if (config.gameplayEjection) {
+      await step('AUTHORITATIVE_CREW_WIN_AFTER_EJECTION', async () => {
+        await Promise.all(browsers.map(browser => until(async () => {
+          const state = await game(browser, 'get_game_state');
+          return state.phase === 'ended' && state.result?.outcome === 'crew_win' &&
+            await browser.evaluate(() => document.getElementById('round-state').textContent === 'Phase: Ended · Crew wins');
+        }, 45000)));
+      });
+      return;
+    }
+    const crew = [2, 0, 1].filter(index => roles[index].isCrew);
+    await step(crew[0] === 2 ? 'FIREFOX_CREW_COMPLETES_ENGINE_MINIGAME' : 'CHROMIUM_CREW_COMPLETES_ENGINE_MINIGAME', async () => {
+      await completeEngineTask(browsers[crew[0]], names[crew[0]], until);
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        return state.tasks_done === 1 && state.task_target === 2 && state.phase === 'playing' &&
+          await browser.evaluate(() => document.getElementById('task-progress').textContent === 'Task completions: 1/2');
+      })));
+    });
+    await step('SECOND_CREW_COMPLETES_ENGINE_MINIGAME', () => completeEngineTask(browsers[crew[1]], names[crew[1]], until));
+  }
   await step('ALIGN_ENGINE_OUTPUT_AND_AUTHORITATIVE_CREW_WIN', async () => {
-    const crew = browsers[roles.findIndex(role => role.isCrew)];
-    await until(() => tap(crew, 'complete-task'));
+    const target = config.gameplay ? 2 : 1;
+    if (!config.gameplay) {
+      const crew = browsers[roles.findIndex(role => role.isCrew)];
+      await until(() => tap(crew, 'complete-task'));
+    }
     await Promise.all(browsers.map(browser => until(async () => {
-      const rendered = await browser.evaluate(() =>
+      const rendered = await browser.evaluate(target =>
         document.getElementById('round-state')?.textContent === 'Phase: Ended · Crew wins'
-        && document.getElementById('task-progress')?.textContent === 'Task completions: 1/1');
+        && document.getElementById('task-progress')?.textContent === `Task completions: ${target}/${target}`, target);
       if (!rendered) return false;
       const state = await game(browser, 'get_game_state');
-      return state.phase === 'ended' && state.tasks_done === 1 && state.task_target === 1
+      return state.phase === 'ended' && state.tasks_done === target && state.task_target === target
         && state.result?.outcome === 'crew_win';
     })));
   });
