@@ -48,6 +48,51 @@ Unpack `firefox-desktop-hwc.zip` into a dedicated directory. Create or select a 
 
 ## Desktop mixed-round acceptance
 
+### Hosted fixture
+
+The `Mixed Chromium and Firefox Desktop acceptance` workflow runs on feature-branch pushes and supports manual dispatch when the workflow is available on the default branch. It creates two disposable native Holochain 0.7.0 authorities, an authenticated gateway from the exact pinned executable, and three real browser profiles. The host-bound hApp is assembled by the operator release builder from the pinned sources. The workflow drives the stock browser setup and game pages, including **Start round** and **Align Engine Output**.
+
+Before the task, all three browsers must independently read the exact native Lobby, RoleCommit, Merkle root and three canonical seats. The two guests must obtain their own role from the installed receiver while the round is playing and public role reveals are absent. The host verifies its local native opening under the existing host contract. Gateway session readiness and queued frames are separate from recipient verification. In the fixture only, the workflow revokes the Firefox admission, checks that the verified role becomes unavailable, and requires another verified role after normal reauthorization. The persistence and Firefox transport suites separately check replay reservations, recipient binding, rollback, lease rotation and action pinning. The report contains only stage names and pass/fail results.
+
+### Operator runner
+
+Use a trusted Linux runner with authorized access to both private HTTPS origins, a verified release, and three dedicated, closed acceptance profiles. Use the exact Chromium host profile bound to that hApp and two distinct admitted guests, one for Chromium and one for Firefox. Approve the site and install the exact hApp in each profile before staging it. The Chromium extension path must be the same unpacked directory used to provision those profiles. The Firefox development package has a fixed add-on ID and uses Mozilla’s temporary add-on storage settings for the test profile.
+
+The runner takes a read-only view of the existing gateway SQLite admission database. It never needs the gateway admin secret. Keep the input file and referenced profiles and database owner-only. Supply the accepted release manifest SHA-256 and the Firefox ZIP SHA-256 from their trusted build outputs. The configuration looks like this:
+
+```json
+{
+  "public": {
+    "frontend_origin": "https://frontend.example.ts.net",
+    "gateway_origin": "https://gateway.example.ts.net"
+  },
+  "release": "/srv/imposter/verified-release",
+  "release_commit": "<exact release source commit>",
+  "release_manifest_sha256": "<trusted release manifest SHA-256>",
+  "admission_database": "/srv/imposter/gateway/sessions.sqlite",
+  "profiles": [
+    "/srv/imposter/test/host-chromium",
+    "/srv/imposter/test/guest-chromium",
+    "/srv/imposter/test/guest-firefox"
+  ],
+  "chromium_extension": "/srv/imposter/test/chromium-hwc",
+  "firefox_package": "/srv/imposter/test/firefox-package",
+  "firefox_sha256": "<trusted firefox-desktop-hwc.zip SHA-256>",
+  "hwc_checkout": "/srv/imposter/test/pinned-hwc-checkout"
+}
+```
+
+The trusted runner needs Node 22.22.0, Python 3, the pinned HWC checkout with its Playwright dependencies and Chromium installed, and Firefox 130 or later with Geckodriver bound to `127.0.0.1:4444`. Use `FIREFOX_BIN` if Firefox is outside the runner’s normal executable path. Keep the normal certificate trust settings for both browsers.
+
+```sh
+python3 ci/alpha-operator/mixed-browser-run.py operator \
+  --config /srv/imposter/test/private-input.json --report /srv/imposter/test/preflight.json
+```
+
+The preflight checks the served release and gateway reachability over HTTPS/WSS before starting profiles. It reports separate failures for an offline local Tailscale client, endpoint reachability, certificate trust, missing profile credentials, absent admission, a missing or different installed hApp, and failure to acquire an authenticated session. After a passing preflight, run the same command with `--round` and a new report path. This creates the first lobby in the deployed host-bound DNA and plays it once. A deployment that has already hosted a lobby needs a separately built, unused host-bound game with the same release pins. The runner refuses an existing lobby and leaves the original deployment intact. The hosted job handles only disposable infrastructure. Keep the private route and profiles on the trusted runner.
+
+### Live checklist
+
 - [ ] With the operator, reserve a fresh lobby on the existing private Tailscale HTTPS deployment. Use a Chromium host, Chromium guest and Firefox Desktop guest in three distinct profiles.
 - [ ] Open each profile’s setup page, connect HWC and approve the exact site. Record that the three public identities differ and have been admitted. Keep the identities and deployment address out of shared evidence.
 - [ ] Provision each profile and check that the setup page confirms the installed host-bound DNA and an authenticated gateway session. Record these stages separately.

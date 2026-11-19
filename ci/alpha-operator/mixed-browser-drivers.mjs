@@ -30,7 +30,10 @@ export async function launchFirefox(config, profile) {
       signal: AbortSignal.timeout(95000),
     });
     const {value} = await response.json();
-    if (!response.ok) throw Error('Firefox WebDriver request failed');
+    if (!response.ok) {
+      if (value?.error === 'insecure certificate') throw Error('FIREFOX_CERTIFICATE_TRUST');
+      throw Error('Firefox WebDriver request failed');
+    }
     return value;
   }
   const {sessionId} = await request('POST', '/session', {capabilities: {alwaysMatch: {
@@ -41,7 +44,6 @@ export async function launchFirefox(config, profile) {
       prefs: {
         'extensions.webextensions.keepStorageOnUninstall': true,
         'extensions.webextensions.keepUuidOnUninstall': true,
-        'network.proxy.type': 0,
       },
     },
   }}});

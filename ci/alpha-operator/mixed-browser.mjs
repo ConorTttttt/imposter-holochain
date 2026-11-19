@@ -57,11 +57,24 @@ function tap(browser, id) {
   }, id);
 }
 
-async function setup(browser) {
-  await browser.navigate('/browser-setup.html');
-  await until(() => browser.evaluate(() => window.holochain?.isWebConductor === true), 20000);
-  requireCheck(await tap(browser, 'connect'));
-  return until(() => browser.evaluate(() => document.getElementById('public-key')?.value), 28000);
+async function setup(browser, label) {
+  try {
+    await browser.navigate('/browser-setup.html');
+  } catch (error) {
+    throw new AcceptanceFailure(error.message === 'FIREFOX_CERTIFICATE_TRUST'
+      ? error.message : `${label}_SETUP_NAVIGATION`);
+  }
+  try {
+    await until(() => browser.evaluate(() => window.holochain?.isWebConductor === true), 20000);
+  } catch {
+    throw new AcceptanceFailure(`${label}_HWC_INJECTION`);
+  }
+  try {
+    await until(() => tap(browser, 'connect'), 15000);
+    return await until(() => browser.evaluate(() => document.getElementById('public-key')?.value), 28000);
+  } catch {
+    throw new AcceptanceFailure(`${label}_PROFILE_LAIR_OR_SITE_APPROVAL`);
+  }
 }
 
 function game(browser, fn, payload = null) {
@@ -157,7 +170,8 @@ async function round(config, agents) {
   const views = async () => Promise.all(browsers.map((browser, index) => until(async () => {
     const state = await game(browser, 'get_game_state');
     if (state.phase !== 'playing' || !Number.isInteger(state.my_seat)
-        || state.result || state.role_reveals?.length) return false;
+        || state.result || state.role_reveals?.length || state.my_role != null
+        || state.players.some(player => player.role != null)) return false;
     const view = await game(browser, 'get_authoritative_game_view', {
       expected_lobby: raw(lobby), expected_role_commit: raw(commit),
       expected_recipient: raw(agents[index]), expected_seat: state.my_seat,
@@ -233,7 +247,7 @@ async function main(config, command) {
     const host = await launchChromium(config, config.profiles[0]);
     browsers.push(host);
     stage = 'FIXTURE_HOST_IDENTITY';
-    const key = await setup(host);
+    const key = await setup(host, 'CHROMIUM_HOST');
     requireCheck(publicKey.test(key));
     writeFileSync(config.hostFile, key + '\n', {mode: 0o600, flag: 'wx'});
     return;
@@ -245,7 +259,8 @@ async function main(config, command) {
     browsers.push(await launchFirefox(config, config.profiles[2]));
   });
   const agents = await step('DISTINCT_LAIR_IDENTITIES_AND_BOUND_HOST', async () => {
-    const agents = await Promise.all(browsers.map(browser => setup(browser)));
+    const agents = await Promise.all(browsers.map((browser, index) =>
+      setup(browser, ['CHROMIUM_HOST', 'CHROMIUM_GUEST', 'FIREFOX_GUEST'][index])));
     requireCheck(agents.every(agent => publicKey.test(agent)) && new Set(agents).size === 3);
     requireCheck(agents[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
     return agents;

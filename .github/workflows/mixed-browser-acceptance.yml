@@ -116,6 +116,7 @@ jobs:
       - name: Run release and role validation tests
         run: |
           python3 -m unittest discover -v -s release/browser-alpha -p '*_test.py'
+          python3 -m unittest discover -v -s ci/alpha-operator -p 'mixed_preflight_test.py'
           node --test ci/alpha-operator/browser-setup.test.mjs
           node --import "$PWD/firefox/node_modules/fake-indexeddb/auto/index.mjs" --test \
             compatibility/hwc-imposter-compatibility/private-role/*.test.mjs

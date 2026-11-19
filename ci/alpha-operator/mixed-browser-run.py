@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Run the mixed-browser harness against a disposable fixture or an operator release."""
 import argparse
+from base64 import b64encode
 from contextlib import contextmanager, redirect_stdout
+import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
-import re
 import secrets
+from shutil import which
 import signal
 import ssl
 import subprocess
@@ -14,13 +17,13 @@ import sys
 import tempfile
 import time
 from unittest.mock import patch
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 RELEASE = ROOT / "release/browser-alpha"
 sys.path.insert(0, str(RELEASE))
-from deploy import (authority_cells, configuration, gateway_environment, native_command,
+from deploy import (authority_cells, endpoint, gateway_environment, native_command,
                     proxy_config, release_files, remote_preflight)
 from package import EXTENSION, GATEWAY, SETUP, archive_extension, digest, verify
 from site_release import activate_site
@@ -59,7 +62,7 @@ def run_checked(command, stage, log, *, cwd=ROOT, env=None, input_text=None):
     gate(stage, result.returncode == 0)
 
 
-def native_args(game, operation, release, state):
+def native_args(operation, release, state):
     return ["nix", "develop", "--no-write-lock-file", "--command", "python3",
             str(__file__), "native", operation, str(release), str(state)]
 
@@ -67,16 +70,16 @@ def native_args(game, operation, release, state):
 @contextmanager
 def authorities(game, release, state, log):
     password = secrets.token_hex(32)
-    init = native_args(game, "init-native", release, state)
+    init = native_args("init-native", release, state)
     run_checked(init, "NATIVE_AUTHORITY_INITIALIZATION", log, cwd=game, input_text=password + "\n")
-    command = native_args(game, "run-native", release, state)
+    command = native_args("run-native", release, state)
     with log.open("ab") as stream:
         child = subprocess.Popen(command, cwd=game, stdin=subprocess.PIPE,
                                  stdout=stream, stderr=stream, text=True, start_new_session=True)
         try:
             child.stdin.write(password + "\n")
             child.stdin.close()
-            check = native_args(game, "wait-native", release, state)
+            check = native_args("wait-native", release, state)
             run_checked(check, "TWO_EXACT_NATIVE_AUTHORITIES", log, cwd=game)
             gate("NATIVE_AUTHORITY_PROCESS", child.poll() is None)
             print("TWO_EXACT_NATIVE_AUTHORITIES=PASS", flush=True)
@@ -123,21 +126,32 @@ def config_with_release(config, manifest):
 
 
 def browser_fixture_tls(scratch, firefox, log):
+    authority = scratch / "local-ca.crt"
+    authority_key = scratch / "local-ca.key"
     cert = scratch / "local.crt"
     key = scratch / "local.key"
+    request = scratch / "local.csr"
+    extensions = scratch / "server.ext"
+    extensions.write_text("basicConstraints=critical,CA:FALSE\n"
+                          "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                          "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost\n")
     run_checked([
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
-        "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
-        "-keyout", str(key), "-out", str(cert),
+        "-subj", "/CN=Imposter Local Fixture CA", "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", str(authority_key),
+        "-out", str(authority),
     ], "FIXTURE_TLS_CERTIFICATE", log)
-    for options in [["-N", "--empty-password"], ["-A", "-n", "Imposter fixture", "-t", "C,,", "-i", str(cert)]]:
+    run_checked(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=localhost",
+                 "-keyout", str(key), "-out", str(request)], "FIXTURE_TLS_CERTIFICATE", log)
+    run_checked(["openssl", "x509", "-req", "-in", str(request), "-CA", str(authority),
+                 "-CAkey", str(authority_key), "-CAcreateserial", "-out", str(cert),
+                 "-days", "1", "-extfile", str(extensions)], "FIXTURE_TLS_CERTIFICATE", log)
+    for options in [["-N", "--empty-password"], ["-A", "-n", "Imposter fixture", "-t", "C,,", "-i", str(authority)]]:
         run_checked(["certutil", "-d", "sql:" + str(firefox), *options], "FIXTURE_FIREFOX_TLS_TRUST", log)
     pem = subprocess.check_output(["openssl", "x509", "-in", cert, "-pubkey", "-noout"])
     der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "der"],
                          input=pem, capture_output=True, check=True).stdout
-    import base64
-    import hashlib
-    return cert, key, base64.b64encode(hashlib.sha256(der).digest()).decode()
+    return cert, key, authority, b64encode(hashlib.sha256(der).digest()).decode()
 
 
 def fixture(args, scratch):
@@ -145,7 +159,7 @@ def fixture(args, scratch):
     profiles = [scratch / name for name in ("host", "chromium-guest", "firefox-guest")]
     for profile in profiles:
         profile.mkdir(mode=0o700)
-    cert, key, spki = browser_fixture_tls(scratch, profiles[2], log)
+    cert, key, authority, spki = browser_fixture_tls(scratch, profiles[2], log)
     front_port, gateway_port = free_port(), free_port()
     while gateway_port == front_port:
         gateway_port = free_port()
@@ -190,22 +204,14 @@ def fixture(args, scratch):
         activate_site(paths["static_root"], release_files(release, public))
         gateway_env = {**gateway_environment(public, paths), "RUST_LOG": "warn"}
         with service([str(release / GATEWAY), "--address", "127.0.0.1", "--port", "8090"],
-                     8090, scratch, gateway_env), patch.dict(os.environ, {"SSL_CERT_FILE": str(cert)}):
+                     8090, scratch, gateway_env), patch.dict(os.environ, {"SSL_CERT_FILE": str(authority)}):
             with log.open("a") as stream, redirect_stdout(stream):
                 remote_preflight(public, release)
             with authorities(args.game, release, scratch / "native", log):
                 launch("round", config_with_release(config, manifest), scratch, args.report)
 
 
-def operator(args, scratch):
-    try:
-        gate("OPERATOR_CONFIGURATION_MISSING", private(args.config))
-        data = json.loads(args.config.read_text())
-        public, paths = configuration(data["public"], data["operator"])
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise GateError("OPERATOR_CONFIGURATION_MISSING") from error
-    release = Path(data["release"])
-    manifest = verify(release, data["release_commit"], manifest_sha256=data["release_manifest_sha256"])
+def check_operator_network(public, release):
     try:
         # Standard PKI and network reachability. This positively verifies HTTPS
         # and WSS, but says nothing about admission or encrypted receipt.
@@ -213,13 +219,42 @@ def operator(args, scratch):
     except ssl.SSLError as error:
         raise GateError("OPERATOR_TLS_TRUST_OR_CERTIFICATE") from error
     except OSError as error:
+        cli = which("tailscale")
+        if cli:
+            try:
+                status = subprocess.run([cli, "status", "--json"], capture_output=True,
+                                        timeout=5, check=False, text=True)
+                if json.loads(status.stdout).get("BackendState") in {"Stopped", "NeedsLogin", "NeedsMachineAuth"}:
+                    raise GateError("OPERATOR_TAILSCALE_OFFLINE") from error
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
         raise GateError("OPERATOR_NETWORK_OR_TAILSCALE_UNREACHABLE") from error
-    except (ValueError, KeyError) as error:
+    except (ValueError, KeyError, http.client.HTTPException) as error:
         raise GateError("OPERATOR_SERVED_RELEASE_OR_GATEWAY_MISMATCH") from error
+
+
+def operator(args, scratch):
+    try:
+        gate("OPERATOR_CONFIGURATION_MISSING", private(args.config))
+        data = json.loads(args.config.read_text())
+        public = {key: endpoint(data["public"][key], origin=True)
+                  for key in ("frontend_origin", "gateway_origin")}
+        gate("OPERATOR_CONFIGURATION_MISSING", len(set(public.values())) == 2)
+        admission_db = Path(data["admission_database"]).resolve()
+        release = Path(data["release"])
+        commit, checksum = data["release_commit"], data["release_manifest_sha256"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise GateError("OPERATOR_CONFIGURATION_MISSING") from error
+    gate("OPERATOR_RELEASE_PROVENANCE_REQUIRED", bool(commit and checksum))
+    try:
+        manifest = verify(release, commit, manifest_sha256=checksum)
+    except (OSError, ValueError, KeyError, BadZipFile) as error:
+        raise GateError("OPERATOR_RELEASE_VERIFICATION") from error
+    check_operator_network(public, release)
     profiles = [Path(path).resolve() for path in data["profiles"]]
-    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING",
-         len(profiles) == 3 and len(set(profiles)) == 3 and all(private(path, directory=True) for path in profiles))
-    gate("OPERATOR_ADMISSION_STATE_UNAVAILABLE", private(paths["gateway_session_db"]))
+    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 3 and len(set(profiles)) == 3
+         and all(private(path, directory=True) and any(path.iterdir()) for path in profiles))
+    gate("OPERATOR_ADMISSION_STATE_UNAVAILABLE", private(admission_db))
     chrome = Path(data["chromium_extension"]).resolve()
     chrome_check = scratch / "chrome-check.zip"
     archive_extension(chrome, chrome_check)
@@ -233,7 +268,7 @@ def operator(args, scratch):
         archive.extractall(firefox)
     config = {
         "mode": "operator", "frontend": public["frontend_origin"], "gateway": public["gateway_origin"],
-        "admissionDb": str(paths["gateway_session_db"]), "profiles": list(map(str, profiles)),
+        "admissionDb": str(admission_db), "profiles": list(map(str, profiles)),
         "hwc": str(Path(data["hwc_checkout"]).resolve()), "chromiumExtension": str(chrome),
         "firefoxExtension": str(firefox),
     }
@@ -267,7 +302,7 @@ def main():
     except GateError as error:
         report_failure(args.report, args.mode, str(error))
         raise SystemExit(1) from None
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError, RuntimeError):
+    except (OSError, ValueError, KeyError, TypeError, BadZipFile, subprocess.SubprocessError, RuntimeError):
         report_failure(args.report, args.mode, "RUNNER_OR_RELEASE_SETUP")
         raise SystemExit(1) from None
 
