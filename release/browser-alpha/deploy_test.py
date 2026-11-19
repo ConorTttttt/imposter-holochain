@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from deploy import admin_secret, browser_config, configuration, native_command, proxy_config
+from deploy import admin_secret, authority_ports, browser_config, configuration, native_command, proxy_config
 from package import EXTENSION, HAPP, archive_extension, check_extension, verify_public_bytes
 from site_release import FRONTEND, activate_site
 
@@ -98,7 +98,8 @@ class DeploymentTests(TestCase):
                     patch("deploy.subprocess.run", side_effect=generate) as run, \
                     patch("deploy.os.umask"):
                 native_command("init-native", release, self.public, authorities)
-                native_command("run-native", release, self.public, authorities)
+                native_command("run-native", release, self.public, authorities, authority_ports("33655,33657"))
+                self.assertIn("33655,33657", run.call_args.args[0])
                 self.assertNotIn("--ports", run.call_args.args[0])
                 with self.assertRaisesRegex(ValueError, "different release bytes or endpoints"):
                     native_command("run-native", release, {**self.public, "relay_url": "https://other.test"}, authorities)
