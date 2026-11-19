@@ -297,7 +297,9 @@ export function createInstalledHwcRoleRuntime({
     const cell=await installed(context.dnas[0].hash,context.agentPubKey);
     if(cell.contextId!==contextId)throw Error('role read requires the installed context');
     const held=await checked(cell);
-    if(expectedLobby!==null && !eq(held.lobby,exactly(expectedLobby,'action')))return null;
+    const selected=await held.store.getSelectedBrowserLobby(cell.dna,cell.agent);
+    if(expectedLobby===null ? Boolean(selected) : !eq(selected,exactly(expectedLobby,'action')))return null;
+    if(selected && !eq(held.lobby,selected))return null;
     const game=requireCurrentRoleState(await held.native.readCurrentGame(cell),cell);
     const seat=game.commit.seats.findIndex(agent=>eq(agent,cell.agent));
     if(seat<0)return null;
