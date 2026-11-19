@@ -10,7 +10,8 @@ if (!input || !output) throw new Error("Usage: node build-gameplay-page.mjs <pat
 const bundle = await build({
   stdin: {
     contents: `export { mountBrowserMap } from "./ui/src/browser/map.ts";
-      export { BROWSER_TASK_COUNTS, BROWSER_DEFAULT_TASK_COUNT, browserTaskList } from "./ui/src/browser/tasks.ts";`,
+      export { BROWSER_TASK_COUNTS, BROWSER_DEFAULT_TASK_COUNT, browserTaskList } from "./ui/src/browser/tasks.ts";
+      export { mountBrowserMeetings } from "./ui/src/browser/meetings.ts";`,
     resolveDir: root,
   },
   bundle: true, write: false, platform: "browser", format: "iife",
@@ -21,7 +22,12 @@ const map = `<section id="gameplay-map" class="panel" aria-label="Ship map" hidd
 <div class="gameplay-header"><h2 id="ship-location">Navigator Bridge</h2><span id="movement-status" role="status"></span></div>
 <canvas tabindex="0" aria-label="Ship map. Use WASD or the arrow keys to move."></canvas>
 <p>Focus the map, then use WASD or the arrow keys to move. Press E to use a nearby console.</p>
-<div class="actions"><button id="use-console" type="button" disabled>Use console (E)</button></div>
+<div class="actions">
+  <button id="use-console" type="button" disabled>Use console (E)</button>
+  <button id="call-emergency" class="secondary" type="button" disabled>Call emergency meeting</button>
+  <button id="report-body" class="secondary" type="button" hidden disabled>Report body</button>
+</div>
+<p id="map-meeting-status" role="status"></p>
 <p id="console-status" role="status"></p>
 <ul id="console-tasks" aria-label="Your tasks"></ul>
 <dialog id="console-game" aria-labelledby="console-title">
@@ -30,6 +36,13 @@ const map = `<section id="gameplay-map" class="panel" aria-label="Ship map" hidd
   <div class="console-body"></div>
 </dialog>
 <ol id="movement-players" aria-label="Player movement connections"></ol>
+</section>
+<section id="browser-meeting" class="panel" aria-label="Meeting" hidden>
+  <h2></h2>
+  <p id="meeting-timer"></p>
+  <p id="meeting-vote-status" role="status"></p>
+  <div class="actions" id="meeting-ballot"></div>
+  <button id="meeting-back" type="button" hidden>Back to the game</button>
 </section>`;
 
 function replaceOnce(html, needle, replacement) {
@@ -59,16 +72,20 @@ for(const count of imposterBrowserMap.BROWSER_TASK_COUNTS){
 // Inline the bundle to keep the exact static release inventory and hashing.
 const code = bundle.outputFiles[0].text;
 html = replaceOnce(html, '<script type="module">', '<script type="module">\n' + code +
-  '\nconst browserMap = imposterBrowserMap.mountBrowserMap();');
+  '\nconst browserMap = imposterBrowserMap.mountBrowserMap();' +
+  '\nconst browserMeeting = imposterBrowserMap.mountBrowserMeetings(updateButtons);');
 const taskButtons = ` task.hidden=!(verifiedRole===0&&latestState?.phase==='playing'&&
    latestState.tasks?.some(item=>item.id===demoTask.id));
  task.disabled=!ready||task.hidden||Boolean(latestState?.my_tasks_done?.includes(demoTask.id));`;
 html = replaceOnce(html, taskButtons, `
  $('task-count-label').hidden=identity!==meta?.host_agent_pub_key||Boolean(latestState?.code);
  taskCount.disabled=!ready;
- browserMap.update({authenticated: badge.dataset.status === 'ready', state: latestState,
+ const authenticated=badge.dataset.status==='ready';
+ const paused=browserMeeting.render(authenticated&&identity&&latestState?.code===meta?.network_seed?
+   {state:latestState,dna:meta.dna_hash,agent:identity,call:callMeeting,hash:holoHash,toBytes}:null);
+ browserMap.update({authenticated, state: paused?null:latestState,
    dna: meta?.dna_hash, seed: meta?.network_seed, identity, hash: holoHash,
-   sign: hc?.signJoiningNonce?.bind(hc), role: verifiedRole, submit: completeConsoleTask});
+   sign: hc?.signJoiningNonce?.bind(hc), role: verifiedRole, submit: completeConsoleTask, callMeeting, toBytes});
 `);
 html = replaceOnce(html, "async function roundAction(kind){", "async function roundAction(){");
 html = replaceOnce(html, `  if(kind==='start'){
@@ -110,10 +127,28 @@ html = replaceOnce(html, "async function act(kind){", `async function completeCo
   if(client===hc&&epoch===connectionEpoch){busy=false;updateButtons();await refresh();}
  }
 }
+async function callMeeting(fn_name,payload){
+ const client=hc,epoch=connectionEpoch,state=latestState;
+ const allowed=state?.phase==='playing'?['press_emergency','report_body']:
+   state?.phase==='meeting'?['commit_vote','reveal_vote','resolve_meeting']:[];
+ if(!client||busy||state?.my_seat==null||!allowed.includes(fn_name)||badge.dataset.status!=='ready')
+  throw Error('This meeting action is unavailable.');
+ busy=true;
+ try{
+  const status=await client.getConnectionStatus();
+  if(status?.authenticated!==true||status?.wsHealthy!==true||client!==hc||epoch!==connectionEpoch)
+   throw Error('Meeting connection is unavailable.');
+  await client.callZome({zome_name:'game',fn_name,payload});
+ }finally{
+  if(client===hc&&epoch===connectionEpoch){busy=false;await refresh();}
+ }
+}
 async function act(kind){`);
 html = replaceOnce(html, "task_target:1,display_name:name", "task_target:2*Number(taskCount.value),display_name:name");
 html = replaceOnce(html, `start.addEventListener('click',()=>void roundAction('start'));
 task.addEventListener('click',()=>void roundAction('task'));`, "start.addEventListener('click',()=>void roundAction());");
+html = replaceOnce(html, "state.tasks_done>=state.task_target)",
+  "(state.tasks_done>=state.task_target||state.active_meeting?.resolved?.kind==='ejected'))");
 html = replaceOnce(html,
   " if((state?.my_role===0||state?.my_role===1)&&state?.my_seat!=null)\n  verifiedRole=state.my_role;\n",
   "");

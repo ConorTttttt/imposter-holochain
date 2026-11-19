@@ -38,3 +38,9 @@ Render the frontend proxy configuration with `deploy.py render-proxy --movement-
 The browser task pool is sized to the native per-seat quota, so every seat receives the same consoles. This works without desktop private task assignment calls. Impostors can play the console games as cover. Crewmate completions go through the native coordinator and count toward the native result. Medical Scan uses the original timed mini-game and records ordinary task completion.
 
 Movement uses a same-origin WebSocket through the frontend proxy. The relay verifies a fresh, domain-separated signature from the existing HWC identity, then accepts coordinate updates. The map uses native seats for player names, colours and roster membership. Coordinates are transient player-supplied data. If the movement relay is unavailable, local movement and native round status continue.
+
+## Test a meeting
+
+After the emergency cooldown, approach the red emergency button in Commons and choose **Call emergency meeting**. All browsers should show the discussion timer, followed by the ballot. Choose **Skip** in all three profiles. After the native coordinator resolves the meeting, each browser should show three skip votes and **No player ejected**. Choose **Back to the game** to resume walking and completing consoles.
+
+With a fresh disposable lobby, vote for a player instead to verify ejection and ghost visibility. The **Report body** action appears when the native state contains a body position and is enabled in reach of it. Creating a kill from a browser requires a native kill path compatible with the verified-role receiver.

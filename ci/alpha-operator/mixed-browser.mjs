@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
-import {checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
+import {callEmergencyMeeting, checkMovement, completeEngineTask, names, prepareMovement} from './gameplay-checks.mjs';
 
 const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
@@ -395,6 +395,24 @@ async function round(config, agents) {
     });
   }
   if (config.gameplay) {
+    await step('EMERGENCY_MEETING_NATIVE_VOTE_COMMIT_REVEAL_AND_SKIP', async () => {
+      const caller = roles.findIndex(role => !role.isCrew);
+      await callEmergencyMeeting(browsers[caller], names[caller], until);
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        return state.phase === 'meeting' && state.active_meeting?.trigger === 'emergency' &&
+          await browser.evaluate(() => document.getElementById('meeting-timer').textContent.includes('Discussion'));
+      }, 12000)));
+      await Promise.all(browsers.map(browser => until(() => tap(browser, 'vote-skip'), 35000)));
+      await Promise.all(browsers.map(browser => until(async () => {
+        const state = await game(browser, 'get_game_state');
+        const vote = state.active_meeting;
+        return state.phase === 'playing' && vote?.resolved?.kind === 'no_ejection' &&
+          vote.committed.length === 3 && vote.revealed.length === 3 &&
+          vote.votes.length === 3 && vote.votes.every(vote => vote.choice == null);
+      }, 45000)));
+      await Promise.all(browsers.map(browser => until(() => tap(browser, 'meeting-back'), 15000)));
+    });
     const crew = [2, 0, 1].filter(index => roles[index].isCrew);
     await step(crew[0] === 2 ? 'FIREFOX_CREW_COMPLETES_ENGINE_MINIGAME' : 'CHROMIUM_CREW_COMPLETES_ENGINE_MINIGAME', async () => {
       await completeEngineTask(browsers[crew[0]], names[crew[0]], until);

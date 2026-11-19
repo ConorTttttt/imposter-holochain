@@ -55,17 +55,13 @@ export async function checkMovement(browsers, until) {
   }, 15000);
 }
 
-export async function completeEngineTask(browser, name, until) {
+async function walk(browser, name, until, waypoints) {
   await browser.evaluate(() => document.querySelector('#gameplay-map canvas').focus());
   const local = async () => {
     const pos = (await positions(browser))?.[name];
     // The observed name baseline is 27.5 map pixels above the player centre.
     if (pos) return [pos[0], pos[1] + 27.5];
   };
-  const waypoints = [
-    [0, 1200], [1, 465], [0, 1240], [1, 900], [0, 1060], [1, 1250],
-    [0, 1120], [1, 1420], [0, 1280], [1, 1555], [0, 1245],
-  ];
   for (const [axis, target] of waypoints) {
     await until(async () => {
       const point = await local();
@@ -77,6 +73,23 @@ export async function completeEngineTask(browser, name, until) {
       return false;
     }, 12000);
   }
+}
+
+export async function callEmergencyMeeting(browser, name, until) {
+  await walk(browser, name, until, [[0, 1200], [1, 465], [0, 1240], [1, 885], [0, 1200]]);
+  await until(() => browser.evaluate(() => {
+    const button = document.getElementById('call-emergency');
+    if (button.disabled) return false;
+    button.click();
+    return true;
+  }));
+}
+
+export async function completeEngineTask(browser, name, until) {
+  await walk(browser, name, until, [
+    [0, 1200], [1, 465], [0, 1240], [1, 900], [0, 1060], [1, 1250],
+    [0, 1120], [1, 1420], [0, 1280], [1, 1555], [0, 1245],
+  ]);
   await until(() => browser.evaluate(() => !document.getElementById('use-console').disabled));
   await browser.holdKey('e', 50);
   await until(() => browser.evaluate(() => {
