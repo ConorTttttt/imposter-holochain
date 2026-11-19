@@ -73,9 +73,11 @@ def authorities(game, release, state, log):
     init = native_args("init-native", release, state)
     run_checked(init, "NATIVE_AUTHORITY_INITIALIZATION", log, cwd=game, input_text=password + "\n")
     command = native_args("run-native", release, state)
-    with log.open("ab") as stream:
+    native_log = state.parent / "native-local.log"
+    env = {**os.environ, "RUST_LOG": "holochain=info,kitsune2=debug,iroh=warn"}
+    with native_log.open("ab") as stream:
         child = subprocess.Popen(command, cwd=game, stdin=subprocess.PIPE,
-                                 stdout=stream, stderr=stream, text=True, start_new_session=True)
+                                 stdout=stream, stderr=stream, env=env, text=True, start_new_session=True)
         try:
             child.stdin.write(password + "\n")
             child.stdin.close()
@@ -83,6 +85,17 @@ def authorities(game, release, state, log):
             run_checked(check, "TWO_EXACT_NATIVE_AUTHORITIES", log, cwd=game)
             gate("NATIVE_AUTHORITY_PROCESS", child.poll() is None)
             print("TWO_EXACT_NATIVE_AUTHORITIES=PASS", flush=True)
+            # The pinned Kitsune2 starts with an empty current arc. The
+            # existing native integration waits for both full-arc transitions
+            # before accepting any HWC publication.
+            deadline = time.monotonic() + 150
+            while child.poll() is None and time.monotonic() < deadline:
+                if native_log.read_text(errors="replace").count("Updating storage arc to full") >= 2:
+                    break
+                time.sleep(1)
+            else:
+                raise GateError("NATIVE_FULL_DHT_ARCS")
+            print("NATIVE_FULL_DHT_ARCS=PASS", flush=True)
             yield
         finally:
             try:
@@ -182,6 +195,7 @@ def fixture(args, scratch):
     config = {
         "mode": "fixture", "frontend": front, "gateway": gateway, "fixtureSpki": spki,
         "fixtureSecret": str(paths["admin_secret_file"]), "hostFile": str(host_file),
+        "fixtureAdmissionDb": str(paths["gateway_session_db"]),
         "profiles": list(map(str, profiles)), "hwc": str(args.hwc),
         "chromiumExtension": str(args.hwc / "packages/extension/dist-chrome"),
         "firefoxExtension": str(args.firefox / "packages/extension/dist-firefox"),
@@ -202,7 +216,7 @@ def fixture(args, scratch):
         gate("EXACT_CHROMIUM_RELEASE_BUILD", digest(archive) == digest(release / EXTENSION))
         print("EXACT_FIXTURE_RELEASE_BUILD=PASS", flush=True)
         activate_site(paths["static_root"], release_files(release, public))
-        gateway_env = {**gateway_environment(public, paths), "RUST_LOG": "warn"}
+        gateway_env = {**gateway_environment(public, paths), "RUST_LOG": "warn,h2hc_linker::routes::publish=info"}
         with service([str(release / GATEWAY), "--address", "127.0.0.1", "--port", "8090"],
                      8090, scratch, gateway_env), patch.dict(os.environ, {"SSL_CERT_FILE": str(authority)}):
             with log.open("a") as stream, redirect_stdout(stream):

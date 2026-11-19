@@ -7,6 +7,8 @@ const appId = 'imposter-browser-poc';
 const publicKey = /^uhCAk[A-Za-z0-9_-]{48}$/;
 const actionHash = /^uhCkk[A-Za-z0-9_-]{48}$/;
 const labels = ['CHROMIUM_HOST', 'CHROMIUM_GUEST', 'FIREFOX_GUEST'];
+const gatewayCapabilities = host => ['dht_read', 'dht_write', 'k2',
+  host ? 'game_role_deliver' : 'game_role_request'];
 const report = {suite: 'mixed-desktop', status: 'INCOMPLETE', stages: {}};
 let reportPath;
 let stage = 'CONFIGURATION';
@@ -154,8 +156,7 @@ async function allow(config, method, agent, host = false) {
   const admin = readFileSync(config.fixtureSecret, 'utf8').trim();
   requireCheck(/^[0-9a-f]{64}$/.test(admin));
   const body = {agent_pubkey: agent};
-  if (method === 'POST') body.capabilities = ['dht_read', 'dht_write', 'k2',
-    host ? 'game_role_deliver' : 'game_role_request'];
+  if (method === 'POST') body.capabilities = gatewayCapabilities(host);
   const response = await fetch('http://127.0.0.1:8090/admin/agents', {
     method, redirect: 'error', signal: AbortSignal.timeout(10000),
     headers: {Authorization: 'Bearer ' + admin, 'content-type': 'application/json'},
@@ -196,17 +197,28 @@ async function round(config, agents) {
     requireCheck(actionHash.test(lobby));
     return lobby;
   });
-  await step('THREE_DISTINCT_NATIVE_SEATS', async () => {
-    for (const guest of guests) {
-      await until(async () => (await game(guest, 'get_game_state')).code === config.seed);
+  async function lobbyContains(browser, members) {
+    const state = await game(browser, 'get_game_state');
+    return state.code === config.seed && state.player_count === 3 && state.phase === 'lobby'
+      && state.players.length === members.length && members.every(agent =>
+        state.players.some(player => hash(player.key) === agent));
+  }
+  for (const [index, guest] of guests.entries()) {
+    const alreadyJoined = agents.slice(0, index + 1);
+    const expected = agents.slice(0, index + 2);
+    const label = labels[index + 1];
+    await step(label + '_DISCOVERED_LOBBY', async () => {
+      await until(() => lobbyContains(guest, alreadyJoined));
+    });
+    await step(label + '_JOINED_NATIVE_SEAT', async () => {
       requireCheck(await tap(guest, 'join-lobby'));
-      // Serialize the joins so every guest sees the same converged lobby.
-      await until(async () => Number.isInteger((await game(guest, 'get_game_state')).my_seat)
-        || (await game(guest, 'get_game_state')).players.some(player =>
-          hash(player.key) === agents[browsers.indexOf(guest)]));
-    }
-    await Promise.all(browsers.map(browser => until(() => browser.evaluate(() =>
-      document.getElementById('seat-count')?.textContent === '3/3'))));
+      await Promise.all([guest, host].map(browser => until(() => lobbyContains(browser, expected))));
+    });
+  }
+  await step('THREE_DISTINCT_NATIVE_SEATS', async () => {
+    await Promise.all(browsers.map(browser => until(async () =>
+      await lobbyContains(browser, agents) && await browser.evaluate(() =>
+        document.getElementById('seat-count')?.textContent === '3/3'))));
   });
   const commit = await step('START_ROUND_UI', async () => {
     await until(() => host.evaluate(() => !document.getElementById('start-round').disabled));
@@ -323,8 +335,13 @@ async function main(config, command) {
       const {DatabaseSync} = await import('node:sqlite');
       const db = new DatabaseSync(config.admissionDb, {readOnly: true});
       try {
-        const allowed = db.prepare('SELECT 1 FROM allowed_agents WHERE agent_pubkey = ?');
-        requireCheck(agents.every(agent => allowed.get(agent)), 'GATEWAY_ADMISSION_MISSING');
+        const allowed = db.prepare('SELECT capabilities FROM allowed_agents WHERE agent_pubkey = ?');
+        const rows = agents.map(agent => allowed.get(agent));
+        requireCheck(rows.every(Boolean), 'GATEWAY_ADMISSION_MISSING');
+        requireCheck(rows.every(({capabilities}, index) => {
+          const actual = JSON.parse(capabilities);
+          return Array.isArray(actual) && gatewayCapabilities(index === 0).every(cap => actual.includes(cap));
+        }), 'GATEWAY_ROLE_CAPABILITY_MISSING');
       } finally {
         db.close();
       }
@@ -342,6 +359,18 @@ async function main(config, command) {
   await step('THREE_AUTHENTICATED_GATEWAY_SESSIONS', async () => {
     await Promise.all(browsers.map(browser => until(() => session(browser, config.gateway), 90000)));
   });
+  if (config.mode === 'fixture') {
+    await step('THREE_ACKNOWLEDGED_DNA_REGISTRATIONS', async () => {
+      const {DatabaseSync} = await import('node:sqlite');
+      const db = new DatabaseSync(config.fixtureAdmissionDb, {readOnly: true});
+      try {
+        const registered = db.prepare('SELECT 1 FROM session_dnas WHERE dna_hash = ? AND agent_pubkey = ?');
+        await until(async () => agents.every(agent => registered.get(config.dna, agent)), 30000);
+      } finally {
+        db.close();
+      }
+    });
+  }
   if (command === 'round') await round(config, agents);
   report.status = command === 'round' ? 'ROUND_VERIFIED' : 'PREFLIGHT_VERIFIED';
   save();
