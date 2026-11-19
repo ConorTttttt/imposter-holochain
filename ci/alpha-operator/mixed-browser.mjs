@@ -1,6 +1,8 @@
 /** Exercise stock, installed HWC through the operator UI and its restricted own-role read. */
 import {readFileSync, writeFileSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {fileURLToPath} from 'node:url';
 import {launchChromium, launchFirefox} from './mixed-browser-drivers.mjs';
 
 const appId = 'imposter-browser-poc';
@@ -43,9 +45,9 @@ async function until(check, milliseconds = 120000) {
   throw new AcceptanceFailure(stage);
 }
 
-function hash(value) {
+function hash(value, failure = stage) {
   const bytes = value && (Array.isArray(value) ? value : Object.values(value));
-  requireCheck(bytes?.length === 39 && bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte < 256));
+  requireCheck(bytes?.length === 39 && bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte < 256), failure);
   return 'u' + Buffer.from(bytes).toString('base64url');
 }
 
@@ -60,7 +62,7 @@ function tap(browser, id) {
   }, id);
 }
 
-async function setup(browser, label) {
+async function openSetup(browser, label) {
   try {
     await browser.navigate('/browser-setup.html');
   } catch (error) {
@@ -72,12 +74,20 @@ async function setup(browser, label) {
   } catch {
     throw new AcceptanceFailure(`${label}_HWC_INJECTION`);
   }
+}
+
+async function connect(browser, label) {
   try {
     await until(() => tap(browser, 'connect'), 15000);
     return await until(() => browser.evaluate(() => document.getElementById('public-key')?.value), 28000);
   } catch {
     throw new AcceptanceFailure(`${label}_PROFILE_LAIR_OR_SITE_APPROVAL`);
   }
+}
+
+async function setup(browser, label) {
+  await openSetup(browser, label);
+  return connect(browser, label);
 }
 
 function game(browser, fn, payload = null) {
@@ -102,14 +112,66 @@ function session(browser, gateway) {
   }, gateway);
 }
 
-async function installed(browser, dna, agent) {
-  const info = await browser.evaluate(async id => {
+async function inventory(browser) {
+  return browser.evaluate(async id => {
     const info = await window.holochain.appInfo(id);
     return {status: info.status, cells: info.cells?.map(cell => cell.map(value =>
       Array.isArray(value) || ArrayBuffer.isView(value) ? Array.from(value) : Object.values(value ?? {})))};
   }, appId).catch(() => null);
+}
+
+async function installed(browser, dna, agent) {
+  const info = await inventory(browser);
   return info?.status === 'enabled' && info.cells?.length === 1 &&
     hash(info.cells[0][0]) === dna && hash(info.cells[0][1]) === agent;
+}
+
+async function preinstalledAgent(browser, label, dna) {
+  const info = await inventory(browser);
+  const failure = `${label}_INSTALLED_HAPP_MISSING_OR_DIFFERENT`;
+  requireCheck(info?.status === 'enabled' && info.cells?.length === 1 &&
+    hash(info.cells[0][0], failure) === dna, failure);
+  const agent = hash(info.cells[0][1], failure);
+  requireCheck(publicKey.test(agent), failure);
+  return agent;
+}
+
+export async function checkOperatorAdmission(path, agents) {
+  const {DatabaseSync} = await import('node:sqlite');
+  try {
+    const db = new DatabaseSync(path, {readOnly: true});
+    try {
+      const allowed = db.prepare('SELECT capabilities FROM allowed_agents WHERE agent_pubkey = ?');
+      const rows = agents.map(agent => allowed.get(agent));
+      requireCheck(rows.every(Boolean), 'GATEWAY_ADMISSION_MISSING');
+      requireCheck(rows.every(({capabilities}, index) => {
+        const actual = JSON.parse(capabilities);
+        return Array.isArray(actual) && gatewayCapabilities(index === 0).every(cap => actual.includes(cap));
+      }), 'GATEWAY_ROLE_CAPABILITY_MISSING');
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    if (error instanceof AcceptanceFailure) throw error;
+    throw new AcceptanceFailure('OPERATOR_ADMISSION_STATE_UNREADABLE');
+  }
+}
+
+async function configureOperatorGateway(browser, gateway) {
+  await browser.evaluate(async linkerUrl => {
+    await window.holochain.configureNetwork({linkerUrl});
+  }, gateway);
+}
+
+export function checkUnusedOperatorGame(state, agent) {
+  const used = state && (state.code != null || state.roles_dealt === true ||
+    state.result != null || (Array.isArray(state.players) && state.players.length > 0));
+  requireCheck(!used, 'OPERATOR_LOBBY_ALREADY_EXISTS');
+  const unverified = 'OPERATOR_GAME_STATE_UNVERIFIED';
+  requireCheck(state?.phase === 'lobby' && state.code === null && state.roles_dealt === false
+    && state.result === null && state.my_seat === null && state.player_count === 0
+    && Array.isArray(state.players) && state.players.length === 0 && hash(state.me, unverified) === agent,
+  unverified);
 }
 
 async function provisionStatus(browser) {
@@ -192,7 +254,8 @@ async function round(config, agents) {
   const lobby = await step('HOST_CREATED_LOBBY', async () => {
     // A dedicated fixture or unused operator lobby is required. Never resume a played round.
     const state = await game(host, 'get_game_state');
-    requireCheck(!state.code && state.players.length === 0, 'OPERATOR_LOBBY_ALREADY_EXISTS');
+    if (config.mode === 'operator') checkUnusedOperatorGame(state, agents[0]);
+    else requireCheck(!state.code && state.players.length === 0, 'OPERATOR_LOBBY_ALREADY_EXISTS');
     await until(() => host.evaluate(() => !document.getElementById('create-lobby').disabled));
     await action(host, 'create', 'create-lobby');
     const lobby = hash(await until(() => host.evaluate(() =>
@@ -283,6 +346,40 @@ async function round(config, agents) {
       }, 180000);
       await views();
     });
+  } else {
+    const previous = browsers[2];
+    let firefox;
+    await step('OPERATOR_FIREFOX_PROCESS_RESTART', async () => {
+      await previous.close();
+      await until(async () => {
+        try {
+          process.kill(previous.processId, 0);
+          return false;
+        } catch (error) {
+          return error.code === 'ESRCH';
+        }
+      }, 15000);
+      firefox = await launchFirefox(config, config.profiles[2]);
+      browsers[2] = firefox;
+      requireCheck(firefox.processId !== previous.processId);
+    });
+    await step('OPERATOR_FIREFOX_RETAINED_IDENTITY_AND_FRESH_AUTH', async () => {
+      const label = labels[2];
+      await openSetup(firefox, label);
+      requireCheck(await preinstalledAgent(firefox, label, config.dna) === agents[2]
+        && await connect(firefox, label) === agents[2], 'OPERATOR_FIREFOX_IDENTITY_CHANGED');
+      await configureOperatorGateway(firefox, config.gateway);
+      await until(() => session(firefox, config.gateway), 90000);
+    });
+    await step('OPERATOR_FIREFOX_FRESH_ENCRYPTED_RECEIPT', async () => {
+      await firefox.navigate('/browser-demo.html');
+      await until(() => firefox.evaluate(() => document.getElementById('connection-state')?.dataset.status === 'ready'), 45000);
+      await until(async () => {
+        const role = await own(firefox);
+        return (role === 0 || role === 1) && (role === 0) === roles[2].isCrew;
+      }, 180000);
+      await views();
+    });
   }
   await step('ALIGN_ENGINE_OUTPUT_AND_AUTHORITATIVE_CREW_WIN', async () => {
     const crew = browsers[roles.findIndex(role => role.isCrew)];
@@ -322,10 +419,26 @@ async function main(config, command) {
     browsers.push(await launchChromium(config, config.profiles[1]));
     browsers.push(await launchFirefox(config, config.profiles[2]));
   });
+  let preinstalled;
+  if (config.mode === 'operator') {
+    preinstalled = await step('EXISTING_OPERATOR_HAPP_AND_BOUND_HOST', async () => {
+      const expected = await Promise.all(browsers.map(async (browser, index) => {
+        await openSetup(browser, labels[index]);
+        return preinstalledAgent(browser, labels[index], config.dna);
+      }));
+      requireCheck(expected[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
+      requireCheck(new Set(expected).size === 3, 'OPERATOR_PROFILE_IDENTITIES_NOT_DISTINCT');
+      return expected;
+    });
+    await step('OPERATOR_GATEWAY_ADMISSION', () => checkOperatorAdmission(config.admissionDb, preinstalled));
+  }
   const agents = await step('DISTINCT_LAIR_IDENTITIES_AND_BOUND_HOST', async () => {
-    const agents = await Promise.all(browsers.map((browser, index) => setup(browser, labels[index])));
+    const agents = await Promise.all(browsers.map((browser, index) =>
+      preinstalled ? connect(browser, labels[index]) : setup(browser, labels[index])));
     requireCheck(agents.every(agent => publicKey.test(agent)) && new Set(agents).size === 3);
     requireCheck(agents[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
+    if (preinstalled)
+      requireCheck(agents.every((agent, index) => agent === preinstalled[index]), 'OPERATOR_LAIR_IDENTITY_CHANGED');
     return agents;
   });
   if (config.mode === 'fixture') {
@@ -334,27 +447,9 @@ async function main(config, command) {
       await Promise.all(browsers.map(browser => until(() => tap(browser, 'provision'), 40000)));
     });
   } else {
-    await step('OPERATOR_GATEWAY_ADMISSION', async () => {
-      const {DatabaseSync} = await import('node:sqlite');
-      const db = new DatabaseSync(config.admissionDb, {readOnly: true});
-      try {
-        const allowed = db.prepare('SELECT capabilities FROM allowed_agents WHERE agent_pubkey = ?');
-        const rows = agents.map(agent => allowed.get(agent));
-        requireCheck(rows.every(Boolean), 'GATEWAY_ADMISSION_MISSING');
-        requireCheck(rows.every(({capabilities}, index) => {
-          const actual = JSON.parse(capabilities);
-          return Array.isArray(actual) && gatewayCapabilities(index === 0).every(cap => actual.includes(cap));
-        }), 'GATEWAY_ROLE_CAPABILITY_MISSING');
-      } finally {
-        db.close();
-      }
-    });
-    // Confirm the pre-staged installation before touching the gateway or lobby.
-    await step('EXISTING_OPERATOR_HAPP', async () => {
-      const results = await Promise.all(browsers.map((browser, i) => installed(browser, config.dna, agents[i])));
-      requireCheck(results.every(Boolean), 'INSTALLED_HAPP_MISSING_OR_DIFFERENT');
-    });
-    await Promise.all(browsers.map(browser => until(() => tap(browser, 'provision'), 40000)));
+    // The operator path uses the pre-installed cell and never runs installer UI.
+    await step('OPERATOR_GATEWAY_CONFIGURATION', () =>
+      Promise.all(browsers.map(browser => configureOperatorGateway(browser, config.gateway))));
   }
   await step('EXACT_HAPP_INSTALLED', async () => {
     await waitForInstalled(browsers, config, agents);
@@ -373,22 +468,36 @@ async function main(config, command) {
         db.close();
       }
     });
+  } else {
+    await step('OPERATOR_UNUSED_HOST_BOUND_DEPLOYMENT', async () => {
+      const states = await Promise.all(browsers.map(browser => game(browser, 'get_game_state')));
+      states.forEach((state, index) => checkUnusedOperatorGame(state, agents[index]));
+    });
   }
   if (command === 'round') await round(config, agents);
   report.status = command === 'round' ? 'ROUND_VERIFIED' : 'PREFLIGHT_VERIFIED';
   save();
 }
 
-try {
-  const [command, configPath, destination] = process.argv.slice(2);
-  reportPath = destination;
-  await main(JSON.parse(readFileSync(configPath, 'utf8')), command);
-} catch (error) {
-  report.status = 'FAILED';
-  report.failure = error instanceof AcceptanceFailure ? error.message : stage;
-  save();
-  console.error(report.failure + '=FAIL');
-  process.exitCode = 1;
-} finally {
-  await Promise.allSettled(browsers.map(browser => browser.close()));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const [command, configPath, destination] = process.argv.slice(2);
+    reportPath = destination;
+    await main(JSON.parse(readFileSync(configPath, 'utf8')), command);
+  } catch (error) {
+    report.status = 'FAILED';
+    report.failure = error instanceof AcceptanceFailure ? error.message : stage;
+    save();
+    console.error(report.failure + '=FAIL');
+    process.exitCode = 1;
+  } finally {
+    const closed = await Promise.allSettled(browsers.map(browser => browser.close()));
+    if (report.mode === 'operator' && !process.exitCode && closed.some(result => result.status === 'rejected')) {
+      report.status = 'FAILED';
+      report.failure = 'OPERATOR_BROWSER_SHUTDOWN_UNVERIFIED';
+      save();
+      console.error(report.failure + '=FAIL');
+      process.exitCode = 1;
+    }
+  }
 }

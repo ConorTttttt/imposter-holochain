@@ -59,6 +59,18 @@ jobs:
           node-version: ${{ steps.pins.outputs.node_version }}
           cache: npm
           cache-dependency-path: hwc/package-lock.json
+      - name: Retrieve the previously accepted public extension packages
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 44428605059
+          name: mixed-browser-extension-packages
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/accepted-desktop-packages
+      - name: Check the previously accepted extension ZIP checksums
+        run: |
+          cd "$RUNNER_TEMP/accepted-desktop-packages"
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
       - uses: actions/download-artifact@v4
         with:
           run-id: ${{ steps.pins.outputs.gateway_run }}
@@ -123,6 +135,7 @@ jobs:
           archive_extension(Path("hwc/packages/extension/dist-chrome"), Path(sys.argv[1]))
           PY
           (cd "$packages" && sha256sum chromium-hwc.zip firefox-desktop-hwc.zip > SHA256SUMS && sha256sum --check SHA256SUMS)
+          cat "$packages/SHA256SUMS"
       - uses: actions/upload-artifact@v4
         with:
           name: mixed-browser-extension-packages
@@ -135,7 +148,7 @@ jobs:
         run: |
           python3 -m unittest discover -v -s release/browser-alpha -p '*_test.py'
           python3 -m unittest discover -v -s ci/alpha-operator -p 'mixed_preflight_test.py'
-          node --test ci/alpha-operator/browser-setup.test.mjs
+          node --test ci/alpha-operator/browser-setup.test.mjs ci/alpha-operator/operator-browser.test.mjs
           node --import "$PWD/firefox/node_modules/fake-indexeddb/auto/index.mjs" --test \
             compatibility/hwc-imposter-compatibility/private-role/*.test.mjs
           npm --prefix firefox run test --workspace @hwc/extension -- \

@@ -2,14 +2,16 @@
 """Run the mixed-browser harness against a disposable fixture or an operator release."""
 import argparse
 from base64 import b64encode
-from contextlib import contextmanager, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
+import fcntl
 import hashlib
 import http.client
 import json
 import os
 from pathlib import Path
+import re
 import secrets
-from shutil import which
+from shutil import copyfile, which
 import signal
 import ssl
 import subprocess
@@ -24,8 +26,8 @@ ROOT = HERE.parents[1]
 RELEASE = ROOT / "release/browser-alpha"
 sys.path.insert(0, str(RELEASE))
 from deploy import (authority_cells, endpoint, gateway_environment, native_command,
-                    proxy_config, release_files, remote_preflight)
-from package import EXTENSION, GATEWAY, SETUP, archive_extension, digest, verify
+                    preflight_frontend, preflight_gateway, proxy_config, release_files, remote_preflight)
+from package import EXTENSION, GATEWAY, PINS, SETUP, archive_extension, digest, verify
 from site_release import activate_site
 from smoke import free_port, service
 
@@ -127,8 +129,11 @@ def native(operation, release, state):
 def launch(command, config, scratch, report):
     config_path = scratch / "browser-input.json"
     config_path.write_text(json.dumps(config))
+    env = None
+    if config["mode"] == "operator":
+        env = {key: value for key, value in os.environ.items() if not key.startswith("H2HC_LINKER_")}
     result = subprocess.run(["node", str(HERE / "mixed-browser.mjs"), command,
-                             str(config_path), str(report)], cwd=ROOT)
+                             str(config_path), str(report)], cwd=ROOT, env=env)
     gate("MIXED_BROWSER_RUNNER", result.returncode == 0)
 
 
@@ -225,29 +230,92 @@ def fixture(args, scratch):
                 launch("round", config_with_release(config, manifest), scratch, args.report)
 
 
-def check_operator_network(public, release):
+def check_operator_origin(origin, check):
     try:
         # Standard PKI and network reachability. This positively verifies HTTPS
         # and WSS, but says nothing about admission or encrypted receipt.
-        remote_preflight(public, release)
+        check()
     except ssl.SSLError as error:
-        raise GateError("OPERATOR_TLS_TRUST_OR_CERTIFICATE") from error
+        raise GateError(f"OPERATOR_{origin}_TLS_TRUST_OR_CERTIFICATE") from error
     except OSError as error:
         cli = which("tailscale")
         if cli:
             try:
                 status = subprocess.run([cli, "status", "--json"], capture_output=True,
                                         timeout=5, check=False, text=True)
-                if json.loads(status.stdout).get("BackendState") in {"Stopped", "NeedsLogin", "NeedsMachineAuth"}:
+                state = json.loads(status.stdout)
+                if isinstance(state, dict) and state.get("BackendState") in {
+                    "Stopped", "NeedsLogin", "NeedsMachineAuth",
+                }:
                     raise GateError("OPERATOR_TAILSCALE_OFFLINE") from error
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass
-        raise GateError("OPERATOR_NETWORK_OR_TAILSCALE_UNREACHABLE") from error
+        raise GateError(f"OPERATOR_{origin}_UNREACHABLE") from error
     except (ValueError, KeyError, http.client.HTTPException) as error:
-        raise GateError("OPERATOR_SERVED_RELEASE_OR_GATEWAY_MISMATCH") from error
+        raise GateError(f"OPERATOR_{origin}_RESPONSE_MISMATCH") from error
 
 
-def operator(args, scratch):
+def verify_chromium_tree(chrome, release_archive):
+    # The release ZIP and its manifest were already verified. ZIP container
+    # bytes can vary across zlib versions on the runner.
+    gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE", chrome.is_dir())
+    with ZipFile(release_archive) as archive:
+        expected = set(archive.namelist())
+        actual = set()
+        for path in chrome.rglob("*"):
+            gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE", not path.is_symlink())
+            if path.is_dir():
+                continue
+            gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE", path.is_file())
+            if path.suffix != ".map":
+                name = path.relative_to(chrome).as_posix()
+                gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE",
+                     name in expected and path.read_bytes() == archive.read(name))
+                actual.add(name)
+        gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE", actual == expected)
+
+
+def stage_firefox(package, checksum, scratch):
+    # Snapshot the verified bytes so the verifier and extractor use the same
+    # archive. The combined CI download also has a Chromium checksum line.
+    staged = scratch / "firefox-package"
+    staged.mkdir()
+    archive_path = staged / "firefox-desktop-hwc.zip"
+    try:
+        copyfile(package / archive_path.name, archive_path)
+    except OSError as error:
+        raise GateError("FIREFOX_EXTENSION_MISSING") from error
+    gate("FIREFOX_EXTENSION_CHECKSUM", digest(archive_path) == checksum)
+    (staged / "SHA256SUMS").write_text(f"{checksum}  {archive_path.name}\n")
+    run_checked([sys.executable, str(RELEASE / "package-firefox.py"), "verify", str(staged)],
+                "FIREFOX_EXTENSION_VERIFICATION", scratch / "verification.log")
+    firefox = scratch / "firefox"
+    with ZipFile(archive_path) as archive:
+        archive.extractall(firefox)
+    return firefox
+
+
+@contextmanager
+def lock_profiles(profiles):
+    with ExitStack() as locks:
+        for profile in sorted(profiles):
+            fd = os.open(profile, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            locks.callback(os.close, fd)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise GateError("OPERATOR_PROFILE_IN_USE") from error
+        # Chromium owns this sentinel, including when it is a dangling symlink.
+        gate("OPERATOR_PROFILE_IN_USE",
+             not any(os.path.lexists(profile / "SingletonLock") for profile in profiles[:2]))
+        yield
+
+
+def operator(args, scratch, report, verified):
+    def passed(stage):
+        verified[stage] = "PASS"
+        print(f"{stage}=PASS", flush=True)
+
     try:
         gate("OPERATOR_CONFIGURATION_MISSING", private(args.config))
         data = json.loads(args.config.read_text())
@@ -257,36 +325,94 @@ def operator(args, scratch):
         admission_db = Path(data["admission_database"]).resolve()
         release = Path(data["release"])
         commit, checksum = data["release_commit"], data["release_manifest_sha256"]
+        profiles = [Path(path).resolve() for path in data["profiles"]]
+        chrome = Path(data["chromium_extension"]).resolve()
+        firefox_package = Path(data["firefox_package"])
+        firefox_checksum = data["firefox_sha256"]
+        hwc = Path(data["hwc_checkout"]).resolve()
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise GateError("OPERATOR_CONFIGURATION_MISSING") from error
-    gate("OPERATOR_RELEASE_PROVENANCE_REQUIRED", bool(commit and checksum))
+    gate("OPERATOR_RELEASE_PROVENANCE_REQUIRED",
+         isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit)
+         and isinstance(checksum, str) and re.fullmatch(r"[0-9a-f]{64}", checksum))
     try:
         manifest = verify(release, commit, manifest_sha256=checksum)
     except (OSError, ValueError, KeyError, BadZipFile) as error:
         raise GateError("OPERATOR_RELEASE_VERIFICATION") from error
-    check_operator_network(public, release)
-    profiles = [Path(path).resolve() for path in data["profiles"]]
+    passed("OPERATOR_RELEASE_PROVENANCE")
+    check_operator_origin("FRONTEND", lambda: preflight_frontend(public, release))
+    passed("OPERATOR_FRONTEND_EXACT_RELEASE")
+    check_operator_origin("GATEWAY", lambda: preflight_gateway(public))
+    passed("OPERATOR_GATEWAY_HTTPS_WSS_ISOLATION")
     gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 3 and len(set(profiles)) == 3
-         and all(private(path, directory=True) and any(path.iterdir()) for path in profiles))
+         and all(private(path, directory=True) and any(path.iterdir()) for path in profiles)
+         and not any(a.is_relative_to(b) for a in profiles for b in profiles if a != b))
     gate("OPERATOR_ADMISSION_STATE_UNAVAILABLE", private(admission_db))
-    chrome = Path(data["chromium_extension"]).resolve()
-    chrome_check = scratch / "chrome-check.zip"
-    archive_extension(chrome, chrome_check)
-    gate("CHROMIUM_EXTENSION_NOT_EXACT_RELEASE", digest(chrome_check) == digest(release / EXTENSION))
-    firefox_archive = Path(data["firefox_package"]) / "firefox-desktop-hwc.zip"
-    gate("FIREFOX_EXTENSION_CHECKSUM", digest(firefox_archive) == data["firefox_sha256"])
-    run_checked([sys.executable, str(RELEASE / "package-firefox.py"), "verify",
-                 str(firefox_archive.parent)], "FIREFOX_EXTENSION_VERIFICATION", scratch / "verification.log")
-    firefox = scratch / "firefox"
-    with ZipFile(firefox_archive) as archive:
-        archive.extractall(firefox)
+    gate("FIREFOX_EXTENSION_CHECKSUM",
+         isinstance(firefox_checksum, str) and re.fullmatch(r"[0-9a-f]{64}", firefox_checksum))
+    verify_chromium_tree(chrome, release / EXTENSION)
+    firefox = stage_firefox(firefox_package, firefox_checksum, scratch)
+    passed("OPERATOR_EXTENSION_PROVENANCE")
+    try:
+        node = subprocess.check_output(["node", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+        hwc_head = subprocess.check_output(["git", "-C", hwc, "rev-parse", "--verify", "HEAD"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GateError("OPERATOR_RUNNER_TOOLCHAIN") from error
+    gate("OPERATOR_RUNNER_TOOLCHAIN", node == PINS["node_version"] and hwc_head == PINS["hwc_commit"])
+    passed("OPERATOR_RUNNER_TOOLCHAIN")
     config = {
         "mode": "operator", "frontend": public["frontend_origin"], "gateway": public["gateway_origin"],
         "admissionDb": str(admission_db), "profiles": list(map(str, profiles)),
-        "hwc": str(Path(data["hwc_checkout"]).resolve()), "chromiumExtension": str(chrome),
+        "hwc": str(hwc), "chromiumExtension": str(chrome),
         "firefoxExtension": str(firefox),
     }
-    launch("round" if args.round else "preflight", config_with_release(config, manifest), scratch, args.report)
+    with lock_profiles(profiles):
+        launch("round" if args.round else "preflight", config_with_release(config, manifest), scratch, report)
+
+
+def run_operator(args):
+    # Exclusive create also refuses a dangling symlink or concurrent run
+    # using the same destination. Browser logs never open this path.
+    try:
+        evidence = args.report.open("x")
+    except OSError:
+        raise SystemExit("OPERATOR_EVIDENCE_PATH_UNAVAILABLE=FAIL") from None
+    with evidence, tempfile.TemporaryDirectory(prefix="imposter-operator-") as folder:
+        scratch = Path(folder)
+        stage_report = scratch / "browser-evidence.json"
+        verified = {}
+        outcome = {"suite": "mixed-desktop", "mode": "operator", "status": "INCOMPLETE"}
+        evidence.write(json.dumps(outcome) + "\n")
+        evidence.flush()
+        failure = None
+        try:
+            operator(args, scratch, stage_report, verified)
+        except GateError as error:
+            failure = str(error)
+        except (OSError, ValueError, KeyError, TypeError, BadZipFile, subprocess.SubprocessError, RuntimeError):
+            failure = "OPERATOR_RUNNER_OR_RELEASE_SETUP"
+        if stage_report.is_file():
+            try:
+                child = json.loads(stage_report.read_text())
+                outcome["status"] = child["status"]
+                verified.update({key: "PASS" for key, value in child["stages"].items()
+                                 if re.fullmatch(r"[A-Z0-9_]+", key) and value == "PASS"})
+                code = child.get("failure")
+                if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]+", code):
+                    outcome["failure"] = code
+            except (OSError, TypeError, ValueError, KeyError, AttributeError):
+                failure = "OPERATOR_BROWSER_EVIDENCE_INVALID"
+        expected = "ROUND_VERIFIED" if args.round else "PREFLIGHT_VERIFIED"
+        if failure or outcome["status"] != expected:
+            outcome.setdefault("failure", failure or "OPERATOR_BROWSER_EVIDENCE_MISSING")
+            outcome["status"] = "FAILED"
+        outcome["stages"] = verified
+        evidence.seek(0)
+        evidence.write(json.dumps(outcome, indent=2) + "\n")
+        evidence.truncate()
+    if outcome["status"] == "FAILED":
+        raise SystemExit(outcome["failure"] + "=FAIL")
 
 
 def main():
@@ -297,7 +423,7 @@ def main():
         cloud.add_argument("--" + field, type=lambda path: Path(path).resolve(), required=True)
     live = sub.add_parser("operator")
     live.add_argument("--config", type=Path, required=True)
-    live.add_argument("--report", type=lambda path: Path(path).resolve(), required=True)
+    live.add_argument("--report", type=Path, required=True)
     live.add_argument("--round", action="store_true")
     tool = sub.add_parser("native")
     tool.add_argument("operation", choices=["init-native", "run-native", "wait-native"])
@@ -307,12 +433,15 @@ def main():
     if args.mode == "native":
         native(args.operation, args.release, args.state)
         return
+    os.umask(0o077)
+    if args.mode == "operator":
+        run_operator(args)
+        return
     if args.report.exists():
         raise SystemExit("Use a new evidence path")
-    os.umask(0o077)
     try:
         with tempfile.TemporaryDirectory(prefix="imposter-mixed-") as folder:
-            (fixture if args.mode == "fixture" else operator)(args, Path(folder))
+            fixture(args, Path(folder))
     except GateError as error:
         report_failure(args.report, args.mode, str(error))
         raise SystemExit(1) from None

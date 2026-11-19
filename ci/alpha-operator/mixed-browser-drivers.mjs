@@ -1,4 +1,5 @@
 import {createRequire} from 'node:module';
+import {realpathSync} from 'node:fs';
 import {join} from 'node:path';
 
 export async function launchChromium(config, profile) {
@@ -36,7 +37,7 @@ export async function launchFirefox(config, profile) {
     }
     return value;
   }
-  const {sessionId} = await request('POST', '/session', {capabilities: {alwaysMatch: {
+  const {sessionId, capabilities} = await request('POST', '/session', {capabilities: {alwaysMatch: {
     browserName: 'firefox',
     'moz:firefoxOptions': {
       binary: process.env.FIREFOX_BIN,
@@ -48,8 +49,17 @@ export async function launchFirefox(config, profile) {
     },
   }}});
   const call = (method, path, body) => request(method, `/session/${sessionId}${path}`, body);
-  const close = () => call('DELETE', '');
+  let closing;
+  const close = () => closing ??= call('DELETE', '');
   try {
+    const processId = capabilities?.['moz:processID'];
+    if (config.mode === 'operator') {
+      const startedProfile = capabilities?.['moz:profile'];
+      if (!Number.isSafeInteger(processId) || processId < 2 ||
+          typeof startedProfile !== 'string' || realpathSync(startedProfile) !== realpathSync(profile)) {
+        throw Error('FIREFOX_PROFILE_OR_PROCESS_UNVERIFIED');
+      }
+    }
     const addon = await call('POST', '/moz/addon/install', {
       path: config.firefoxExtension, temporary: true,
     });
@@ -66,6 +76,7 @@ export async function launchFirefox(config, profile) {
         if (result.failed) throw Error('Firefox application check failed');
         return result.value;
       },
+      processId,
       close,
     };
   } catch (error) {
