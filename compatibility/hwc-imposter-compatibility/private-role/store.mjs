@@ -9,8 +9,8 @@ const req=p=>new Promise((resolve,reject)=>{p.onsuccess=()=>resolve(p.result);p.
 const done=t=>new Promise((resolve,reject)=>{t.oncomplete=resolve;t.onabort=()=>reject(t.error??Error('IndexedDB transaction aborted'));t.onerror=()=>reject(t.error??Error('IndexedDB transaction failed'));});
 export async function openRoleStore(name='hwc-imposter-private-role-v1'){
  if(typeof indexedDB==='undefined')throw Error('IndexedDB unavailable; private role transport disabled');
- const connection=indexedDB.open(name,3);
- connection.onupgradeneeded=()=>{const d=connection.result;if(!d.objectStoreNames.contains('cells'))d.createObjectStore('cells',{keyPath:'cell'});if(!d.objectStoreNames.contains('replay'))d.createObjectStore('replay',{keyPath:'id'});if(!d.objectStoreNames.contains('trusted'))d.createObjectStore('trusted',{keyPath:'cell'});if(!d.objectStoreNames.contains('pins'))d.createObjectStore('pins',{keyPath:'cell'});};
+ const connection=indexedDB.open(name,4);
+ connection.onupgradeneeded=()=>{const d=connection.result;if(!d.objectStoreNames.contains('cells'))d.createObjectStore('cells',{keyPath:'cell'});if(!d.objectStoreNames.contains('replay'))d.createObjectStore('replay',{keyPath:'id'});if(!d.objectStoreNames.contains('trusted'))d.createObjectStore('trusted',{keyPath:'cell'});if(!d.objectStoreNames.contains('pins'))d.createObjectStore('pins',{keyPath:'cell'});if(!d.objectStoreNames.contains('browserPins'))d.createObjectStore('browserPins',{keyPath:'cell'});};
  const db=await req(connection);
  db.onversionchange=()=>db.close();
  return {
@@ -19,11 +19,20 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
     * caller's URL, lobby code, network signal, or truthy validation flag
     * does not authorize creating this irreversible action pin.
     */
-   async pinNativeLobby(dna,agent,lobby){
+   async pinNativeLobby(dna,agent,lobby,{browser=false}={}){
      const id=key({dna,agent});
      if(!(lobby instanceof Uint8Array)||lobby.length!==39||
        lobby[0]!==0x84||lobby[1]!==0x29||lobby[2]!==0x24)
        throw Error('native Lobby action must be a 39-byte ActionHash');
+     if(browser){
+       const t=db.transaction('browserPins','readwrite',{durability:'strict'}),finished=done(t);
+       const s=t.objectStore('browserPins');
+       const scope=id+':'+hex(lobby);
+       if(!await req(s.get(scope)))s.add({cell:scope,lobby});
+       s.put({cell:id,lobby});
+       await finished;
+       return true;
+     }
      const t=db.transaction('pins','readwrite',{durability:'strict'}),finished=done(t);
      const s=t.objectStore('pins'),prior=await req(s.get(id));
      if(prior && hex(prior.lobby)!==hex(lobby)){
@@ -33,9 +42,14 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      s.put({...prior,cell:id,lobby});await finished;
      return true;
    },
+   async getSelectedBrowserLobby(dna,agent){
+     const t=db.transaction('browserPins','readonly');
+     return (await req(t.objectStore('browserPins').get(key({dna,agent}))))?.lobby??null;
+   },
    async getPinnedLobby(dna,agent){
-     const t=db.transaction('pins','readonly'),v=await req(t.objectStore('pins').get(key({dna,agent})));
-     return v?.lobby??null;
+     const id=key({dna,agent}),t=db.transaction(['pins','browserPins'],'readonly');
+     const selected=await req(t.objectStore('browserPins').get(id));
+     return selected?.lobby??(await req(t.objectStore('pins').get(id)))?.lobby??null;
    },
    /** First stable native Valid RoleCommit observation becomes a durable,
     * irreversible per-cell pin. An already committed round cannot silently
@@ -48,8 +62,11 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
        !(commit instanceof Uint8Array)||commit.length!==39||
        commit[0]!==0x84||commit[1]!==0x29||commit[2]!==0x24)
        throw Error('invalid native action identity');
-     const t=db.transaction('pins','readwrite',{durability:'strict'}),finished=done(t);
-     const s=t.objectStore('pins'),prior=await req(s.get(id));
+     const t=db.transaction(['pins','browserPins'],'readwrite',{durability:'strict'}),finished=done(t);
+     const browser=t.objectStore('browserPins'),selected=await req(browser.get(id));
+     const s=selected?browser:t.objectStore('pins');
+     const scope=selected?id+':'+hex(selected.lobby):id;
+     const prior=await req(s.get(scope));
      if(!prior?.lobby||hex(prior.lobby)!==hex(lobby)||
        (prior.roleCommit && hex(prior.roleCommit)!==hex(commit))){
        t.abort();try{await finished;}catch{}
@@ -58,8 +75,13 @@ export async function openRoleStore(name='hwc-imposter-private-role-v1'){
      s.put({...prior,roleCommit:commit});await finished;
      return true;
    },
-   async getPinnedRoleCommit(dna,agent){
-     const t=db.transaction('pins','readonly'),v=await req(t.objectStore('pins').get(key({dna,agent})));
+   async getPinnedRoleCommit(dna,agent,expectedLobby=null){
+     const id=key({dna,agent}),t=db.transaction(['pins','browserPins'],'readonly');
+     const browser=t.objectStore('browserPins'),selected=await req(browser.get(id));
+     const v=selected
+       ?await req(browser.get(id+':'+hex(selected.lobby)))
+       :await req(t.objectStore('pins').get(id));
+     if(expectedLobby&&(!v?.lobby||hex(expectedLobby)!==hex(v.lobby)))return null;
      return v?.roleCommit??null;
    },
    async getCell(dna,agent){const t=db.transaction('cells','readonly'),v=await req(t.objectStore('cells').get(key({dna,agent})));return v??null;},

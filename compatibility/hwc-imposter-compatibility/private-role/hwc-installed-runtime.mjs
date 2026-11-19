@@ -83,12 +83,13 @@ export function createInstalledHwcRoleRuntime({
       throw Error('offscreen authenticated role session not confirmed');
     return result.lease;
   }
-  function sessionFor(cell,lease) {
+  function sessionFor(cell,store,lobby,lease) {
     let active=true;
     async function refresh(){
       try {
-        if(!active || await probeLease(cell)!==lease || !active)
-          throw Error('role WebSocket lease changed');
+        if(!active || await probeLease(cell)!==lease ||
+           !eq(await store.getPinnedLobby(cell.dna,cell.agent),lobby) || !active)
+          throw Error('role WebSocket lease or selected lobby changed');
         return lease;
       } catch(e) { active=false;throw e; }
     }
@@ -106,14 +107,18 @@ export function createInstalledHwcRoleRuntime({
       }
     };
   }
-  function serviceFor(cell,store,lease) {
-    const session=sessionFor(cell,lease);
+  function serviceFor(cell,store,lobby,lease) {
+    const session=sessionFor(cell,store,lobby,lease);
     const installedCell=()=>sameCell(cell);
     const native=createInstalledNativeAuthority({
       installedCell,
-      pinnedLobby:c=>store.getPinnedLobby(c.dna,c.agent),
+      pinnedLobby:async c=>{
+        const selected=await store.getPinnedLobby(c.dna,c.agent);
+        if(!eq(selected,lobby))throw Error('selected lobby changed');
+        return lobby;
+      },
       pinRoleCommit:(d,a,l,r)=>store.pinTrustedRoleCommit(d,a,l,r),
-      readPinnedRoleCommit:(d,a)=>store.getPinnedRoleCommit(d,a),
+      readPinnedRoleCommit:(d,a,l)=>store.getPinnedRoleCommit(d,a,l),
       trustedFloor:(d,a)=>store.getTrustedFloor(d,a),
       zomeCall:async call=>{
         if(call.zome!=='game' || ![
@@ -137,20 +142,22 @@ export function createInstalledHwcRoleRuntime({
     }});
     const service=createRestrictedRoleService({installedCell,store,native,
       lair:signer,session});
-    return {cell,store,native,service,session,signer,enrolledUntil:0};
+    return {cell,store,lobby,native,service,session,signer,enrolledUntil:0};
   }
   async function checked(cell,forwardedLease=null) {
     const store=await storePromise;
     const lease=await probeLease(cell);
     if(forwardedLease!==null && forwardedLease!==lease)
       throw Error('forwarded role lease is not the active authenticated WS lease');
+    const lobby=await store.getPinnedLobby(cell.dna,cell.agent);
+    if(!lobby)throw Error('no selected native lobby');
     const key=cellKey(cell);
     const previous=services.get(key);
-    if(previous?.session.leaseId()===lease)return previous;
-    // Never let in-flight work refresh onto a new socket with old correlation.
+    if(previous?.session.leaseId()===lease && eq(previous.lobby,lobby))return previous;
+    // In-flight work cannot carry requests or receipts to another socket or lobby.
     previous?.session.invalidate();
     acceptedReceipts.delete(key);
-    const held=serviceFor(cell,store,lease);
+    const held=serviceFor(cell,store,lobby,lease);
     services.set(key,held);
     return held;
   }
@@ -205,12 +212,11 @@ export function createInstalledHwcRoleRuntime({
       } catch { /* absent lobby, pending DHT convergence, locked signer: no bypass */ }
     }
   }
-  /** Invoked ONLY after successful, local installed-cell create_lobby/join_lobby.
-   * The record is the actual native zome return, never a webpage argument.
-   * Recovery does not overwrite a protected Lobby action on restart.
-   */
+  /** Only an actual result of an installed-cell operation can select a lobby. */
   async function pinLobbyFromNativeRecord(contextId,fn,record,decodeApp) {
-    if(!['create_lobby','join_lobby'].includes(fn))return false;
+    const createsLobby=['create_lobby','create_browser_lobby','new_browser_game'].includes(fn);
+    const browser=['create_browser_lobby','new_browser_game','join_browser_lobby','reopen_browser_lobby'].includes(fn);
+    if(!createsLobby && fn!=='join_lobby' && !browser)return false;
     const c=await contextManager.getContext(contextId);
     if(!c?.enabled || c.dnas?.length!==1)return false;
     const cell=await installed(c.dnas[0].hash,c.agentPubKey);
@@ -225,7 +231,7 @@ export function createInstalledHwcRoleRuntime({
     if(!app)throw Error('native Create record missing app entry');
     const entry=decodeApp(app); // MessagePack from actual local WASM result
     let lobby;
-    if(fn==='create_lobby'){
+    if(createsLobby){
       if(!entry || typeof entry.code!=='string' ||
          !Number.isInteger(entry.player_count) ||
          !Number.isInteger(entry.impostor_count))
@@ -239,9 +245,24 @@ export function createInstalledHwcRoleRuntime({
     }
     lobby=exactly(lobby,'action');
     const store=await storePromise;
-    await store.pinNativeLobby(cell.dna,cell.agent,lobby);
-    // Never return an action or private role to a public page response.
+    await store.pinNativeLobby(cell.dna,cell.agent,lobby,{browser});
+    const key=cellKey(cell),held=services.get(key);
+    if(held && !eq(held.lobby,await store.getPinnedLobby(cell.dna,cell.agent))){
+      held.session.invalidate();
+      if(services.get(key)===held){
+        services.delete(key);
+        booting.delete(key);
+        acceptedReceipts.delete(key);
+      }
+    }
     return true;
+  }
+  async function selectedBrowserLobby(contextId) {
+    const c=await contextManager.getContext(contextId);
+    if(!c?.enabled || c.dnas?.length!==1)return null;
+    const cell=await installed(c.dnas[0].hash,c.agentPubKey);
+    if(cell.contextId!==contextId)throw Error('lobby read requires the installed context');
+    return (await storePromise).getSelectedBrowserLobby(cell.dna,cell.agent);
   }
   async function receiveSocketFrame(json,forwardedLease) {
     if(typeof json!=='string'||typeof forwardedLease!=='string')
@@ -260,6 +281,7 @@ export function createInstalledHwcRoleRuntime({
       return {requestVerified:true,queuedOnly:true};
     }
     if(outcome && [0,1].includes(outcome.role) && outcome.coordinatorInvoked===false) {
+      if(services.get(cellKey(cell))!==h)throw Error('selected lobby changed before role receipt');
       const receipt={seat:outcome.seat,roleCommit:hex(outcome.roleCommit),
         dna:hex(cell.dna),recipient:hex(cell.agent),lease:before,
         coordinatorInvoked:false,extensionLocalVerified:true};
@@ -269,12 +291,13 @@ export function createInstalledHwcRoleRuntime({
     }
     throw Error('unrecognized role-only frame');
   }
-  async function readOwnRole(contextId) {
+  async function readOwnRole(contextId,expectedLobby=null) {
     const context=await contextManager.getContext(contextId);
     if(!context?.enabled || context.dnas?.length!==1)return null;
     const cell=await installed(context.dnas[0].hash,context.agentPubKey);
     if(cell.contextId!==contextId)throw Error('role read requires the installed context');
     const held=await checked(cell);
+    if(expectedLobby!==null && !eq(held.lobby,exactly(expectedLobby,'action')))return null;
     const game=requireCurrentRoleState(await held.native.readCurrentGame(cell),cell);
     const seat=game.commit.seats.findIndex(agent=>eq(agent,cell.agent));
     if(seat<0)return null;
@@ -296,7 +319,7 @@ export function createInstalledHwcRoleRuntime({
     return role;
   }
   return Object.freeze({
-    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,readOwnRole,
+    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,readOwnRole,selectedBrowserLobby,
     // Only metadata: no role, Lair secret, X25519 private key or native executor.
     receiptCount(){return acceptedReceipts.size;},
     // CI may inspect this through its OWN service-worker debugger only.

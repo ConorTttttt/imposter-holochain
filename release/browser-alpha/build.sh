@@ -40,6 +40,8 @@ git init --quiet "$scratch/game"
 git -C "$scratch/game" fetch --quiet "$game" "$(jq -er .game_commit "$rc/pins.json")"
 git -C "$scratch/game" switch --detach FETCH_HEAD
 game=$scratch/game
+git -C "$game" apply --check "$rc/native-repeatable.patch"
+git -C "$game" apply "$rc/native-repeatable.patch"
 source_epoch=$(git -C "$game" show -s --format=%ct HEAD)
 native_identity=UNVERIFIED_OPERATOR_INPUT
 package_identity=OPERATOR_SUPPLIED_PUBLIC_INPUT
@@ -68,16 +70,8 @@ native="$game/target/browser-poc/$tag"
   npx --no-install esbuild packages/core/src/bundle/unpacker.ts --bundle --platform=node --format=cjs --outfile="$scratch/unpacker.cjs"
 )
 node "$rc/verify-native.mjs" "$scratch/unpacker.cjs" "$native/app/imposter-browser-poc.happ" "$native/dna/game.dna" "$native/deployment.json"
-git -C "$game" show HEAD:ui/browser-demo.html > "$scratch/browser-demo.html"
-# Apply the exact reviewed UI overlay in the scratch checkout layout.
-mkdir "$scratch/ui"
-mv "$scratch/browser-demo.html" "$scratch/ui/browser-demo.html"
-(
-  cd "$scratch"
-  git apply --unidiff-zero "$repo/ci/installed-role/browser-demo.patch"
-)
 python3 "$rc/package.py" assemble "$output" --native "$native" \
   --extension "$scratch/hwc/packages/extension/dist-chrome" --gateway "$gateway" \
-  --demo "$scratch/ui/browser-demo.html" --release-commit "$(git -C "$repo" rev-parse HEAD)" \
+  --demo "$rc/frontend/browser-demo.html" --release-commit "$(git -C "$repo" rev-parse HEAD)" \
   --identity "$package_identity" \
   --node-version "$(node --version)" --npm-version "$(npm --version)"

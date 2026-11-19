@@ -12,6 +12,7 @@ git -C "$hwc" switch -c fix/imposter-hwc-compatibility
 python3 "$kit/apply.py" "$hwc" --write
 python3 "$kit/private-role/apply_restricted_hwc_handler.py" "$hwc" --write
 python3 "$kit/private-role/apply_installed_hwc_receiver.py" "$hwc" --write
+python3 "$kit/private-role/apply_browser_lobbies.py" "$hwc"
 git -C "$hwc" diff --check
 (
   cd "$hwc"
