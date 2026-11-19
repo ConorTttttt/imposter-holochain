@@ -87,8 +87,8 @@ export function createInstalledNativeAuthority({installedCell,pinnedLobby,pinRol
      // observation alone is not an action pin across browser restarts.
      await pinRoleCommit(cell.dna,cell.agent,lobby,commit);
      await context(cell);
-     const durable=valid(await readPinnedRoleCommit(cell.dna,cell.agent),ACTION);
-     if(!eq(durable,commit))throw Error('native RoleCommit pin did not persist');
+     const durable=valid(await readPinnedRoleCommit(cell.dna,cell.agent,lobby),ACTION);
+     if(!eq(durable,commit)||!eq(await selectedLobby(cell),lobby))throw Error('native RoleCommit pin did not persist');
      return pinned;
    },
    async readHostRoleOpening(cell,query){
@@ -99,7 +99,7 @@ export function createInstalledNativeAuthority({installedCell,pinnedLobby,pinRol
         !Number.isInteger(query?.expected_seat)||query.expected_seat<0||
         query.expected_seat>63)
        throw Error('host opening is not bound to installed native game');
-     const durable=valid(await readPinnedRoleCommit(cell.dna,cell.agent),ACTION);
+     const durable=valid(await readPinnedRoleCommit(cell.dna,cell.agent,lobby),ACTION);
      if(!eq(durable,b(query.expected_role_commit)))
        throw Error('host opening differs from durable RoleCommit action');
      const result=await execute(cell,'host_role_opening',{
@@ -116,7 +116,7 @@ export function createInstalledNativeAuthority({installedCell,pinnedLobby,pinRol
      if(!Array.isArray(result.proof?.path)||result.proof.path.length!==6)
        throw Error('invalid native role path');
      const path=result.proof.path.map(p=>exactBytes(p,32,'role sibling'));
-     await context(cell);
+     if(!eq(await selectedLobby(cell),lobby))throw Error('selected lobby changed during host opening');
      return {role_commit:durable,recipient:valid(query.expected_recipient,AGENT),
        seat:result.seat,role:result.role,proof:{role_salt:salt,path}};
    },
