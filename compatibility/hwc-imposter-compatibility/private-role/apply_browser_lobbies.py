@@ -14,11 +14,27 @@ selection = '''
     ].includes(fn_name);
     const readsBrowserSelection = zome_name === "game" && fn_name === "get_selected_browser_lobby";
     const readsBrowserRole = zome_name === "game" && fn_name === "get_browser_lobby_role";
-    if (selectsBrowserLobby || readsBrowserSelection || readsBrowserRole) {
+    const writesBrowserGameplay = zome_name === "game" && [
+      "press_browser_emergency", "complete_browser_console", "browser_commit_vote",
+      "browser_reveal_vote", "browser_resolve_meeting",
+    ].includes(fn_name);
+    if (selectsBrowserLobby || readsBrowserSelection || readsBrowserRole || writesBrowserGameplay) {
       if (sender.id !== chrome.runtime.id || sender.frameId !== 0 ||
           !sender.url || new URL(sender.url).origin !== origin ||
           context.domain !== origin || !(await permissionManager.checkPermission(origin))?.granted)
         return createErrorResponse(message.id, "BROWSER_LOBBY_ORIGIN_DENIED");
+      if (writesBrowserGameplay) {
+        const runtime = getInstalledRoleRuntime();
+        const value = normalizeUint8Arrays(payload);
+        const action = fn_name === "press_browser_emergency" ? value : value?.lobby;
+        const selected = await runtime.selectedBrowserLobby(context.id);
+        if (!(action instanceof Uint8Array) || action.length !== 39 ||
+            !selected || selected.length !== 39 ||
+            !action.every((byte: number, i: number) => byte === selected[i]))
+          return createErrorResponse(message.id, "BROWSER_LOBBY_SELECTION_CHANGED");
+        if (fn_name === "complete_browser_console" && await runtime.readOwnRole(context.id, action) !== 0)
+          return createErrorResponse(message.id, "VERIFIED_CREW_REQUIRED");
+      }
       if (readsBrowserSelection || readsBrowserRole) {
         try {
           const runtime = getInstalledRoleRuntime();

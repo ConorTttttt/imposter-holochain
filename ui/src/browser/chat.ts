@@ -79,6 +79,8 @@ export function mountBrowserChat() {
 
       const nextKey = JSON.stringify([next.dna, next.lobby, next.identity]);
       if (key !== nextKey) {
+        log.sync(null);
+        input.value = "";
         key = nextKey;
         transport?.stop();
         transport = new BrowserMovement(next.dna, next.lobby, next.identity, next.sign);

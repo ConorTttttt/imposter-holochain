@@ -9,8 +9,8 @@ export async function nativeMembership(port: number, database: string) {
   const db = new DatabaseSync(database, { readOnly: true });
   const admission = db.prepare(`SELECT 1 FROM allowed_agents a
     JOIN session_dnas d ON d.agent_pubkey = a.agent_pubkey
-    WHERE a.agent_pubkey = ? AND d.dna_hash = ?
-    AND EXISTS (SELECT 1 FROM sessions s WHERE s.agent_pubkey = a.agent_pubkey)`);
+    JOIN sessions s ON s.token = d.token AND s.agent_pubkey = a.agent_pubkey
+    WHERE a.agent_pubkey = ? AND d.dna_hash = ?`);
   const options = { wsClientOptions: { origin: readerOrigin } };
   const admin = await AdminWebsocket.connect({ ...options, url: new URL(`ws://127.0.0.1:${port}`) });
   const cells = await admin.listCellIds();
@@ -26,7 +26,11 @@ export async function nativeMembership(port: number, database: string) {
   const installedDna = encodeHashToBase64(cell[0]);
   return {
     admitted(dna: string, agent: string) {
-      return dna === installedDna && Boolean(admission.get(agent, dna));
+      try {
+        return dna === installedDna && Boolean(admission.get(agent, dna));
+      } catch {
+        return false;
+      }
     },
     async seated(lobby: string, agent: string) {
       const view = await app.callZome({ cell_id: cell, zome_name: "game", fn_name: query,

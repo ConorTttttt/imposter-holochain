@@ -33,8 +33,15 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
     let lastChat = 0;
     let alive = true;
     const deadline = setTimeout(() => connection.close(1008), 7000);
-    const heartbeat = setInterval(() => {
-      if (seat && !membership.admitted(seat.dna, seat.agent)) return connection.close(1008);
+    const heartbeat = setInterval(async () => {
+      if (seat) {
+        try {
+          if (!membership.admitted(seat.dna, seat.agent) || !await membership.seated(seat.lobby, seat.agent))
+            return connection.close(1008);
+        } catch {
+          return connection.close(1008);
+        }
+      }
       if (alive) {
         alive = false;
         connection.ping();
@@ -70,6 +77,7 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
           last = now;
           frame = JSON.stringify([seat.agent, ...packet]);
         } else if (validChat(packet)) {
+          if (packet.meeting.startsWith("lobby:") && packet.meeting !== "lobby:" + seat.lobby) return connection.close(1008);
           if (now - lastChat < 400) return;
           lastChat = now;
           frame = JSON.stringify({ ...packet, hc: seat.agent, t: now });

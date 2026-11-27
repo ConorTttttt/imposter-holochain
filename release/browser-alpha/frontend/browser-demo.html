@@ -171,7 +171,7 @@ function updateGameplay(ready) {
     if (name === 'press_emergency') return write('press_browser_emergency', action);
     if (!['commit_vote','reveal_vote','resolve_meeting'].includes(name) || !state.active_meeting ||
         hash(payload?.meeting ?? payload) !== hash(state.active_meeting.meeting)) throw Error('Meeting changed.');
-    return write(name, payload);
+    return write('browser_' + name, {lobby: action, ballot: payload});
   };
   const paused = browserMeeting.render(current ? {state, dna: deployment.dna_hash, agent: identity, call: callMeeting, hash, toBytes: bytes} : null);
   const sign = hwc?.signJoiningNonce?.bind(hwc);

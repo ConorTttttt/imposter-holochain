@@ -158,6 +158,9 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
       const players = memberIndexes.map(i => browsers[i]);
       await Promise.all(players.map((browser, i) => prepareMovement(browser, names[i])));
       await checkMovement(players, until);
+      await players[0].evaluate(() => window.dispatchEvent(new Event('pagehide')));
+      await until(() => players[0].evaluate(() => document.getElementById('movement-status').textContent.includes('reconnecting')));
+      await until(() => players[0].evaluate(() => document.getElementById('movement-status').textContent === 'Movement connected'));
       const crew = roles.map((value,i) => value.role === 0 ? i : -1).filter(i => i >= 0);
       const caller = roles.findIndex(value => value.role === 1);
       await completeEngineTask(players[crew[0]], names[crew[0]], until);
@@ -276,8 +279,12 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
       assert.equal((await ownRole(0)).role, roles[0].role);
       await verifyNative();
     });
-    await step('FIREFOX_REAUTHENTICATES_AND_GETS_FRESH_HPKE_RECEIPT', async () => {
+    await step('FIREFOX_PROCESS_RESTART_RECOVERS_IDENTITY_AND_ROLE', async () => {
       await restart(3, ids[3]);
+      await until(async () => await text(browsers[3], 'active-code') === second.code);
+      assert.equal((await ownRole(3)).role, roles[2].role);
+    });
+    if (reconnect) await step('FIREFOX_REAUTHENTICATES_AND_GETS_FRESH_HPKE_RECEIPT', async () => {
       await reconnect(3, ids[3], async () => {
         const {result} = await game(browsers[3], 'get_browser_lobby_role', raw(second.lobby));
         assert.notEqual(result, 0);

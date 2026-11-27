@@ -315,7 +315,7 @@ def lock_profiles(profiles):
                 raise GateError("OPERATOR_PROFILE_IN_USE") from error
         # Chromium owns this sentinel, including when it is a dangling symlink.
         gate("OPERATOR_PROFILE_IN_USE",
-             not any(os.path.lexists(profile / "SingletonLock") for profile in profiles[:2]))
+             not any(os.path.lexists(profile / "SingletonLock") for profile in profiles[:-1]))
         yield
 
 
@@ -352,13 +352,14 @@ def operator(args, scratch, report, verified):
     passed("OPERATOR_FRONTEND_EXACT_RELEASE")
     check_operator_origin("GATEWAY", lambda: preflight_gateway(public))
     passed("OPERATOR_GATEWAY_HTTPS_WSS_ISOLATION")
-    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 3 and len(set(profiles)) == 3
+    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 4 and len(set(profiles)) == 4
          and all(private(path, directory=True) and any(path.iterdir()) for path in profiles)
          and not any(a.is_relative_to(b) for a in profiles for b in profiles if a != b))
     gate("OPERATOR_ADMISSION_STATE_UNAVAILABLE", private(admission_db))
     gate("FIREFOX_EXTENSION_CHECKSUM",
          isinstance(firefox_checksum, str) and re.fullmatch(r"[0-9a-f]{64}", firefox_checksum))
     verify_chromium_tree(chrome, release / EXTENSION)
+    gate("FIREFOX_EXTENSION_CHECKSUM", firefox_checksum == manifest["artifacts"]["firefox-desktop-hwc.zip"])
     firefox = stage_firefox(firefox_package, firefox_checksum, scratch)
     passed("OPERATOR_EXTENSION_PROVENANCE")
     try:
