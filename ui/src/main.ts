@@ -8,7 +8,7 @@ import { Sounds } from "./game/sound.js";
 import { colorHex } from "./game/colors.js";
 import { pickRelayAddress } from "./game/relays.js";
 import { gameKey, recordGameXp } from "./game/xp.js";
-import { tryLoadHeads } from "./game/heads.js";
+import { equippedHeadImage, tryLoadHeads } from "./game/heads.js";
 import { startMiniGame, type MiniGame } from "./game/minigames.js";
 import { DEFAULT_PLAYERS, DEFAULT_SETTINGS, killRadius, maxImpostors, type GameSettings } from "./game/settings.js";
 import { CAMS_H, CAMS_W, draw, drawCameras, VIEW_H, VIEW_W, type Dot } from "./game/canvas.js";
@@ -1039,6 +1039,7 @@ function tick() {
     return b.at ? [{ name: p?.name ?? "?", color: colorHex(p?.color ?? 0), x: b.at.x, y: b.at.y }] : [];
   });
   draw(ctx, {
+    headImage: equippedHeadImage,
     dots,
     bodies,
     atEmergency: model.near.atEmergency && !iAmDead,

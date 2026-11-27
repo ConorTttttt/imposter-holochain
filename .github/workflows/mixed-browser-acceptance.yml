@@ -1,4 +1,4 @@
-name: Repeatable Chromium and Firefox browser lobbies
+name: Unified Chromium and Firefox gameplay
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/mixed-browser-acceptance.yml'
       - 'ci/alpha-operator/**'
+      - 'ui/**'
       - 'ci/installed-role/browser-demo.patch'
       - 'compatibility/hwc-imposter-compatibility/**'
       - 'release/browser-alpha/**'
@@ -129,6 +130,13 @@ jobs:
           name: mixed-browser-extension-packages
           path: ${{ runner.temp }}/mixed-extension-packages/
           if-no-files-found: error
+      - name: Compile the patched Holochain 0.7 zomes
+        run: |
+          git -C game worktree add --detach "$RUNNER_TEMP/unified-native" HEAD
+          git -C "$RUNNER_TEMP/unified-native" apply "$PWD/release/browser-alpha/native-repeatable.patch"
+          git -C "$RUNNER_TEMP/unified-native" apply "$PWD/release/browser-alpha/native-unified.patch"
+          cd "$RUNNER_TEMP/unified-native"
+          nix develop --no-write-lock-file --command cargo check --locked -p game -p game_integrity --target wasm32-unknown-unknown
       - name: Run native Zome authorization regressions
         working-directory: game
         run: nix develop --no-write-lock-file --command cargo test --locked -p imposter-core
@@ -153,7 +161,12 @@ jobs:
           curl --retry 6 --retry-connrefused --retry-delay 1 --fail --silent http://127.0.0.1:4444/status >/dev/null
           python3 ci/alpha-operator/mixed-browser-run.py fixture --game game --hwc hwc --firefox firefox \
             --gateway gateway-artifact/role-gateway/h2hc-linker-linux-x86_64 \
-            --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json"
+            --candidate "$RUNNER_TEMP/unified-release" --caddy "$RUNNER_TEMP/caddy" --report "$RUNNER_TEMP/mixed-browser-evidence.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unified-browser-release-fixture
+          path: ${{ runner.temp }}/unified-release/
+          if-no-files-found: error
       - name: Upload only anonymous stage evidence
         if: always()
         uses: actions/upload-artifact@v4

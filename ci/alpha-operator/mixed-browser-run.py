@@ -181,6 +181,9 @@ def fixture(args, scratch):
     front_port, gateway_port = free_port(), free_port()
     while gateway_port == front_port:
         gateway_port = free_port()
+    movement_port = free_port()
+    while movement_port in (front_port, gateway_port, 8090, 33555, 33557):
+        movement_port = free_port()
     front, gateway = (f"https://localhost:{port}" for port in (front_port, gateway_port))
     public = {**TEST_NETWORK, "frontend_origin": front, "gateway_origin": gateway}
     paths = {
@@ -192,7 +195,7 @@ def fixture(args, scratch):
     activate_site(paths["static_root"], {name: (RELEASE / "frontend" / name).read_bytes() for name in SETUP})
     caddyfile = scratch / "Caddyfile"
     caddyfile.write_text("{\n    admin off\n    auto_https disable_redirects\n}\n" +
-                         proxy_config(public, paths).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
+                         proxy_config(public, paths, movement_port).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
                          .replace(gateway + " {\n", f"{gateway} {{\n    tls {cert} {key}\n    bind 127.0.0.1\n"))
     caddy_env = {**os.environ, "XDG_DATA_HOME": str(scratch / "caddy-data"),
                  "XDG_CONFIG_HOME": str(scratch / "caddy-config")}
@@ -227,7 +230,12 @@ def fixture(args, scratch):
             with log.open("a") as stream, redirect_stdout(stream):
                 remote_preflight(public, release)
             with authorities(args.game, release, scratch / "native", log):
-                launch("round", config_with_release(config, manifest), scratch, args.report)
+                with service(["node", str(release / "backend/movement-relay.mjs"), front, str(movement_port),
+                              "33555", str(paths["gateway_session_db"])], movement_port, scratch, os.environ):
+                    launch("round", config_with_release(config, manifest), scratch, args.report)
+        if args.candidate:
+            from shutil import copytree
+            copytree(release, args.candidate)
 
 
 def check_operator_origin(origin, check):
@@ -422,6 +430,7 @@ def main():
     for field in ("game", "hwc", "firefox", "gateway", "caddy", "report"):
         cloud.add_argument("--" + field, type=lambda path: Path(path).resolve(), required=True)
     live = sub.add_parser("operator")
+    cloud.add_argument("--candidate", type=Path)
     live.add_argument("--config", type=Path, required=True)
     live.add_argument("--report", type=Path, required=True)
     live.add_argument("--round", action="store_true")

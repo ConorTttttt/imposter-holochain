@@ -484,7 +484,7 @@ async function main(config, command) {
       agents, browsers, dna: config.dna, step, until,
       async restart(index, label) {
         await browsers[index].close();
-        const browser = await launchChromium(config, config.profiles[index]);
+        const browser = await (index === 3 ? launchFirefox : launchChromium)(config, config.profiles[index]);
         browsers[index] = browser;
         requireCheck(await setup(browser, label) === agents[index], label + '_LAIR_IDENTITY_CHANGED');
         requireCheck(await installed(browser, config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');

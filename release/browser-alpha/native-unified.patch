@@ -1,8 +1,145 @@
 diff --git a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
-index 20e7b48..a5eff36 100644
+index 20e7b48..4207136 100644
 --- a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
 +++ b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
-@@ -276,8 +276,13 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
+@@ -84,12 +84,20 @@ fn record_join(lobby: ActionHash, player: AgentPubKey, display_name: String) ->
+     must_get_valid_record(join)
+ }
+ 
+-fn open_lobby(code: String, existing: Option<&Record>, display_name: String) -> ExternResult<Record> {
++#[derive(Serialize, Deserialize, Debug)]
++pub struct BrowserHostOptions {
++    pub display_name: String,
++    pub tasks_per_player: Option<u32>,
++}
++
++fn open_lobby(tasks_per_player: Option<u32>, code: String, existing: Option<&Record>, display_name: String) -> ExternResult<Record> {
++    let count = tasks_per_player.unwrap_or(1);
++    if !matches!(count, 1 | 3 | 6 | 18) { return Err(browser_error("invalid task count")); }
+     let root = if let Some(record) = existing {
+         record.action_address().clone()
+     } else {
+         create_entry(EntryTypes::Lobby(Lobby {
+-            code: code.clone(), player_count: 3, impostor_count: 1, task_target: 1,
++            code: code.clone(), player_count: 3, impostor_count: 1, task_target: count * 2,
+         }))?
+     };
+     // Publish the host's seat before advertising the code to guests.
+@@ -99,19 +107,20 @@ fn open_lobby(code: String, existing: Option<&Record>, display_name: String) ->
+ }
+ 
+ #[hdk_extern]
+-pub fn create_browser_lobby(input: JoinLobby) -> ExternResult<Record> {
++pub fn create_browser_lobby(input: BrowserHostOptions) -> ExternResult<Record> {
+     bound_host()?;
+     let lobbies = local_lobbies()?;
+     if let Some(latest) = lobbies.last() {
+         let lobby = app_entry::<Lobby>(latest).ok_or_else(|| browser_error("invalid local lobby"))?;
+-        return open_lobby(lobby.code, Some(latest), input.display_name);
++        return open_lobby(input.tasks_per_player, lobby.code, Some(latest), input.display_name);
+     }
+     let id: String = random_bytes(16)?.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+-    open_lobby(format!("{BROWSER_LOBBY_PREFIX}{id}"), None, input.display_name)
++    open_lobby(input.tasks_per_player, format!("{BROWSER_LOBBY_PREFIX}{id}"), None, input.display_name)
+ }
+ 
+ #[derive(Serialize, Deserialize, Debug)]
+ pub struct NewBrowserGame {
++    pub tasks_per_player: Option<u32>,
+     pub previous_lobby: ActionHash,
+     pub display_name: String,
+ }
+@@ -136,11 +145,11 @@ pub fn new_browser_game(input: NewBrowserGame) -> ExternResult<Record> {
+                 app_entry::<RoleCommit>(r).is_some_and(|c| &c.lobby == latest.action_address())
+             })
+         {
+-            return open_lobby(code, Some(latest), input.display_name);
++            return open_lobby(input.tasks_per_player, code, Some(latest), input.display_name);
+         }
+         return Err(browser_error("stale lobby: open the host's latest game"));
+     }
+-    open_lobby(code, None, input.display_name)
++    open_lobby(input.tasks_per_player, code, None, input.display_name)
+ }
+ 
+ #[derive(Serialize, Deserialize, Debug)]
+@@ -202,6 +211,7 @@ pub fn start_browser_round(action: ActionHash) -> ExternResult<CommitOnlyResult>
+     if records.iter().any(|r| app_entry::<GameResult>(r).is_some()) {
+         return Err(browser_error("this lobby is completed"));
+     }
++    let count = lobby.task_target.div_ceil(2) as usize;
+     let dealt = ensure_role_commit_in(records, action.clone(), host, lobby)?;
+     let local = query(ChainQueryFilter::new().include_entries(true))?;
+     let task_list = if let Some(record) = local.iter()
+@@ -210,7 +220,27 @@ pub fn start_browser_round(action: ActionHash) -> ExternResult<CommitOnlyResult>
+     } else {
+         create_entry(EntryTypes::TaskList(TaskList {
+             lobby: action.clone(),
+-            tasks: vec![Task { id: 0, name: "Align Engine Output".into(), x: 1240, y: 1560 }],
++            tasks: [
++                ("Align Engine Output", 1240, 1560),
++                ("Refuel Reactor", 620, 1720),
++                ("Calibrate Distributor", 630, 2060),
++                ("Prime Shields", 420, 380),
++                ("Chart Course", 1040, 110),
++                ("Medical Scan", 400, 890),
++                ("Calibrate Targeting", 2000, 350),
++                ("Check Oxygen Filters", 2030, 860),
++                ("Relay Ship Status", 960, 420),
++                ("Verify Shipment", 1790, 1250),
++                ("Scan Container", 2010, 1250),
++                ("Confirm Manifest", 2010, 1380),
++                ("Assign Cargo Route", 1790, 1380),
++                ("Synchronize Inventory", 2130, 1840),
++                ("Clear Network Alerts", 620, 1360),
++                ("Reset Breakers", 300, 2190),
++                ("Inspect Decontam Seals", 1800, 2020),
++                ("Log Crew Status", 1470, 1040),
++            ].into_iter().take(count).enumerate().map(|(id, (name, x, y))|
++                Task { id: id as u16, name: name.into(), x, y }).collect(),
+         }))?
+     };
+     ensure_index(action.into(), &task_list)?;
+@@ -219,6 +249,18 @@ pub fn start_browser_round(action: ActionHash) -> ExternResult<CommitOnlyResult>
+ 
+ #[hdk_extern]
+ pub fn complete_browser_task(action: ActionHash) -> ExternResult<Record> {
++    complete_browser_console(BrowserConsole { lobby: action, task_id: 0 })
++}
++
++#[derive(Serialize, Deserialize, Debug)]
++pub struct BrowserConsole {
++    pub lobby: ActionHash,
++    pub task_id: u16,
++}
++
++#[hdk_extern]
++pub fn complete_browser_console(input: BrowserConsole) -> ExternResult<Record> {
++    let action = input.lobby;
+     let records = records_for_browser_lobby(browser_root(action.clone())?)?;
+     if records.iter().any(|r| app_entry::<GameResult>(r).is_some() || app_entry::<RolesReveal>(r).is_some()) {
+         return Err(browser_error("this lobby is completed"));
+@@ -233,13 +275,17 @@ pub fn complete_browser_task(action: ActionHash) -> ExternResult<Record> {
+     if lists.next().is_some() {
+         return Err(browser_error("conflicting browser task lists"));
+     }
++    if meeting_in_progress(&records) || !app_entry::<TaskList>(list)
++        .is_some_and(|tl| tl.tasks.iter().any(|t| t.id == input.task_id)) {
++        return Err(browser_error("console unavailable for this round"));
++    }
+     let task_list = list.action_address().clone();
+     let local = query(ChainQueryFilter::new().include_entries(true))?;
+     let completion = if let Some(record) = local.iter()
+-        .find(|r| app_entry::<TaskComplete>(r).is_some_and(|t| t.task_list == task_list && t.task_id == 0)) {
++        .find(|r| app_entry::<TaskComplete>(r).is_some_and(|t| t.task_list == task_list && t.task_id == input.task_id)) {
+         record.action_address().clone()
+     } else {
+-        create_entry(EntryTypes::TaskComplete(TaskComplete { task_list, task_id: 0 }))?
++        create_entry(EntryTypes::TaskComplete(TaskComplete { task_list, task_id: input.task_id }))?
+     };
+     ensure_index(action.into(), &completion)?;
+     must_get_valid_record(completion)
+@@ -276,8 +322,13 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
  
      let tasks = task_completions(&records, real_tasks(&records, &lobby, &rc, &seal.roles, &seal.salt));
      let tasks_done = tasks.len() as u32;
@@ -18,7 +155,7 @@ index 20e7b48..a5eff36 100644
      let Some(outcome) = win_outcome(impostors_alive, crew_alive, tasks_done, lobby.task_target) else {
          return Ok(None);
      };
-@@ -291,10 +296,26 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
+@@ -291,10 +342,26 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
      let result = GameResult {
          lobby: action.clone(), roles_reveal: reveal, outcome, impostors_alive, crew_alive,
          tasks_done, tasks_total: lobby.task_target,
@@ -209,7 +346,7 @@ index 836ae2a..2c245bc 100644
          }
          TallyOutcome::NoEjection => {}
 diff --git a/dnas/game/zomes/integrity/game_integrity/src/lib.rs b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
-index 51cfad2..9c05012 100644
+index 51cfad2..32d28fc 100644
 --- a/dnas/game/zomes/integrity/game_integrity/src/lib.rs
 +++ b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
 @@ -120,6 +120,8 @@ pub enum MeetingTrigger {
@@ -238,6 +375,15 @@ index 51cfad2..9c05012 100644
      } else {
          return invalid("unsupported browser round record");
      };
+@@ -647,7 +659,7 @@ fn validate_entry(
+             if l.code.starts_with(BROWSER_LOBBY_PREFIX) {
+                 if !browser_lobby_code_valid(&l.code)
+                     || !matches!(parse_game_seed(&dna_info()?.modifiers.network_seed), Ok(SeedOwner::Host(_)))
+-                    || (l.player_count, l.impostor_count, l.task_target) != (3, 1, 1) {
++                    || (l.player_count, l.impostor_count) != (3, 1) || !matches!(l.task_target, 1 | 2 | 6 | 12 | 36) {
+                     return invalid("invalid host-bound browser lobby code or settings");
+                 }
+                 if let Some(previous) = browser_previous_result(&l.code) {
 @@ -747,13 +759,18 @@ fn validate_entry(
          }
  

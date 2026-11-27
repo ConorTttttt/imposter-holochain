@@ -28,12 +28,13 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
 </style>
 </head>
 <body><main>
-<header><div><h1>IMPOSTER</h1><p>Three-player browser demo</p></div>
+<header><div><h1>IMPOSTER</h1><p>Three-player browser gameplay</p></div>
 <span id="connection-state" class="badge" data-status="connecting" role="status">Connecting…</span></header>
 <section class="panel" aria-label="Join or host lobby">
 <label for="player-name">Your display name<input id="player-name" maxlength="24" autocomplete="nickname" placeholder="Player name"></label>
 <label for="room-code">Lobby code<input id="room-code" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Paste the host's lobby code"></label>
 <div class="actions">
+<label id="task-count-label" hidden>Tasks per crewmate <select id="task-count"><option>1</option><option>3</option><option selected>6</option><option>18</option></select></label>
 <button id="create-lobby" type="button" hidden disabled>Create Lobby</button>
 <button id="new-game" type="button" hidden disabled>New Game</button>
 <button id="join-lobby" type="button" disabled>Join Lobby</button>
@@ -54,18 +55,50 @@ small{color:#9aacc7}code{word-break:break-all}.muted{color:#aebfd7}
 <p id="my-role" aria-live="polite">Not assigned — roles stay private until the host deals.</p>
 <div class="actions">
 <button id="start-round" type="button" hidden disabled>Start round</button>
-<button id="complete-task" class="secondary" type="button" hidden disabled>Align Engine Output</button>
 </div>
 <p id="task-progress" aria-live="polite" hidden></p>
 </section>
 <p class="muted"><small>The operator must first install the verified host-bound hApp and authorize each browser identity with the gateway. Share the active lobby code with your guests. Open Joined Lobby recovers a seat you already hold.</small></p>
+<section id="gameplay-map" class="panel" aria-label="Ship map" hidden>
+<div class="gameplay-header"><h2 id="ship-location">Navigator Bridge</h2><span id="movement-status" role="status"></span></div>
+<canvas tabindex="0" aria-label="Ship map. Use WASD or the arrow keys to move."></canvas>
+<p>Focus the map, then use WASD or the arrow keys to move. Press E to use a nearby console.</p>
+<div class="actions">
+  <button id="use-console" type="button" disabled>Use console (E)</button>
+  <button id="call-emergency" class="secondary" type="button" disabled>Call emergency meeting</button>
+  <button id="report-body" class="secondary" type="button" hidden disabled>Report body</button>
+</div>
+<p id="map-meeting-status" role="status"></p>
+<p id="console-status" role="status"></p>
+<ul id="console-tasks" aria-label="Your tasks"></ul>
+<dialog id="console-game" aria-labelledby="console-title">
+  <div class="gameplay-header"><h3 id="console-title"></h3>
+  <form method="dialog"><button type="submit" class="secondary">Close</button></form></div>
+  <div class="console-body"></div>
+</dialog>
+<ol id="movement-players" aria-label="Player movement connections"></ol>
+</section>
+<section id="browser-meeting" class="panel" aria-label="Meeting" hidden>
+  <h2></h2>
+  <p id="meeting-timer"></p>
+  <p id="meeting-vote-status" role="status"></p>
+  <div class="actions" id="meeting-ballot"></div>
+  <button id="meeting-back" type="button" hidden>Back to the game</button>
+</section>
+<section id="browser-chat" class="panel" aria-label="Chat" hidden>
+  <h2>Lobby chat</h2>
+  <div id="browser-chat-log" role="log" aria-live="polite"></div>
+  <p id="browser-chat-status" role="status"></p>
+  <form><input aria-label="Chat message" placeholder="Write a message" autocomplete="off" disabled>
+    <button type="submit" class="secondary" disabled>Send</button></form>
+</section>
 </main>
 <script type="module">
 const $ = id => document.getElementById(id);
 const code = $('room-code'), name = $('player-name'), notice = $('notice'), badge = $('connection-state');
 const controls = {
   create: $('create-lobby'), new: $('new-game'), join: $('join-lobby'), reopen: $('reopen-lobby'),
-  retry: $('retry-connection'), start: $('start-round'), task: $('complete-task'),
+  retry: $('retry-connection'), start: $('start-round'),
 };
 const validCode = /^b1\.(?:[0-9a-f]{32}|uhCkk[A-Za-z0-9_-]{48})$/;
 let client, deployment, gateway, identity, lobby, state, poll;
@@ -113,9 +146,50 @@ function errorText(error) {
   return value.slice(0, 220);
 }
 
+const browserMap = imposterBrowserMap.mountBrowserMap();
+const browserMeeting = imposterBrowserMap.mountBrowserMeetings(buttons);
+const browserChat = imposterBrowserMap.mountBrowserChat();
+
+function updateGameplay(ready) {
+  const current = ready && state && lobby && hash(lobby);
+  const action = lobby, version = generation, hwc = client;
+  async function write(name, payload) {
+    if (!current || busy || generation !== version || !lobby || hash(lobby) !== current) throw Error('Lobby selection changed.');
+    busy = true;
+    try {
+      const status = await hwc.getConnectionStatus();
+      if (!status.authenticated || !status.wsHealthy || status.linkerUrl !== gateway ||
+          generation !== version || hash(await call(hwc, 'get_selected_browser_lobby')) !== current)
+        throw Error('Active lobby connection changed.');
+      return await call(hwc, name, payload);
+    } finally {
+      busy = false;
+      await refresh();
+    }
+  }
+  const callMeeting = async (name, payload) => {
+    if (name === 'press_emergency') return write('press_browser_emergency', action);
+    if (!['commit_vote','reveal_vote','resolve_meeting'].includes(name) || !state.active_meeting ||
+        hash(payload?.meeting ?? payload) !== hash(state.active_meeting.meeting)) throw Error('Meeting changed.');
+    return write(name, payload);
+  };
+  const paused = browserMeeting.render(current ? {state, dna: deployment.dna_hash, agent: identity, call: callMeeting, hash, toBytes: bytes} : null);
+  const sign = hwc?.signJoiningNonce?.bind(hwc);
+  browserMap.update({authenticated: Boolean(current), state: paused ? null : state,
+    dna: deployment?.dna_hash, lobby: current, identity, hash, sign, role, toBytes: bytes, callMeeting,
+    submit: async id => {
+      if (!state.tasks.some(t => t.id === id) || await call(hwc, 'get_browser_lobby_role', action) !== 0) throw Error('Crew task unavailable.');
+      return write('complete_browser_console', {lobby: action, task_id: id});
+    }});
+  browserChat.update(current && sign ? {identity, dna: deployment.dna_hash, lobby: current, phase: state.phase,
+    sign, meeting: state.active_meeting ? hash(state.active_meeting.meeting) : null,
+    players: state.players.map(p => ({keyB64:hash(p.key),name:p.name,dead:p.dead,color:p.color}))} : null);
+}
+
 function buttons() {
   const ready = client && identity && badge.dataset.status === 'ready' && !busy;
   const host = identity && identity === deployment?.host_agent_pub_key;
+  $('task-count-label').hidden = !host || (Boolean(lobby) && state?.phase !== 'ended');
   controls.create.hidden = !host || Boolean(lobby);
   controls.create.disabled = !ready || controls.create.hidden;
   controls.new.hidden = !host || state?.phase !== 'ended';
@@ -127,8 +201,7 @@ function buttons() {
     (state.phase !== 'lobby' && !publish);
   controls.start.disabled = !ready || controls.start.hidden;
   controls.start.textContent = publish ? 'Publish task' : 'Start round';
-  controls.task.hidden = role !== 0 || state?.phase !== 'playing' || !state.tasks?.some(task => task.id === 0);
-  controls.task.disabled = !ready || controls.task.hidden || state?.my_tasks_done?.includes(0);
+  updateGameplay(client && identity && badge.dataset.status === "ready");
 }
 
 function render() {
@@ -138,14 +211,14 @@ function render() {
   $('active-code').textContent = state?.code ?? '';
   $('seat-count').textContent = players.length + '/' + count;
   const phase = state?.phase;
-  const labels = {lobby: 'Lobby', playing: 'Playing', ended: 'Ended'};
+  const labels = {lobby: 'Lobby', playing: 'Playing', meeting: 'Meeting', ended: 'Ended'};
   const result = {crew_win: 'Crew wins', impostors_win: 'Impostors win'}[state?.result?.outcome];
   $('round-state').textContent = phase
     ? 'Phase: ' + (labels[phase] ?? phase) + (result ? ' · ' + result : '')
     : 'Waiting for an active lobby.';
   const lobbyStatus = {
     lobby: players.length === count ? 'Lobby full' : 'Waiting for players',
-    playing: 'Round in progress', ended: 'Lobby ended',
+    playing: 'Round in progress', meeting: 'Emergency meeting', ended: 'Lobby ended',
   };
   $('lobby-phase').textContent = phase ? lobbyStatus[phase] +
     (state.my_seat == null ? ' · No seat' : ' · Your seat: ' + (state.my_seat + 1))
@@ -230,10 +303,12 @@ async function refresh() {
     state = snapshot;
     render();
     if (state?.phase === 'playing' && state.my_seat != null) void readRole(hwc, action, version);
-    if (state?.phase === 'playing' && state.is_host && state.tasks_done >= state.task_target)
+    if (state?.phase === 'playing' && state.is_host && (state.tasks_done >= state.task_target || state.active_meeting?.resolved?.kind === 'ejected'))
       await call(hwc, 'finish_browser_round', action);
   } catch (error) {
     if (version === generation) {
+      state = null;
+      setStatus('error', 'Connection unavailable');
       clearRole();
       render();
       message(errorText(error), true);
@@ -313,12 +388,11 @@ async function act(kind) {
   const display_name = name.value.trim() || 'Player';
   const enteredCode = code.value.trim();
   const calls = {
-    create: ['create_browser_lobby', {display_name}, 'Creating lobby…'],
-    new: ['new_browser_game', {previous_lobby: lobby, display_name}, 'Creating a new game…'],
+    create: ['create_browser_lobby', {display_name, tasks_per_player: Number($('task-count').value)}, 'Creating lobby…'],
+    new: ['new_browser_game', {previous_lobby: lobby, display_name, tasks_per_player: Number($('task-count').value)}, 'Creating a new game…'],
     join: ['join_browser_lobby', {code: enteredCode, display_name}, 'Joining lobby…'],
     reopen: ['reopen_browser_lobby', enteredCode, 'Opening joined lobby…'],
     start: ['start_browser_round', lobby, 'Starting round…'],
-    task: ['complete_browser_task', lobby, 'Completing task…'],
   };
   const [fn, payload, pending] = calls[kind];
   const selection = ['create', 'new', 'join', 'reopen'].includes(kind);
@@ -344,7 +418,7 @@ async function act(kind) {
   }
 }
 
-for (const kind of ['create', 'new', 'join', 'reopen', 'start', 'task'])
+for (const kind of ['create', 'new', 'join', 'reopen', 'start'])
   controls[kind].addEventListener('click', () => void act(kind));
 controls.retry.addEventListener('click', () => void init(true));
 code.addEventListener('input', buttons);

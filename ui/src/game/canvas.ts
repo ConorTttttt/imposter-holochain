@@ -1,5 +1,4 @@
 import { blockieCanvas } from "./blockie.js";
-import { equippedHeadImage } from "./heads.js";
 import {
   BLOCKS,
   CAMERAS,
@@ -61,6 +60,7 @@ export type CanvasView = {
   taskTarget: number;
   /** How far I see (map px); null = the whole map (no fog, or I'm a ghost). */
   vision: number | null;
+  headImage?: (keyB64: string) => HTMLImageElement | null;
 };
 
 // A player's on-screen size: a capsule body plus a flat head plate above it,
@@ -295,7 +295,7 @@ export function draw(ctx: CanvasRenderingContext2D, v: CanvasView): void {
     ctx.roundRect(d.x - HEAD_SIZE / 2 + inset, headTop + inset, HEAD_SIZE - inset * 2, HEAD_SIZE - inset * 2, 2);
     ctx.clip();
     ctx.drawImage(
-      equippedHeadImage(d.keyB64) ?? blockieCanvas(d.keyB64, HEAD_SIZE - inset * 2),
+      v.headImage?.(d.keyB64) ?? blockieCanvas(d.keyB64, HEAD_SIZE - inset * 2),
       d.x - HEAD_SIZE / 2 + inset,
       headTop + inset,
       HEAD_SIZE - inset * 2,

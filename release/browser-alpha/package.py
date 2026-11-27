@@ -18,7 +18,7 @@ GATEWAY = "backend/h2hc-linker-linux-x86_64"
 EXTENSION = "chromium-hwc.zip"
 SETUP = {"browser-setup.html", "browser-setup.js"}
 FILES = {
-    EXTENSION, HAPP, DNA, GATEWAY, "frontend/browser-demo.html",
+    "firefox-desktop-hwc.zip", "backend/movement-relay.mjs", EXTENSION, HAPP, DNA, GATEWAY, "frontend/browser-demo.html",
     "frontend/deployment.json", "config/public.example.json", "config/operator.example.json",
 } | {f"frontend/{name}" for name in SETUP}
 SECRET_MARKERS = re.compile(
@@ -176,6 +176,7 @@ def assemble(args):
         for source, target in [(args.native / "app" / f"{APP_ID}.happ", HAPP),
                                (args.native / "dna/game.dna", DNA), (args.gateway, GATEWAY),
                                (args.demo, "frontend/browser-demo.html"),
+                               (args.firefox, "firefox-desktop-hwc.zip"), (args.relay, "backend/movement-relay.mjs"),
                                *((HERE / "frontend" / name, "frontend/" + name) for name in sorted(SETUP)),
                                (HERE / "public.example.json", "config/public.example.json"),
                                (HERE / "operator.example.json", "config/operator.example.json")]:
@@ -215,7 +216,7 @@ def main():
         command.add_argument("--release-commit", required=True)
         command.add_argument("--identity", choices=["OPERATOR_SUPPLIED_PUBLIC_INPUT", "EPHEMERAL_CI_ONLY"],
                              default="OPERATOR_SUPPLIED_PUBLIC_INPUT")
-    for name in ("native", "extension", "gateway", "demo"):
+    for name in ("native", "extension", "gateway", "demo", "firefox", "relay"):
         assembler.add_argument(f"--{name}", type=Path, required=True)
     assembler.add_argument("--node-version", required=True)
     assembler.add_argument("--npm-version", required=True)

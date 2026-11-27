@@ -424,7 +424,10 @@ function settingsHtml(s: StateV, editable = false): string {
 
 /** Where a meeting stands on its timers: discussion first (a tie breaker has
  *  none), then voting, which closes after the voting time if there is one. */
-export function meetingClock(s: StateV, now: number): { discussing: boolean; votingEndsAt: number | null; text: string } {
+export function meetingClock(s: {
+  active_meeting: Pick<NonNullable<StateV["active_meeting"]>, "candidates" | "opened_at_ms" | "resolved"> | null;
+  settings: Pick<GameSettings, "discussion_s" | "voting_s">;
+}, now: number): { discussing: boolean; votingEndsAt: number | null; text: string } {
   const mt = s.active_meeting;
   if (!mt || mt.resolved) return { discussing: false, votingEndsAt: null, text: "" };
   const votingOpensAt = mt.opened_at_ms + (mt.candidates ? 0 : s.settings.discussion_s * 1000);
@@ -598,7 +601,9 @@ function ejectionHtml(s: StateV, seat: number | null): string {
 
 /** The tally, option by option, most votes first: the seats that voted for each
  *  (null voters when votes are anonymous). */
-export function voteGroups(s: StateV): { choice: number | null; voters: (number | null)[] }[] {
+export function voteGroups(s: {
+  active_meeting: Pick<NonNullable<StateV["active_meeting"]>, "votes"> | null;
+}): { choice: number | null; voters: (number | null)[] }[] {
   const groups = new Map<number | null, (number | null)[]>();
   for (const v of s.active_meeting?.votes ?? []) groups.set(v.choice, [...(groups.get(v.choice) ?? []), v.voter]);
   return [...groups.entries()]
