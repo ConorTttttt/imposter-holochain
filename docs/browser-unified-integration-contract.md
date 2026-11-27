@@ -21,3 +21,9 @@ Integration owns release assembly, extension selection hooks, native round selec
 ## Open contracts
 
 The gameplay donor keys relay rooms by DNA and its page builder assumes the deployment seed identifies the game. Neither behavior satisfies this contract. The relay membership evidence source, meeting/result validation path and recovery behavior require implementation and genuine mixed-browser acceptance before operator use.
+
+## Implemented interfaces on the draft branch
+
+The page reads get_selected_browser_lobby and passes the resulting action to get_browser_game_state and get_browser_lobby_role. start_browser_round publishes the configured console pool. complete_browser_console accepts lobby and task_id. press_browser_emergency takes the Lobby action. browser_commit_vote, browser_reveal_vote and browser_resolve_meeting take lobby plus ballot. The ballot retains the existing vote request shape or, for tally, the meeting action. Native code checks the current meeting, seat and phase. HWC performs selected-Lobby authorization on these writes and checks the caller's verified crew receipt before console completion.
+
+The relay uses the existing HWC signing interface with a fresh domain-separated origin, DNA, Lobby, agent and nonce transcript. It checks the pinned gateway's local registration and admission state and reads get_authoritative_game_view on a native authority using a function-limited signing grant. It subscribes the socket to the confirmed Lobby action and periodically rechecks membership. Native validation binds browser meetings, task completions and ejections to roster evidence. Review and hosted validation of these interfaces are pending. Use the draft PR for interface changes.
