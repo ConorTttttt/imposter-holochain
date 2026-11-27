@@ -42,6 +42,7 @@ git -C "$scratch/game" switch --detach FETCH_HEAD
 game=$scratch/game
 git -C "$game" apply --check "$rc/native-repeatable.patch"
 git -C "$game" apply "$rc/native-repeatable.patch"
+git -C "$game" apply "$rc/native-unified.patch"
 source_epoch=$(git -C "$game" show -s --format=%ct HEAD)
 native_identity=UNVERIFIED_OPERATOR_INPUT
 package_identity=OPERATOR_SUPPLIED_PUBLIC_INPUT

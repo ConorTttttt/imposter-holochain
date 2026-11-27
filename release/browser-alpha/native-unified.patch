@@ -1,0 +1,319 @@
+diff --git a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
+index 20e7b48..a5eff36 100644
+--- a/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
++++ b/dnas/game/zomes/coordinator/game/src/browser_lobbies.rs
+@@ -276,8 +276,13 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
+ 
+     let tasks = task_completions(&records, real_tasks(&records, &lobby, &rc, &seal.roles, &seal.salt));
+     let tasks_done = tasks.len() as u32;
+-    let impostors_alive = u32::from(lobby.impostor_count);
+-    let crew_alive = u32::from(lobby.player_count - lobby.impostor_count);
++    let dead = dead_players(&records, Some(&rc));
++    let mut crew_alive = 0;
++    let mut impostors_alive = 0;
++    for (seat, role) in rc.seats.iter().zip(&seal.roles) {
++        if dead.contains(seat) { continue; }
++        if *role == ROLE_IMPOSTOR { impostors_alive += 1; } else { crew_alive += 1; }
++    }
+     let Some(outcome) = win_outcome(impostors_alive, crew_alive, tasks_done, lobby.task_target) else {
+         return Ok(None);
+     };
+@@ -291,10 +296,26 @@ pub fn finish_browser_round(action: ActionHash) -> ExternResult<Option<GameResul
+     let result = GameResult {
+         lobby: action.clone(), roles_reveal: reveal, outcome, impostors_alive, crew_alive,
+         tasks_done, tasks_total: lobby.task_target,
+-        evidence: tasks.values().map(|r| r.action_address().clone()).collect(),
++        evidence: tasks.values().map(|r| r.action_address().clone())
++            .chain(records.iter().filter(|r| app_entry::<Ejection>(r).is_some())
++                .map(|r| r.action_address().clone())).collect(),
+         meltdown: None,
+     };
+     let record = create_entry(EntryTypes::GameResult(result.clone()))?;
+     ensure_index(action.into(), &record)?;
+     Ok(Some(result_view(&result)?))
+ }
++
++
++#[hdk_extern]
++pub fn press_browser_emergency(action: ActionHash) -> ExternResult<Record> {
++    let root = browser_root(action.clone())?;
++    let host = root.action().author().clone();
++    let lobby: Lobby = fetch(&action)?;
++    let records = records_for_browser_lobby(root)?;
++    let state = project_game_state(records.clone(), false)?;
++    if state.my_seat.is_none() || !matches!(state.phase, Phase::Playing) {
++        return Err(browser_error("an active seat is required to call a meeting"));
++    }
++    open_meeting_in(MeetingTrigger::Emergency, None, action, host, lobby, records)
++}
+diff --git a/dnas/game/zomes/coordinator/game/src/lib.rs b/dnas/game/zomes/coordinator/game/src/lib.rs
+index 836ae2a..2c245bc 100644
+--- a/dnas/game/zomes/coordinator/game/src/lib.rs
++++ b/dnas/game/zomes/coordinator/game/src/lib.rs
+@@ -1804,8 +1804,13 @@ const EMERGENCY_COOLDOWN_MS: i64 = 15_000;
+ /// checks: `validate` can't know "alive" without the host's secret, nor "since"
+ /// without trusting clocks.
+ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternResult<Record> {
+-    let (lobby_hash, host, _lobby) = find_lobby()?;
++    let (lobby_hash, host, lobby) = find_lobby()?;
+     let records = all_records()?;
++    open_meeting_in(trigger, body, lobby_hash, host, lobby, records)
++}
++
++fn open_meeting_in(trigger: MeetingTrigger, body: Option<AgentPubKey>, lobby_hash: ActionHash,
++    host: AgentPubKey, lobby: Lobby, records: Vec<Record>) -> ExternResult<Record> {
+     let Some((dealt_at, rc)) = records
+         .iter()
+         .find_map(|r| Some((r.action().timestamp(), app_entry::<RoleCommit>(r)?)))
+@@ -1859,13 +1864,17 @@ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternRes
+             }
+         }
+     }
++    let browser_commit = if browser_lobby_code_valid(&lobby.code) {
++        records.iter().find(|r| app_entry::<RoleCommit>(r).is_some()).map(|r| r.action_address().clone())
++    } else { None };
+     let ah = create_entry(EntryTypes::Meeting(Meeting {
+-        lobby: lobby_hash,
++        browser_commit,
++        lobby: lobby_hash.clone(),
+         trigger,
+         body,
+         tie_breaker_for: None,
+     }))?;
+-    link_entry(&ah)?;
++    index_round_entry(&lobby, &lobby_hash, &ah)?;
+     get(ah, GetOptions::network())?
+         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("meeting vanished".into())))
+ }
+@@ -2047,7 +2056,7 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
+         .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("{e:?}"))))?
+         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("that's not a meeting".into())))?;
+     if meeting.tie_breaker_for.is_none() {
+-        let (_, host, _) = find_lobby()?;
++        let host = must_get_valid_record(meeting.lobby.clone())?.action().author().clone();
+         let discussion_ms = current_settings(Some(&host))?.discussion_s as i64 * 1000;
+         let wait = record.action().timestamp().as_millis() as i64 + discussion_ms - now_ms()? - CLOCK_SLACK_MS;
+         if wait > 0 {
+@@ -2061,7 +2070,7 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
+         meeting: input.meeting,
+         commitment: input.commitment,
+     }))?;
+-    link_entry(&ah)?;
++    index_round_entry(&fetch(&meeting.lobby)?, &meeting.lobby, &ah)?;
+     get(ah, GetOptions::network())?
+         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("vote commit vanished".into())))
+ }
+@@ -2076,7 +2085,12 @@ pub struct RevealVote {
+ #[hdk_extern]
+ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
+     let my_key = me()?;
+-    let commit_hash = all_records()?
++    let meeting: Meeting = fetch(&input.meeting)?;
++    let lobby: Lobby = fetch(&meeting.lobby)?;
++    let records = if browser_lobby_code_valid(&lobby.code) {
++        records_for_browser_lobby(must_get_valid_record(meeting.lobby.clone())?)?
++    } else { all_records()? };
++    let commit_hash = records
+         .into_iter()
+         .find_map(|r| {
+             let vc = app_entry::<VoteCommit>(&r)?;
+@@ -2098,7 +2112,7 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
+         choice: input.choice,
+         salt: input.salt,
+     }))?;
+-    link_entry(&ah)?;
++    index_round_entry(&fetch(&meeting.lobby)?, &meeting.lobby, &ah)?;
+     get(ah, GetOptions::network())?
+         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("vote reveal vanished".into())))
+ }
+@@ -2115,13 +2129,17 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
+ /// one tie-breaker.
+ #[hdk_extern]
+ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+-    let (_, host, _) = find_lobby()?;
++    let meeting: Meeting = fetch(&meeting_hash)?;
++    let root = must_get_valid_record(meeting.lobby.clone())?;
++    let lobby: Lobby = fetch(&meeting.lobby)?;
++    let host = root.action().author().clone();
++    let browser = browser_lobby_code_valid(&lobby.code);
+     if me()? != host {
+         return Err(wasm_error!(WasmErrorInner::Guest(
+             "only the host tallies votes".into()
+         )));
+     }
+-    let records = all_records()?;
++    let records = if browser { records_for_browser_lobby(root)? } else { all_records()? };
+     if records
+         .iter()
+         .filter_map(|r| app_entry::<Ejection>(r))
+@@ -2131,9 +2149,8 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+             "this meeting is already resolved".into()
+         )));
+     }
+-    let (rc_hash, rc) = find_role_commit()?
++    let (rc_hash, rc) = records.iter().find_map(|r| Some((r.action_address().clone(), app_entry::<RoleCommit>(r)?)))
+         .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("roles not dealt".into())))?;
+-    let meeting: Meeting = fetch(&meeting_hash)?;
+     let ballot: Option<Vec<Option<u16>>> = match &meeting.tie_breaker_for {
+         None => None,
+         Some(tied) => match fetch::<Ejection>(tied)?.outcome {
+@@ -2169,7 +2186,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+             continue;
+         }
+         let voter = r.action().author().clone();
+-        if seen.contains(&voter) {
++        if !rc.seats.contains(&voter) || seen.contains(&voter) {
+             continue;
+         }
+         seen.push(voter.clone());
+@@ -2197,17 +2214,18 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+         outcome: outcome.clone(),
+         reveals,
+     }))?;
+-    link_entry(&ejection)?;
++    index_round_entry(&lobby, &meeting.lobby, &ejection)?;
+ 
+     match outcome {
+         TallyOutcome::Tie { .. } => {
+             let tie_breaker = create_entry(EntryTypes::Meeting(Meeting {
+-                lobby: meeting.lobby,
++                browser_commit: meeting.browser_commit,
++                lobby: meeting.lobby.clone(),
+                 trigger: meeting.trigger,
+                 body: meeting.body,
+                 tie_breaker_for: Some(ejection.clone()),
+             }))?;
+-            link_entry(&tie_breaker)?;
++            index_round_entry(&lobby, &meeting.lobby, &tie_breaker)?;
+         }
+         TallyOutcome::Ejected { seat } => {
+             // With confirm ejects off, the role stays sealed until `reveal_all`.
+@@ -2216,7 +2234,9 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+                 .filter_map(|r| app_entry::<RoleReveal>(r))
+                 .any(|rr| rr.seat == seat);
+             if current_settings(Some(&host))?.confirm_ejects && !opened {
+-                let sealed = my_sealed_roles()?;
++                let sealed = if browser {
++                    unique_host_seal(&meeting.lobby)?.ok_or_else(|| native_view_error("missing browser role seal"))?
++                } else { my_sealed_roles()? };
+                 let layers = build_layers(&sealed.roles, &sealed.salt);
+                 let proof = role_proof(&layers, &sealed.salt, seat);
+                 let rr = create_entry(EntryTypes::RoleReveal(RoleReveal {
+@@ -2225,7 +2245,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+                     role: sealed.roles[seat as usize],
+                     proof,
+                 }))?;
+-                link_entry(&rr)?;
++                index_round_entry(&lobby, &meeting.lobby, &rr)?;
+             }
+         }
+         TallyOutcome::NoEjection => {}
+diff --git a/dnas/game/zomes/integrity/game_integrity/src/lib.rs b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
+index 51cfad2..9c05012 100644
+--- a/dnas/game/zomes/integrity/game_integrity/src/lib.rs
++++ b/dnas/game/zomes/integrity/game_integrity/src/lib.rs
+@@ -120,6 +120,8 @@ pub enum MeetingTrigger {
+ #[hdk_entry_helper]
+ #[derive(Clone)]
+ pub struct Meeting {
++    #[serde(default)]
++    pub browser_commit: Option<ActionHash>,
+     pub lobby: ActionHash,
+     pub trigger: MeetingTrigger,
+     /// The reported body — required when `trigger` is `BodyReport`.
+@@ -603,6 +605,16 @@ fn validate_browser_lobby_link(action: &TypedAction<CreateLinkData>) -> ExternRe
+         get_role_commit(&r.role_commit)?.0.lobby
+     } else if let Some(r) = entry.to_app_option::<GameResult>().ok().flatten() {
+         r.lobby
++    } else if let Some(m) = entry.to_app_option::<Meeting>().ok().flatten() {
++        m.lobby
++    } else if let Some(v) = entry.to_app_option::<VoteCommit>().ok().flatten() {
++        get_meeting(&v.meeting)?.0.lobby
++    } else if let Some(v) = entry.to_app_option::<VoteReveal>().ok().flatten() {
++        get_meeting(&v.meeting)?.0.lobby
++    } else if let Some(e) = entry.to_app_option::<Ejection>().ok().flatten() {
++        get_meeting(&e.meeting)?.0.lobby
++    } else if let Some(r) = entry.to_app_option::<RoleReveal>().ok().flatten() {
++        get_role_commit(&r.role_commit)?.0.lobby
+     } else {
+         return invalid("unsupported browser round record");
+     };
+@@ -747,13 +759,18 @@ fn validate_entry(
+         }
+ 
+         EntryTypes::Meeting(m) => {
+-            let _ = get_lobby(&m.lobby)?;
++            let (lobby, _) = get_lobby(&m.lobby)?;
++            if browser_lobby_code_valid(&lobby.code) {
++                let Some(commit) = &m.browser_commit else { return invalid("missing meeting roster"); };
++                let (rc, _) = get_role_commit(commit)?;
++                if rc.lobby != m.lobby || !rc.seats.contains(&author) { return invalid("invalid meeting roster"); }
++            }
+             if m.trigger == MeetingTrigger::BodyReport && m.body.is_none() {
+                 return invalid("a body report must name the body");
+             }
+             if let Some(tied) = &m.tie_breaker_for {
+                 let (ej, _) = get_ejection(tied)?;
+-                if !matches!(ej.outcome, TallyOutcome::Tie { .. }) {
++                if get_meeting(&ej.meeting)?.0.lobby != m.lobby || !matches!(ej.outcome, TallyOutcome::Tie { .. }) {
+                     return invalid("a tie-breaker must follow a tied vote");
+                 }
+             }
+@@ -761,7 +778,10 @@ fn validate_entry(
+         }
+ 
+         EntryTypes::VoteCommit(vc) => {
+-            let _ = get_meeting(&vc.meeting)?;
++            let (meeting, _) = get_meeting(&vc.meeting)?;
++            if let Some(commit) = meeting.browser_commit {
++                if !get_role_commit(&commit)?.0.seats.contains(&author) { return invalid("voter has no meeting seat"); }
++            }
+             valid()
+         }
+ 
+@@ -794,7 +814,7 @@ fn validate_entry(
+             valid()
+         }
+ 
+-        EntryTypes::Ejection(ej) => validate_ejection(ej),
++        EntryTypes::Ejection(ej) => validate_ejection(ej, &author),
+ 
+         EntryTypes::RoleReveal(rr) => {
+             let (rc, host) = get_role_commit(&rr.role_commit)?;
+@@ -836,9 +856,12 @@ fn validate_entry(
+     }
+ }
+ 
+-fn validate_ejection(ej: Ejection) -> ExternResult<ValidateCallbackResult> {
+-    let (rc, _host) = get_role_commit(&ej.role_commit)?;
++fn validate_ejection(ej: Ejection, author: &AgentPubKey) -> ExternResult<ValidateCallbackResult> {
++    let (rc, host) = get_role_commit(&ej.role_commit)?;
+     let (meeting, _) = get_meeting(&ej.meeting)?;
++    if meeting.browser_commit.as_ref().is_some_and(|h| h != &ej.role_commit) || rc.lobby != meeting.lobby || &host != author {
++        return invalid("ejection must cite the meeting lobby commitment and be authored by its host");
++    }
+     let ballot = tie_breaker_ballot(&meeting)?;
+ 
+     // Dedup reveals by voter; map each choice to a seat index.
+@@ -850,6 +873,7 @@ fn validate_ejection(ej: Ejection) -> ExternResult<ValidateCallbackResult> {
+         if vr.meeting != ej.meeting {
+             return invalid("a cited reveal is for a different meeting");
+         }
++        if !rc.seats.contains(&voter) { return invalid("voter has no committed seat"); }
+         if seen_voters.contains(&voter) {
+             continue;
+         }
+@@ -913,7 +937,12 @@ fn validate_game_result(gr: GameResult, author: &AgentPubKey, at: Timestamp) ->
+             if browser { return invalid("browser result evidence must be a task completion"); }
+             continue;
+         };
+-        if browser {
++        if browser && Ejection::try_from(&entry).is_ok() {
++            let ejection = Ejection::try_from(&entry).unwrap();
++            if ejection.role_commit != roles_reveal.role_commit || get_meeting(&ejection.meeting)?.0.lobby != gr.lobby {
++                return invalid("ejection belongs to a different round");
++            }
++        } else if browser {
+             let Ok(task) = TaskComplete::try_from(&entry) else {
+                 return invalid("browser result evidence must be a task completion");
+             };

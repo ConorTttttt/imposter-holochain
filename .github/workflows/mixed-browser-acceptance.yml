@@ -2,7 +2,7 @@ name: Repeatable Chromium and Firefox browser lobbies
 
 on:
   push:
-    branches: [integration/repeatable-browser-lobbies-firefox]
+    branches: [integration/browser-unified-gameplay]
     paths:
       - '.github/workflows/mixed-browser-acceptance.yml'
       - 'ci/alpha-operator/**'
