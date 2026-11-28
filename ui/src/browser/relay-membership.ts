@@ -21,7 +21,7 @@ export async function nativeMembership(port: number, database: string) {
     ?? await admin.attachAppInterface({ installed_app_id: appId, allowed_origins: readerOrigin, port: 0 });
   const { token } = await admin.issueAppAuthenticationToken({ installed_app_id: appId });
   const app = await AppWebsocket.connect({ ...options, token, url: new URL(`ws://127.0.0.1:${endpoint.port}`) });
-  await admin.authorizeSigningCredentials(cell, { type: "listed", value: [["game", query]] });
+  await admin.authorizeSigningCredentials(cell, { type: "listed", value: [["game", query], ["game", "get_browser_game_state"]] });
   await admin.client.close();
   const installedDna = encodeHashToBase64(cell[0]);
   return {
@@ -31,6 +31,17 @@ export async function nativeMembership(port: number, database: string) {
       } catch {
         return false;
       }
+    },
+    async canChat(lobby: string, agent: string, channel: string) {
+      const state = await app.callZome({ cell_id: cell, zome_name: "game", fn_name: "get_browser_game_state",
+        payload: decodeHashFromBase64(lobby) }) as {
+        phase: string; active_meeting: { meeting: Uint8Array } | null;
+        players: { key: Uint8Array; dead: boolean }[];
+      };
+      if (!state.players.some(p => !p.dead && encodeHashToBase64(p.key) === agent)) return false;
+      if (state.phase === "lobby") return channel === "lobby:" + lobby;
+      return state.phase === "meeting" && !!state.active_meeting &&
+        encodeHashToBase64(state.active_meeting.meeting) === channel;
     },
     async seated(lobby: string, agent: string) {
       const view = await app.callZome({ cell_id: cell, zome_name: "game", fn_name: query,

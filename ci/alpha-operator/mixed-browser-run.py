@@ -231,8 +231,15 @@ def fixture(args, scratch):
                 remote_preflight(public, release)
             with authorities(args.game, release, scratch / "native", log):
                 with service(["node", str(release / "backend/movement-relay.mjs"), front, str(movement_port),
-                              "33555", str(paths["gateway_session_db"])], movement_port, scratch, os.environ):
-                    launch("round", config_with_release(config, manifest), scratch, args.report)
+                              "33555", str(paths["gateway_session_db"])], movement_port, scratch, {**os.environ, "IMPOSTER_FIXTURE_AUDIT": "1"}):
+                    try:
+                        launch("round", config_with_release(config, manifest), scratch, args.report)
+                    finally:
+                        counts = {}
+                        for line in (scratch / f"{movement_port}.local.log").read_text().splitlines():
+                            if re.fullmatch(r"RELAY_[A-Z_]+", line):
+                                counts[line] = counts.get(line, 0) + 1
+                        print("Relay stages", counts, flush=True)
         if args.candidate:
             from shutil import copytree
             copytree(release, args.candidate)

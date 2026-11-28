@@ -264,6 +264,14 @@ export function createInstalledHwcRoleRuntime({
     if(cell.contextId!==contextId)throw Error('lobby read requires the installed context');
     return (await storePromise).getSelectedBrowserLobby(cell.dna,cell.agent);
   }
+  async function authorizeBrowserWrite(contextId, expectedLobby) {
+    const context = await contextManager.getContext(contextId);
+    if (!context?.enabled || context.dnas?.length !== 1) return false;
+    const cell = await installed(context.dnas[0].hash, context.agentPubKey);
+    if (cell.contextId !== contextId) return false;
+    const active = await checked(cell);
+    return eq(active.lobby, exactly(expectedLobby, 'action'));
+  }
   async function receiveSocketFrame(json,forwardedLease) {
     if(typeof json!=='string'||typeof forwardedLease!=='string')
       throw Error('restricted WS payload missing');
@@ -321,7 +329,7 @@ export function createInstalledHwcRoleRuntime({
     return role;
   }
   return Object.freeze({
-    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,readOwnRole,selectedBrowserLobby,
+    pinLobbyFromNativeRecord,receiveSocketFrame,pulse,invalidate,readOwnRole,selectedBrowserLobby,authorizeBrowserWrite,
     // Only metadata: no role, Lair secret, X25519 private key or native executor.
     receiptCount(){return acceptedReceipts.size;},
     // CI may inspect this through its OWN service-worker debugger only.

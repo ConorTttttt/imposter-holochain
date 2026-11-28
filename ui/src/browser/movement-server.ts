@@ -6,6 +6,9 @@ import { MOVEMENT_PATH, movementChallenge, movementDigest, validChat, validPosit
 import type { nativeMembership } from "./relay-membership.js";
 
 export function serveMovement(origin: string, port: number, membership: Awaited<ReturnType<typeof nativeMembership>>) {
+  const audit = (stage: string) => {
+    if (process.env.IMPOSTER_FIXTURE_AUDIT === "1") console.info("RELAY_" + stage);
+  };
   const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
   function rawHash(value: unknown, prefix: string) {
     if (typeof value !== "string" || !/^u[A-Za-z0-9_-]{52}$/.test(value)) return null;
@@ -26,6 +29,7 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
   });
 
   server.on("connection", (connection) => {
+    audit("CHALLENGE");
     const nonce = randomBytes(32).toString("hex");
     let seat: { dna: string; lobby: string; agent: string; room: Map<string, WebSocket> } | null = null;
     let verifying = false;
@@ -80,6 +84,13 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
           if (packet.meeting.startsWith("lobby:") && packet.meeting !== "lobby:" + seat.lobby) return connection.close(1008);
           if (now - lastChat < 400) return;
           lastChat = now;
+          try {
+            if (!await membership.canChat(seat.lobby, seat.agent, packet.meeting)) return connection.close(1008);
+          } catch {
+            return connection.close(1008);
+          }
+          if (connection.readyState !== WebSocket.OPEN || !membership.admitted(seat.dna, seat.agent))
+            return connection.close(1008);
           frame = JSON.stringify({ ...packet, hc: seat.agent, t: now });
         } else {
           return connection.close(1008);
@@ -101,7 +112,8 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
         const key = Buffer.concat([ED25519_SPKI_PREFIX, raw.subarray(3, 35)]);
         if (!verify(null, digest, { key, format: "der", type: "spki" }, Buffer.from(signature, "base64")))
           return connection.close(1008);
-        if (!membership.admitted(dna, agent) || !await membership.seated(lobby, agent)) return connection.close(1008);
+        if (!membership.admitted(dna, agent)) { audit("ADMISSION_DENIED"); return connection.close(1008); }
+        if (!await membership.seated(lobby, agent)) { audit("SEAT_UNAVAILABLE"); return connection.close(1008); }
         if (connection.readyState !== WebSocket.OPEN) return;
         const room = rooms.get(lobby) ?? new Map<string, WebSocket>();
         if (room.has(agent)) return connection.close(1013);
@@ -109,8 +121,10 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
         rooms.set(lobby, room);
         room.set(agent, connection);
         clearTimeout(deadline);
+        audit("READY");
         connection.send(JSON.stringify({ ready: true }));
       } catch {
+        audit("NATIVE_READ_FAILED");
         connection.close(1008);
       }
     });

@@ -27,10 +27,8 @@ selection = '''
         const runtime = getInstalledRoleRuntime();
         const value = normalizeUint8Arrays(payload);
         const action = fn_name === "press_browser_emergency" ? value : value?.lobby;
-        const selected = await runtime.selectedBrowserLobby(context.id);
         if (!(action instanceof Uint8Array) || action.length !== 39 ||
-            !selected || selected.length !== 39 ||
-            !action.every((byte: number, i: number) => byte === selected[i]))
+            !await runtime.authorizeBrowserWrite(context.id, action))
           return createErrorResponse(message.id, "BROWSER_LOBBY_SELECTION_CHANGED");
         if (fn_name === "complete_browser_console" && await runtime.readOwnRole(context.id, action) !== 0)
           return createErrorResponse(message.id, "VERIFIED_CREW_REQUIRED");

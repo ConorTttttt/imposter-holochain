@@ -227,7 +227,7 @@ index 20e7b48..2fc8f52 100644
 +    resolve_meeting_in(input.ballot)
 +}
 diff --git a/dnas/game/zomes/coordinator/game/src/lib.rs b/dnas/game/zomes/coordinator/game/src/lib.rs
-index 836ae2a..6faa38e 100644
+index 836ae2a..240bece 100644
 --- a/dnas/game/zomes/coordinator/game/src/lib.rs
 +++ b/dnas/game/zomes/coordinator/game/src/lib.rs
 @@ -1571,6 +1571,7 @@ fn record_task_complete(task_id: u16) -> ExternResult<ActionHash> {
@@ -253,7 +253,26 @@ index 836ae2a..6faa38e 100644
      let Some((dealt_at, rc)) = records
          .iter()
          .find_map(|r| Some((r.action().timestamp(), app_entry::<RoleCommit>(r)?)))
-@@ -1859,13 +1865,17 @@ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternRes
+@@ -1834,7 +1840,8 @@ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternRes
+             }
+         }
+         None => {
+-            let allowed = current_settings(Some(&host))?.emergency_meetings as usize;
++            let settings = if browser_lobby_code_valid(&lobby.code) { GameSettings::default() } else { current_settings(Some(&host))? };
++            let allowed = settings.emergency_meetings as usize;
+             if allowed == 0 {
+                 return Err(wasm_error!(WasmErrorInner::Guest(
+                     "this game has no emergency meetings".into()
+@@ -1845,7 +1852,7 @@ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternRes
+                     "you've used your emergency meetings".into()
+                 )));
+             }
+-            if crisis_state(&records, &host, &rc, now_ms()?)?.active.is_some() {
++            if !browser_lobby_code_valid(&lobby.code) && crisis_state(&records, &host, &rc, now_ms()?)?.active.is_some() {
+                 return Err(wasm_error!(WasmErrorInner::Guest(
+                     "no emergency meetings during a crisis: stabilise it first".into()
+                 )));
+@@ -1859,13 +1866,17 @@ fn open_meeting(trigger: MeetingTrigger, body: Option<AgentPubKey>) -> ExternRes
              }
          }
      }
@@ -273,7 +292,7 @@ index 836ae2a..6faa38e 100644
      get(ah, GetOptions::network())?
          .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("meeting vanished".into())))
  }
-@@ -2037,6 +2047,14 @@ pub struct CommitVote {
+@@ -2037,6 +2048,14 @@ pub struct CommitVote {
  
  #[hdk_extern]
  pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
@@ -288,16 +307,19 @@ index 836ae2a..6faa38e 100644
      // No votes until the discussion time is up; a tie breaker has none. An
      // honest-client rule, and clocks differ between agents, hence the slack.
      let record = get(input.meeting.clone(), GetOptions::network())?
-@@ -2047,7 +2065,7 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
+@@ -2047,8 +2066,9 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
          .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("{e:?}"))))?
          .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("that's not a meeting".into())))?;
      if meeting.tie_breaker_for.is_none() {
 -        let (_, host, _) = find_lobby()?;
+-        let discussion_ms = current_settings(Some(&host))?.discussion_s as i64 * 1000;
 +        let host = must_get_valid_record(meeting.lobby.clone())?.action().author().clone();
-         let discussion_ms = current_settings(Some(&host))?.discussion_s as i64 * 1000;
++        let settings = if meeting.browser_commit.is_some() { GameSettings::default() } else { current_settings(Some(&host))? };
++        let discussion_ms = settings.discussion_s as i64 * 1000;
          let wait = record.action().timestamp().as_millis() as i64 + discussion_ms - now_ms()? - CLOCK_SLACK_MS;
          if wait > 0 {
-@@ -2061,7 +2079,7 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
+             return Err(wasm_error!(WasmErrorInner::Guest(format!(
+@@ -2061,7 +2081,7 @@ pub fn commit_vote(input: CommitVote) -> ExternResult<Record> {
          meeting: input.meeting,
          commitment: input.commitment,
      }))?;
@@ -306,7 +328,7 @@ index 836ae2a..6faa38e 100644
      get(ah, GetOptions::network())?
          .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("vote commit vanished".into())))
  }
-@@ -2075,8 +2093,21 @@ pub struct RevealVote {
+@@ -2075,8 +2095,21 @@ pub struct RevealVote {
  
  #[hdk_extern]
  pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
@@ -329,7 +351,7 @@ index 836ae2a..6faa38e 100644
          .into_iter()
          .find_map(|r| {
              let vc = app_entry::<VoteCommit>(&r)?;
-@@ -2098,7 +2129,7 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
+@@ -2098,7 +2131,7 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
          choice: input.choice,
          salt: input.salt,
      }))?;
@@ -338,7 +360,7 @@ index 836ae2a..6faa38e 100644
      get(ah, GetOptions::network())?
          .ok_or_else(|| wasm_error!(WasmErrorInner::Guest("vote reveal vanished".into())))
  }
-@@ -2115,13 +2146,25 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
+@@ -2115,13 +2148,25 @@ pub fn reveal_vote(input: RevealVote) -> ExternResult<Record> {
  /// one tie-breaker.
  #[hdk_extern]
  pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
@@ -366,7 +388,7 @@ index 836ae2a..6faa38e 100644
      if records
          .iter()
          .filter_map(|r| app_entry::<Ejection>(r))
-@@ -2131,9 +2174,8 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+@@ -2131,9 +2176,8 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
              "this meeting is already resolved".into()
          )));
      }
@@ -377,7 +399,7 @@ index 836ae2a..6faa38e 100644
      let ballot: Option<Vec<Option<u16>>> = match &meeting.tie_breaker_for {
          None => None,
          Some(tied) => match fetch::<Ejection>(tied)?.outcome {
-@@ -2169,7 +2211,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+@@ -2169,7 +2213,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
              continue;
          }
          let voter = r.action().author().clone();
@@ -386,7 +408,7 @@ index 836ae2a..6faa38e 100644
              continue;
          }
          seen.push(voter.clone());
-@@ -2197,17 +2239,18 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+@@ -2197,17 +2241,18 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
          outcome: outcome.clone(),
          reveals,
      }))?;
@@ -408,18 +430,21 @@ index 836ae2a..6faa38e 100644
          }
          TallyOutcome::Ejected { seat } => {
              // With confirm ejects off, the role stays sealed until `reveal_all`.
-@@ -2216,7 +2259,9 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+@@ -2215,8 +2260,11 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+                 .iter()
                  .filter_map(|r| app_entry::<RoleReveal>(r))
                  .any(|rr| rr.seat == seat);
-             if current_settings(Some(&host))?.confirm_ejects && !opened {
+-            if current_settings(Some(&host))?.confirm_ejects && !opened {
 -                let sealed = my_sealed_roles()?;
++            let settings = if browser { GameSettings::default() } else { current_settings(Some(&host))? };
++            if settings.confirm_ejects && !opened {
 +                let sealed = if browser {
 +                    unique_host_seal(&meeting.lobby)?.ok_or_else(|| native_view_error("missing browser role seal"))?
 +                } else { my_sealed_roles()? };
                  let layers = build_layers(&sealed.roles, &sealed.salt);
                  let proof = role_proof(&layers, &sealed.salt, seat);
                  let rr = create_entry(EntryTypes::RoleReveal(RoleReveal {
-@@ -2225,7 +2270,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
+@@ -2225,7 +2273,7 @@ pub fn resolve_meeting(meeting_hash: ActionHash) -> ExternResult<Record> {
                      role: sealed.roles[seat as usize],
                      proof,
                  }))?;

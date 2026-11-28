@@ -26,7 +26,7 @@ test("movement relay binds coordinates to a signed agent and rejects replay and 
   const lobby = "u" + Buffer.concat([Buffer.from("842924", "hex"), randomBytes(36)]).toString("base64url");
   const seats = new Set<string>();
   const relay = serveMovement(origin, address.port, {
-    admitted: () => true, seated: async (round, agent) => round === lobby && seats.has(agent),
+    canChat: async () => true, admitted: () => true, seated: async (round, agent) => round === lobby && seats.has(agent),
   });
   const sockets: WebSocket[] = [];
   t.after(() => {

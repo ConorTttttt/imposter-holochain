@@ -115,6 +115,9 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
   }
 
   async function play(prefix, lobby, memberIndexes, duringPlay) {
+    if (prefix === 'GAME_2') {
+      for (const index of memberIndexes) assert(!(await text(browsers[index], 'browser-chat-log')).includes('GAME_1'));
+    }
     await step(prefix + '_LOBBY_CHAT', () => checkChat(memberIndexes.map(i => browsers[i]), until, prefix));
     const commit = await step(prefix + '_START_ROUND_BUTTON_AND_NATIVE_COMMIT', async () => {
       const action = await uiAction(browsers[0], 'start-round', 'start');

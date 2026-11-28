@@ -8,6 +8,7 @@ export async function prepareMovement(browser, name) {
     input.value = name;
     const taskCount = document.getElementById('task-count');
     if (taskCount) taskCount.value = '1';
+    if (window.gameplayObservedPoints) return;
     const points = {};
     window.gameplayObservedPoints = points;
     const prototype = CanvasRenderingContext2D.prototype;
@@ -22,6 +23,7 @@ export async function prepareMovement(browser, name) {
     prototype.fillText = function (label, x, y, ...args) {
       if (this.canvas.closest('#gameplay-map') && /^Map (Host|Chrome|Firefox)$/.test(label)) {
         points[label] = [x, y];
+        window.gameplayCameraX = this.getTransform().e;
       }
       return fillText.call(this, label, x, y, ...args);
     };
@@ -53,6 +55,15 @@ export async function checkMovement(browsers, until) {
     return rows.every((row, index) => row && names.every(name =>
       row[name]?.[1] > before[index][name][1] + 14 && Math.abs(row[name][0] - before[index][name][0]) < 1));
   }, 15000);
+  const host = browsers[0];
+  const camera = await host.evaluate(() => window.gameplayCameraX);
+  await host.holdKey('d', 250);
+  await until(async () => (await host.evaluate(() => window.gameplayCameraX)) < camera - 5);
+  await host.holdKey('w', 1700);
+  const wall = (await positions(host))[names[0]][1] + 27.5;
+  if (wall < 70 || wall > 77) throw Error('Player did not stop at the bridge wall');
+  await host.holdKey('w', 300);
+  await until(async () => Math.abs((await positions(host))[names[0]][1] + 27.5 - wall) < 1);
 }
 
 async function walk(browser, name, until, waypoints) {
