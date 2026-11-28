@@ -85,12 +85,13 @@ export function serveMovement(origin: string, port: number, membership: Awaited<
           if (now - lastChat < 400) return;
           lastChat = now;
           try {
-            if (!await membership.canChat(seat.lobby, seat.agent, packet.meeting)) return connection.close(1008);
+            if (!await membership.canChat(seat.lobby, seat.agent, packet.meeting)) { audit("CHAT_DENIED"); return connection.close(1008); }
           } catch {
             return connection.close(1008);
           }
           if (connection.readyState !== WebSocket.OPEN || !membership.admitted(seat.dna, seat.agent))
             return connection.close(1008);
+          audit("CHAT_ACCEPTED");
           frame = JSON.stringify({ ...packet, hc: seat.agent, t: now });
         } else {
           return connection.close(1008);

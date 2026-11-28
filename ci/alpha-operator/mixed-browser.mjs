@@ -482,9 +482,17 @@ async function main(config, command) {
     await acceptRepeatableBrowserLobbies({
       agents, browsers, dna: config.dna, step, until,
       async restart(index, label) {
-        await browsers[index].close();
+        const previous = browsers[index];
+        await previous.close();
+        if (index === 3) {
+          await until(async () => {
+            try { process.kill(previous.processId, 0); return false; }
+            catch (error) { return error.code === 'ESRCH'; }
+          }, 15000);
+        }
         const browser = await (index === 3 ? launchFirefox : launchChromium)(config, config.profiles[index]);
         browsers[index] = browser;
+        if (index === 3) requireCheck(browser.processId !== previous.processId, 'FIREFOX_PROCESS_NOT_REPLACED');
         requireCheck(await setup(browser, label) === agents[index], label + '_LAIR_IDENTITY_CHANGED');
         requireCheck(await installed(browser, config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');
         await until(() => session(browser, config.gateway), 90000);

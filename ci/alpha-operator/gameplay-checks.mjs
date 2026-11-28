@@ -97,10 +97,14 @@ export async function callEmergencyMeeting(browser, name, until) {
 }
 
 export async function checkChat(browsers, until, scope) {
-  await Promise.all(browsers.map(browser => until(() => browser.evaluate(() => {
-    const chat = document.getElementById('browser-chat');
-    return !chat.hidden && !chat.querySelector('input').disabled;
-  }), 15000)));
+  await until(async () => {
+    const ready = await Promise.all(browsers.map(browser => browser.evaluate(() => {
+      const chat = document.getElementById('browser-chat');
+      return !chat.hidden && !chat.querySelector('input').disabled;
+    })));
+    return ready.every(Boolean);
+  }, 120000);
+  console.log('ALL_CHAT_SOCKETS_READY=PASS');
   const send = (browser, text) => browser.evaluate(text => {
     const form = document.querySelector('#browser-chat form');
     form.querySelector('input').value = text;

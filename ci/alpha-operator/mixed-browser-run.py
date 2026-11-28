@@ -27,7 +27,7 @@ RELEASE = ROOT / "release/browser-alpha"
 sys.path.insert(0, str(RELEASE))
 from deploy import (authority_cells, endpoint, gateway_environment, native_command,
                     preflight_frontend, preflight_gateway, proxy_config, release_files, remote_preflight)
-from package import EXTENSION, GATEWAY, PINS, SETUP, archive_extension, digest, verify
+from package import EXTENSION, GATEWAY, HAPP, PINS, SETUP, archive_extension, digest, verify
 from site_release import activate_site
 from smoke import free_port, service
 
@@ -223,6 +223,9 @@ def fixture(args, scratch):
         archive_extension(Path(config["chromiumExtension"]), archive)
         gate("EXACT_CHROMIUM_RELEASE_BUILD", digest(archive) == digest(release / EXTENSION))
         print("EXACT_FIXTURE_RELEASE_BUILD=PASS", flush=True)
+        print("Fixture DNA", manifest["game"]["dna_hash"], flush=True)
+        for item in (HAPP, "chromium-hwc.zip", "firefox-desktop-hwc.zip", "backend/movement-relay.mjs"):
+            print(manifest["artifacts"][item], item, flush=True)
         activate_site(paths["static_root"], release_files(release, public))
         gateway_env = {**gateway_environment(public, paths), "RUST_LOG": "warn,h2hc_linker::routes::publish=info"}
         with service([str(release / GATEWAY), "--address", "127.0.0.1", "--port", "8090"],
