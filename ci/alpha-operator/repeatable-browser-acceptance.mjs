@@ -1,3 +1,4 @@
+import {names, prepareMovement, checkMovement, checkChat, callEmergencyMeeting, completeEngineTask} from './gameplay-checks.mjs';
 /** Use the stock page and installed HWC on a single disposable native network. */
 import assert from 'node:assert/strict';
 
@@ -85,6 +86,8 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
     await Promise.all(browsers.map(browser => until(() => ready(browser), 45000)));
   });
 
+  await Promise.all(browsers.map((browser, i) => prepareMovement(browser, names[[0,1,1,2][i]])));
+
   async function uiAction(browser, button, kind) {
     await until(() => click(browser, button, kind));
     const value = hash(await until(() => browser.evaluate(() => window.repeatableAction ?? null)));
@@ -112,6 +115,10 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
   }
 
   async function play(prefix, lobby, memberIndexes, duringPlay) {
+    if (prefix === 'GAME_2') {
+      for (const index of memberIndexes) assert(!(await text(browsers[index], 'browser-chat-log')).includes('GAME_1'));
+    }
+    await step(prefix + '_LOBBY_CHAT', () => checkChat(memberIndexes.map(i => browsers[i]), until, prefix));
     const commit = await step(prefix + '_START_ROUND_BUTTON_AND_NATIVE_COMMIT', async () => {
       const action = await uiAction(browsers[0], 'start-round', 'start');
       assert.notEqual(action, lobby);
@@ -151,17 +158,40 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
     });
     if (duringPlay) await duringPlay({commit, root, ownRole, roles, verifyNative});
     const final = await step(prefix + '_ALIGN_ENGINE_AND_NATIVE_CREW_WIN', async () => {
-      // Use a verified guest crewmate so each round relies on installed HPKE.
-      const guestIndex = roles.findIndex((value, index) => index !== 0 && value.role === 0);
-      await until(() => click(browsers[memberIndexes[guestIndex]], 'complete-task'));
+      const players = memberIndexes.map(i => browsers[i]);
+      await Promise.all(players.map((browser, i) => prepareMovement(browser, names[i])));
+      await checkMovement(players, until);
+      await players[0].evaluate(() => window.dispatchEvent(new Event('pagehide')));
+      await until(() => players[0].evaluate(() => document.getElementById('movement-status').textContent.includes('reconnecting')));
+      await until(() => players[0].evaluate(() => document.getElementById('movement-status').textContent === 'Movement connected'));
+      const crew = roles.map((value,i) => value.role === 0 ? i : -1).filter(i => i >= 0);
+      const caller = roles.findIndex(value => value.role === 1);
+      await completeEngineTask(players[crew[0]], names[crew[0]], until);
+      await Promise.all(players.map(b => until(async () => (await state(b, lobby)).tasks_done === 1)));
+      const eject = prefix === 'GAME_2';
+      const target = eject ? (await state(players[caller], lobby)).my_seat : null;
+      await callEmergencyMeeting(players[caller], names[caller], until);
+      await checkChat(players, until, prefix + ' meeting');
+      await Promise.all(players.map(b => until(() => click(b, eject ? 'vote-seat-' + target : 'vote-skip'), 45000)));
+      await Promise.all(players.map(b => until(async () => {
+        const m = (await state(b, lobby)).active_meeting;
+        return m?.committed.length === 3 && m.revealed.length === 3 &&
+          m.votes.length === 3 && m.votes.every(v => v.choice === target) &&
+          (eject ? m.resolved?.kind === 'ejected' && m.resolved.seat === target : m.resolved?.kind === 'no_ejection');
+      }, 60000)));
+      if (!eject) {
+        await Promise.all(players.map(b => until(() => click(b, 'meeting-back'))));
+        await completeEngineTask(players[crew[1]], names[crew[1]], until);
+      }
+      const completed = eject ? 1 : 2;
       return Promise.all(memberIndexes.map(index => until(async () => {
         const browser = browsers[index];
         if (await text(browser, 'round-state') !== 'Phase: Ended · Crew wins' ||
-            await text(browser, 'task-progress') !== 'Task completions: 1/1') return null;
+            await text(browser, 'task-progress') !== `Task completions: ${completed}/2`) return null;
         const snapshot = await state(browser, lobby);
         const view = await exactView(browser, lobby, commit);
         if (snapshot.phase !== 'ended' || snapshot.result?.outcome !== 'crew_win' ||
-            snapshot.result.tasks_done !== 1 || view.phase !== 'ended') return null;
+            snapshot.result.tasks_done !== completed || view.phase !== 'ended') return null;
         assert.equal(snapshot.my_role, roles[memberIndexes.indexOf(index)].role);
         assert.equal(view.seats.length, 3);
         return {result: snapshot.result, roster: view.seats.map(seat => hash(seat.agent))};
@@ -184,15 +214,15 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
     await denied(firefox, 'join_browser_lobby', {code: 'b1.invalid', display_name: 'Guest'}, /invalid browser lobby code/i);
     await denied(firefox, 'join_browser_lobby', {code: 'b1.' + 'a'.repeat(32), display_name: 'Guest'}, /not found/i);
   });
-  await step('GAME_1_TWO_CHROMIUM_GUESTS_DUPLICATE_AND_FOURTH_SEAT', async () => {
-    const original = await join(1, first.lobby, first.code, [0, 1]);
-    const duplicate = await native(guestA, 'join_browser_lobby', {code: first.code, display_name: 'Duplicate'});
+  await step('GAME_1_MIXED_GUESTS_DUPLICATE_AND_FOURTH_SEAT', async () => {
+    const original = await join(2, first.lobby, first.code, [0, 2]);
+    const duplicate = await native(guestB, 'join_browser_lobby', {code: first.code, display_name: 'Duplicate'});
     assert.equal(actionHash(duplicate), original);
-    await join(2, first.lobby, first.code, [0, 1, 2]);
-    await waitRoster(firefox, first.lobby, [0, 1, 2]);
-    await denied(firefox, 'join_browser_lobby', {code: first.code, display_name: 'Guest'}, /game full/i);
+    await join(3, first.lobby, first.code, [0, 2, 3]);
+    await waitRoster(guestA, first.lobby, [0, 2, 3]);
+    await denied(guestA, 'join_browser_lobby', {code: first.code, display_name: 'Guest'}, /game full/i);
   });
-  const old = await play('GAME_1', first.lobby, [0, 1, 2]);
+  const old = await play('GAME_1', first.lobby, [0, 2, 3]);
 
   await step('COMPLETED_LOBBY_REJECTS_NEW_MEMBERS_AND_TASKS', async () => {
     await until(async () => (await state(firefox, first.lobby)).phase === 'ended');
@@ -222,14 +252,14 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
   });
 
   await step('GAME_2_RELOAD_RETRY_AND_JOINED_HISTORY_SELECTION', async () => {
-    await guestA.navigate(page);
-    await until(async () => await text(guestA, 'active-code') === second.code);
-    await until(() => click(guestA, 'retry-connection'));
-    await until(async () => await text(guestA, 'active-code') === second.code);
+    await firefox.navigate(page);
+    await until(async () => await text(firefox, 'active-code') === second.code);
+    await until(() => click(firefox, 'retry-connection'));
+    await until(async () => await text(firefox, 'active-code') === second.code);
     for (const code of [first.code, second.code]) {
-      await typeCode(guestA, code);
-      await uiAction(guestA, 'reopen-lobby', 'reopen');
-      await until(async () => await text(guestA, 'active-code') === code);
+      await typeCode(firefox, code);
+      await uiAction(firefox, 'reopen-lobby', 'reopen');
+      await until(async () => await text(firefox, 'active-code') === code);
     }
   });
 
@@ -252,7 +282,12 @@ export async function acceptRepeatableBrowserLobbies({agents, browsers, dna, ste
       assert.equal((await ownRole(0)).role, roles[0].role);
       await verifyNative();
     });
-    await step('FIREFOX_REAUTHENTICATES_AND_GETS_FRESH_HPKE_RECEIPT', async () => {
+    await step('FIREFOX_PROCESS_RESTART_RECOVERS_IDENTITY_AND_ROLE', async () => {
+      await restart(3, ids[3]);
+      await until(async () => await text(browsers[3], 'active-code') === second.code);
+      assert.equal((await ownRole(3)).role, roles[2].role);
+    });
+    if (reconnect) await step('FIREFOX_REAUTHENTICATES_AND_GETS_FRESH_HPKE_RECEIPT', async () => {
       await reconnect(3, ids[3], async () => {
         const {result} = await game(browsers[3], 'get_browser_lobby_role', raw(second.lobby));
         assert.notEqual(result, 0);

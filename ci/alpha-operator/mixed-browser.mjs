@@ -416,23 +416,22 @@ async function main(config, command) {
   }
   requireCheck(['preflight', 'round'].includes(command));
   const fixture = config.mode === 'fixture';
-  const profileLabels = fixture
-    ? ['CHROMIUM_HOST', 'CHROMIUM_GUEST_A', 'CHROMIUM_GUEST_B', 'FIREFOX_GUEST'] : labels;
+  const profileLabels = ['CHROMIUM_HOST', 'CHROMIUM_GUEST_A', 'CHROMIUM_GUEST_B', 'FIREFOX_GUEST'];
   await step('EXTENSIONS_LOADED', async () => {
     browsers.push(await launchChromium(config, config.profiles[0]));
     browsers.push(await launchChromium(config, config.profiles[1]));
-    if (fixture) browsers.push(await launchChromium(config, config.profiles[2]));
-    browsers.push(await launchFirefox(config, config.profiles[fixture ? 3 : 2]));
+    browsers.push(await launchChromium(config, config.profiles[2]));
+    browsers.push(await launchFirefox(config, config.profiles[3]));
   });
   let preinstalled;
   if (config.mode === 'operator') {
     preinstalled = await step('EXISTING_OPERATOR_HAPP_AND_BOUND_HOST', async () => {
       const expected = await Promise.all(browsers.map(async (browser, index) => {
-        await openSetup(browser, labels[index]);
-        return preinstalledAgent(browser, labels[index], config.dna);
+        await openSetup(browser, profileLabels[index]);
+        return preinstalledAgent(browser, profileLabels[index], config.dna);
       }));
       requireCheck(expected[0] === config.host, 'HOST_PROFILE_DOES_NOT_MATCH_DEPLOYMENT');
-      requireCheck(new Set(expected).size === 3, 'OPERATOR_PROFILE_IDENTITIES_NOT_DISTINCT');
+      requireCheck(new Set(expected).size === 4, 'OPERATOR_PROFILE_IDENTITIES_NOT_DISTINCT');
       return expected;
     });
     await step('OPERATOR_GATEWAY_ADMISSION', () => checkOperatorAdmission(config.admissionDb, preinstalled));
@@ -459,7 +458,7 @@ async function main(config, command) {
   await step('EXACT_HAPP_INSTALLED', async () => {
     await waitForInstalled(browsers, config, agents);
   });
-  await step(fixture ? 'FOUR_AUTHENTICATED_GATEWAY_SESSIONS' : 'THREE_AUTHENTICATED_GATEWAY_SESSIONS', async () => {
+  await step(fixture ? 'FOUR_AUTHENTICATED_GATEWAY_SESSIONS' : 'FOUR_OPERATOR_GATEWAY_SESSIONS', async () => {
     await Promise.all(browsers.map(browser => until(() => session(browser, config.gateway), 90000)));
   });
   if (config.mode === 'fixture') {
@@ -479,19 +478,27 @@ async function main(config, command) {
       states.forEach((state, index) => checkUnusedOperatorGame(state, agents[index]));
     });
   }
-  if (command === 'round' && fixture) {
+  if (command === 'round') {
     await acceptRepeatableBrowserLobbies({
       agents, browsers, dna: config.dna, step, until,
       async restart(index, label) {
-        await browsers[index].close();
-        const browser = await launchChromium(config, config.profiles[index]);
+        const previous = browsers[index];
+        await previous.close();
+        if (index === 3) {
+          await until(async () => {
+            try { process.kill(previous.processId, 0); return false; }
+            catch (error) { return error.code === 'ESRCH'; }
+          }, 15000);
+        }
+        const browser = await (index === 3 ? launchFirefox : launchChromium)(config, config.profiles[index]);
         browsers[index] = browser;
+        if (index === 3) requireCheck(browser.processId !== previous.processId, 'FIREFOX_PROCESS_NOT_REPLACED');
         requireCheck(await setup(browser, label) === agents[index], label + '_LAIR_IDENTITY_CHANGED');
         requireCheck(await installed(browser, config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');
         await until(() => session(browser, config.gateway), 90000);
         await browser.navigate('/browser-demo.html');
       },
-      async reconnect(index, label, whileDisconnected) {
+      reconnect: !fixture ? null : async (index, label, whileDisconnected) => {
         await allow(config, 'DELETE', agents[index]);
         await until(async () => !await session(browsers[index], config.gateway), 40000);
         await whileDisconnected();
@@ -500,7 +507,7 @@ async function main(config, command) {
         requireCheck(await installed(browsers[index], config.dna, agents[index]), label + '_INSTALLED_DNA_CHANGED');
       },
     });
-  } else if (command === 'round') await round(config, agents);
+  }
   report.status = command === 'round'
     ? fixture ? 'REPEATABLE_ROUNDS_VERIFIED' : 'ROUND_VERIFIED'
     : 'PREFLIGHT_VERIFIED';

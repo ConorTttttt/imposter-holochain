@@ -1,0 +1,136 @@
+import { randomBytes, verify } from "node:crypto";
+import { createServer } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
+import { MOVEMENT_PATH, movementChallenge, movementDigest, validChat, validPosition } from "./movement-wire.js";
+
+import type { nativeMembership } from "./relay-membership.js";
+
+export function serveMovement(origin: string, port: number, membership: Awaited<ReturnType<typeof nativeMembership>>) {
+  const audit = (stage: string) => {
+    if (process.env.IMPOSTER_FIXTURE_AUDIT === "1") console.info("RELAY_" + stage);
+  };
+  const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+  function rawHash(value: unknown, prefix: string) {
+    if (typeof value !== "string" || !/^u[A-Za-z0-9_-]{52}$/.test(value)) return null;
+    const raw = Buffer.from(value.slice(1), "base64url");
+    return raw.subarray(0, 3).toString("hex") === prefix ? raw : null;
+  }
+
+  const http = createServer((_request, response) => response.writeHead(404).end());
+  const server = new WebSocketServer({ noServer: true, maxPayload: 1536, perMessageDeflate: false });
+  const rooms = new Map<string, Map<string, WebSocket>>();
+
+  http.on("upgrade", (request, socket, head) => {
+    if (request.url !== MOVEMENT_PATH || request.headers.origin !== origin || server.clients.size >= 128) {
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    server.handleUpgrade(request, socket, head, (connection) => server.emit("connection", connection));
+  });
+
+  server.on("connection", (connection) => {
+    audit("CHALLENGE");
+    const nonce = randomBytes(32).toString("hex");
+    let seat: { dna: string; lobby: string; agent: string; room: Map<string, WebSocket> } | null = null;
+    let verifying = false;
+    let last = 0;
+    let lastChat = 0;
+    let alive = true;
+    const deadline = setTimeout(() => connection.close(1008), 7000);
+    const heartbeat = setInterval(async () => {
+      if (seat) {
+        try {
+          if (!membership.admitted(seat.dna, seat.agent) || !await membership.seated(seat.lobby, seat.agent))
+            return connection.close(1008);
+        } catch {
+          return connection.close(1008);
+        }
+      }
+      if (alive) {
+        alive = false;
+        connection.ping();
+      } else {
+        connection.terminate();
+      }
+    }, 10000);
+    connection.on("error", () => connection.terminate());
+    connection.on("pong", () => { alive = true; });
+    connection.on("close", () => {
+      clearTimeout(deadline);
+      clearInterval(heartbeat);
+      if (!seat || seat.room.get(seat.agent) !== connection) return;
+      seat.room.delete(seat.agent);
+      if (!seat.room.size) rooms.delete(seat.lobby);
+    });
+    connection.send(JSON.stringify({ nonce }));
+
+    connection.on("message", async (bytes, binary) => {
+      if (binary) return connection.close(1003);
+      let packet;
+      try {
+        packet = JSON.parse(bytes.toString());
+      } catch {
+        return connection.close(1007);
+      }
+      if (seat) {
+        if (!membership.admitted(seat.dna, seat.agent)) return connection.close(1008);
+        const now = Date.now();
+        let frame: string;
+        if (validPosition(packet)) {
+          if (now - last < 50) return;
+          last = now;
+          frame = JSON.stringify([seat.agent, ...packet]);
+        } else if (validChat(packet)) {
+          if (packet.meeting.startsWith("lobby:") && packet.meeting !== "lobby:" + seat.lobby) return connection.close(1008);
+          if (now - lastChat < 400) return;
+          lastChat = now;
+          try {
+            if (!await membership.canChat(seat.lobby, seat.agent, packet.meeting)) { audit("CHAT_DENIED"); return connection.close(1008); }
+          } catch {
+            return connection.close(1008);
+          }
+          if (connection.readyState !== WebSocket.OPEN || !membership.admitted(seat.dna, seat.agent))
+            return connection.close(1008);
+          audit("CHAT_ACCEPTED");
+          frame = JSON.stringify({ ...packet, hc: seat.agent, t: now });
+        } else {
+          return connection.close(1008);
+        }
+        for (const [recipient, peer] of seat.room) {
+          if (!membership.admitted(seat.dna, recipient)) { peer.close(1008); continue; }
+          if (peer !== connection && peer.readyState === WebSocket.OPEN && peer.bufferedAmount < 4096) peer.send(frame);
+        }
+        return;
+      }
+      if (verifying) return connection.close(1008);
+      verifying = true;
+      try {
+        const { dna, lobby, agent, signature } = packet;
+        const raw = rawHash(agent, "842024");
+        if (!rawHash(lobby, "842924") || !raw || !rawHash(dna, "842d24") || typeof signature !== "string" ||
+            !/^[A-Za-z0-9+/]{86}==$/.test(signature)) return connection.close(1008);
+        const digest = await movementDigest(movementChallenge(origin, dna, lobby, agent, nonce));
+        const key = Buffer.concat([ED25519_SPKI_PREFIX, raw.subarray(3, 35)]);
+        if (!verify(null, digest, { key, format: "der", type: "spki" }, Buffer.from(signature, "base64")))
+          return connection.close(1008);
+        if (!membership.admitted(dna, agent)) { audit("ADMISSION_DENIED"); return connection.close(1008); }
+        if (!await membership.seated(lobby, agent)) { audit("SEAT_UNAVAILABLE"); return connection.close(1008); }
+        if (connection.readyState !== WebSocket.OPEN) return;
+        const room = rooms.get(lobby) ?? new Map<string, WebSocket>();
+        if (room.has(agent)) return connection.close(1013);
+        seat = { dna, lobby, agent, room };
+        rooms.set(lobby, room);
+        room.set(agent, connection);
+        clearTimeout(deadline);
+        audit("READY");
+        connection.send(JSON.stringify({ ready: true }));
+      } catch {
+        audit("NATIVE_READ_FAILED");
+        connection.close(1008);
+      }
+    });
+  });
+
+  http.listen(port, "127.0.0.1");
+  return http;
+}

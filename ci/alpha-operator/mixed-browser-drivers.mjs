@@ -18,6 +18,14 @@ export async function launchChromium(config, profile) {
   return {
     navigate: path => page.goto(config.frontend + path, {waitUntil: 'domcontentloaded'}),
     evaluate: (fn, arg) => page.evaluate(fn, arg),
+    async holdKey(key, duration) {
+      await page.keyboard.down(key);
+      try {
+        await new Promise(resolve => setTimeout(resolve, duration));
+      } finally {
+        await page.keyboard.up(key);
+      }
+    },
     close: () => context.close(),
   };
 }
@@ -75,6 +83,11 @@ export async function launchFirefox(config, profile) {
         `});
         if (result.failed) throw Error('Firefox application check failed');
         return result.value;
+      },
+      async holdKey(key, duration) {
+        await call('POST', '/actions', {actions: [{type: 'key', id: 'gameplay',
+          actions: [{type: 'keyDown', value: key}, {type: 'pause', duration}, {type: 'keyUp', value: key}],
+        }]});
       },
       processId,
       close,

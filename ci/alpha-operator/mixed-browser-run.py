@@ -27,7 +27,7 @@ RELEASE = ROOT / "release/browser-alpha"
 sys.path.insert(0, str(RELEASE))
 from deploy import (authority_cells, endpoint, gateway_environment, native_command,
                     preflight_frontend, preflight_gateway, proxy_config, release_files, remote_preflight)
-from package import EXTENSION, GATEWAY, PINS, SETUP, archive_extension, digest, verify
+from package import EXTENSION, GATEWAY, HAPP, PINS, SETUP, archive_extension, digest, verify
 from site_release import activate_site
 from smoke import free_port, service
 
@@ -181,6 +181,9 @@ def fixture(args, scratch):
     front_port, gateway_port = free_port(), free_port()
     while gateway_port == front_port:
         gateway_port = free_port()
+    movement_port = free_port()
+    while movement_port in (front_port, gateway_port, 8090, 33555, 33557):
+        movement_port = free_port()
     front, gateway = (f"https://localhost:{port}" for port in (front_port, gateway_port))
     public = {**TEST_NETWORK, "frontend_origin": front, "gateway_origin": gateway}
     paths = {
@@ -192,7 +195,7 @@ def fixture(args, scratch):
     activate_site(paths["static_root"], {name: (RELEASE / "frontend" / name).read_bytes() for name in SETUP})
     caddyfile = scratch / "Caddyfile"
     caddyfile.write_text("{\n    admin off\n    auto_https disable_redirects\n}\n" +
-                         proxy_config(public, paths).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
+                         proxy_config(public, paths, movement_port).replace(" {\n    header", f" {{\n    tls {cert} {key}\n    bind 127.0.0.1\n    header", 1)
                          .replace(gateway + " {\n", f"{gateway} {{\n    tls {cert} {key}\n    bind 127.0.0.1\n"))
     caddy_env = {**os.environ, "XDG_DATA_HOME": str(scratch / "caddy-data"),
                  "XDG_CONFIG_HOME": str(scratch / "caddy-config")}
@@ -220,6 +223,9 @@ def fixture(args, scratch):
         archive_extension(Path(config["chromiumExtension"]), archive)
         gate("EXACT_CHROMIUM_RELEASE_BUILD", digest(archive) == digest(release / EXTENSION))
         print("EXACT_FIXTURE_RELEASE_BUILD=PASS", flush=True)
+        print("Fixture DNA", manifest["game"]["dna_hash"], flush=True)
+        for item in (HAPP, "chromium-hwc.zip", "firefox-desktop-hwc.zip", "backend/movement-relay.mjs"):
+            print(manifest["artifacts"][item], item, flush=True)
         activate_site(paths["static_root"], release_files(release, public))
         gateway_env = {**gateway_environment(public, paths), "RUST_LOG": "warn,h2hc_linker::routes::publish=info"}
         with service([str(release / GATEWAY), "--address", "127.0.0.1", "--port", "8090"],
@@ -227,7 +233,19 @@ def fixture(args, scratch):
             with log.open("a") as stream, redirect_stdout(stream):
                 remote_preflight(public, release)
             with authorities(args.game, release, scratch / "native", log):
-                launch("round", config_with_release(config, manifest), scratch, args.report)
+                with service(["node", str(release / "backend/movement-relay.mjs"), front, str(movement_port),
+                              "33555", str(paths["gateway_session_db"])], movement_port, scratch, {**os.environ, "IMPOSTER_FIXTURE_AUDIT": "1"}):
+                    try:
+                        launch("round", config_with_release(config, manifest), scratch, args.report)
+                    finally:
+                        counts = {}
+                        for line in (scratch / f"{movement_port}.local.log").read_text().splitlines():
+                            if re.fullmatch(r"RELAY_[A-Z_]+", line):
+                                counts[line] = counts.get(line, 0) + 1
+                        print("Relay stages", counts, flush=True)
+        if args.candidate:
+            from shutil import copytree
+            copytree(release, args.candidate)
 
 
 def check_operator_origin(origin, check):
@@ -307,7 +325,7 @@ def lock_profiles(profiles):
                 raise GateError("OPERATOR_PROFILE_IN_USE") from error
         # Chromium owns this sentinel, including when it is a dangling symlink.
         gate("OPERATOR_PROFILE_IN_USE",
-             not any(os.path.lexists(profile / "SingletonLock") for profile in profiles[:2]))
+             not any(os.path.lexists(profile / "SingletonLock") for profile in profiles[:-1]))
         yield
 
 
@@ -344,13 +362,14 @@ def operator(args, scratch, report, verified):
     passed("OPERATOR_FRONTEND_EXACT_RELEASE")
     check_operator_origin("GATEWAY", lambda: preflight_gateway(public))
     passed("OPERATOR_GATEWAY_HTTPS_WSS_ISOLATION")
-    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 3 and len(set(profiles)) == 3
+    gate("OPERATOR_PROFILE_CREDENTIALS_MISSING", len(profiles) == 4 and len(set(profiles)) == 4
          and all(private(path, directory=True) and any(path.iterdir()) for path in profiles)
          and not any(a.is_relative_to(b) for a in profiles for b in profiles if a != b))
     gate("OPERATOR_ADMISSION_STATE_UNAVAILABLE", private(admission_db))
     gate("FIREFOX_EXTENSION_CHECKSUM",
          isinstance(firefox_checksum, str) and re.fullmatch(r"[0-9a-f]{64}", firefox_checksum))
     verify_chromium_tree(chrome, release / EXTENSION)
+    gate("FIREFOX_EXTENSION_CHECKSUM", firefox_checksum == manifest["artifacts"]["firefox-desktop-hwc.zip"])
     firefox = stage_firefox(firefox_package, firefox_checksum, scratch)
     passed("OPERATOR_EXTENSION_PROVENANCE")
     try:
@@ -422,6 +441,7 @@ def main():
     for field in ("game", "hwc", "firefox", "gateway", "caddy", "report"):
         cloud.add_argument("--" + field, type=lambda path: Path(path).resolve(), required=True)
     live = sub.add_parser("operator")
+    cloud.add_argument("--candidate", type=Path)
     live.add_argument("--config", type=Path, required=True)
     live.add_argument("--report", type=Path, required=True)
     live.add_argument("--round", action="store_true")
